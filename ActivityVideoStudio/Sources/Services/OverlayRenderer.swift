@@ -79,65 +79,65 @@ final class OverlayRenderer {
             let label = "SLOPE"
             let value: String
             if let grade = dataPoint.grade {
-                value = String(format: "%+.0f%%", grade)
+                value = String(format: "%+.0f %%", grade)
             } else {
-                value = "--%"
+                value = "-- %"
             }
-            drawLabelValue(ctx: ctx, label: label, value: value, x: videoSize.width - 280 * scale, y: rightY, labelColor: accentColor)
+            drawLabelValue(ctx: ctx, label: label, value: value, x: videoSize.width - 400 * scale, y: rightY, labelColor: accentColor, valueSize: 48)
         }
 
         if settings.showAltitude {
             let label = "ELEVATION"
             let value = dataPoint.altitude.map { String(format: "%.0f M", $0) } ?? "-- M"
-            drawLabelValue(ctx: ctx, label: label, value: value, x: videoSize.width - 120 * scale, y: rightY, labelColor: accentColor)
+            drawLabelValue(ctx: ctx, label: label, value: value, x: videoSize.width - 180 * scale, y: rightY, labelColor: accentColor, valueSize: 48)
         }
 
         // Right side: middle - HR gauge
         if settings.showHeartRate {
-            let gaugeCenter = CGPoint(x: videoSize.width - 140 * scale, y: videoSize.height * 0.45)
-            let gaugeRadius = 70 * scale
+            let gaugeCenter = CGPoint(x: videoSize.width - 160 * scale, y: videoSize.height * 0.45)
+            let gaugeRadius = 120 * scale
             drawHeartRateGauge(ctx: ctx, hr: dataPoint.heartRate, center: gaugeCenter, radius: gaugeRadius)
         }
 
         // Right side: below HR - Time
-        rightY = videoSize.height * 0.28
+        rightY = videoSize.height * 0.22
         if settings.showTime {
             let value = formatElapsedTime(elapsedTime)
-            drawLabelValue(ctx: ctx, label: "TIME", value: value, x: videoSize.width - 200 * scale, y: rightY, labelColor: accentColor)
+            drawLabelValue(ctx: ctx, label: "TIME", value: value, x: videoSize.width - 300 * scale, y: rightY, labelColor: accentColor, valueSize: 44)
         }
 
         // Right bottom - Pace
         if settings.showPace {
             let value = dataPoint.paceFormatted ?? "--'--\""
-            drawText(ctx: ctx, text: value, x: videoSize.width - 150 * scale, y: 40 * scale, fontSize: 32 * scale, color: white)
+            drawText(ctx: ctx, text: value, x: videoSize.width - 200 * scale, y: 50 * scale, fontSize: 44 * scale, color: white, bold: true)
         }
 
         // Right bottom - Core temp (above pace)
         if settings.showCoreTemp, let ct = dataPoint.coreTemperature {
             let value = String(format: "%.1f°C", ct)
             let c = coreTempColor(ct)
-            drawLabelValue(ctx: ctx, label: "CORE", value: value, x: videoSize.width - 150 * scale, y: 100 * scale, labelColor: accentColor, valueColor: c)
+            drawLabelValue(ctx: ctx, label: "CORE", value: value, x: videoSize.width - 200 * scale, y: 150 * scale, labelColor: accentColor, valueSize: 36, valueColor: c)
         }
 
         // Left bottom - Distance
         if settings.showDistance {
             let current = dataPoint.distance.map { String(format: "%.1f", $0 / 1000.0) } ?? "--"
             let total = String(format: "/ %.1f", totalDistance / 1000.0)
-            drawText(ctx: ctx, text: "\(current) KM", x: 30 * scale, y: 50 * scale, fontSize: 34 * scale, color: white, bold: true)
-            drawText(ctx: ctx, text: total, x: 30 * scale, y: 25 * scale, fontSize: 16 * scale, color: white)
+            drawText(ctx: ctx, text: "\(current) KM", x: 40 * scale, y: 60 * scale, fontSize: 50 * scale, color: white, bold: true)
+            drawText(ctx: ctx, text: total, x: 40 * scale, y: 30 * scale, fontSize: 22 * scale, color: white)
         }
 
         // Left bottom - Cadence (above distance)
         if settings.showCadence {
             let value = dataPoint.runningCadence.map { "\($0) spm" } ?? "-- spm"
-            drawLabelValue(ctx: ctx, label: "CADENCE", value: value, x: 30 * scale, y: 130 * scale, labelColor: accentColor, valueSize: 22)
+            drawLabelValue(ctx: ctx, label: "CADENCE", value: value, x: 40 * scale, y: 190 * scale, labelColor: accentColor, valueSize: 36)
         }
 
         // Left bottom - Elev gain (above cadence)
         if settings.showElevationGain {
             let gain = cumulativeElevationGain(upTo: dataPoint.distance)
             let value = String(format: "+%.0f m", gain)
-            drawLabelValue(ctx: ctx, label: "ELEV GAIN", value: value, x: 30 * scale, y: 200 * scale, labelColor: accentColor, valueSize: 22, valueColor: CGColor(red: 0.3, green: 0.8, blue: 0.3, alpha: 1))
+            drawLabelValue(ctx: ctx, label: "ELEV GAIN", value: value, x: 40 * scale, y: 290 * scale, labelColor: accentColor, valueSize: 36, valueColor: CGColor(red: 0.3, green: 0.8, blue: 0.3, alpha: 1))
         }
 
         // Elevation profile - right side above pace
@@ -165,7 +165,7 @@ final class OverlayRenderer {
         ctx.saveGState()
         ctx.setShadow(offset: .zero, blur: 0)
         ctx.setStrokeColor(CGColor(red: 0.3, green: 0.3, blue: 0.3, alpha: 0.5))
-        ctx.setLineWidth(8 * scale)
+        ctx.setLineWidth(12 * scale)
         ctx.setLineCap(.round)
         ctx.addArc(center: center, radius: radius, startAngle: startAngle, endAngle: endAngle, clockwise: true)
         ctx.strokePath()
@@ -190,7 +190,7 @@ final class OverlayRenderer {
                 ctx.saveGState()
                 ctx.setShadow(offset: .zero, blur: 0)
                 ctx.setStrokeColor(color)
-                ctx.setLineWidth(8 * scale)
+                ctx.setLineWidth(12 * scale)
                 ctx.setLineCap(.butt)
                 ctx.addArc(center: center, radius: radius, startAngle: segStart, endAngle: segEnd, clockwise: true)
                 ctx.strokePath()
@@ -199,7 +199,7 @@ final class OverlayRenderer {
 
             // HR number
             let hrStr = "\(hr)"
-            let hrFont = CTFontCreateWithName("Helvetica-Bold" as CFString, 48 * scale, nil)
+            let hrFont = CTFontCreateWithName("Helvetica-Bold" as CFString, 80 * scale, nil)
             let hrAttrs: [NSAttributedString.Key: Any] = [
                 .font: hrFont,
                 .foregroundColor: NSColor.white
@@ -216,10 +216,10 @@ final class OverlayRenderer {
             ctx.restoreGState()
 
             // "BPM" label below number
-            drawText(ctx: ctx, text: "BPM", x: center.x - 20 * scale, y: center.y - radius + 10 * scale, fontSize: 14 * scale, color: accentColor, bold: true)
+            drawText(ctx: ctx, text: "BPM", x: center.x - 28 * scale, y: center.y - radius + 15 * scale, fontSize: 22 * scale, color: accentColor, bold: true)
 
             // "HR" label above
-            drawText(ctx: ctx, text: "HR", x: center.x - 10 * scale, y: center.y + radius - 5 * scale, fontSize: 12 * scale, color: accentColor, bold: true)
+            drawText(ctx: ctx, text: "HR", x: center.x - 14 * scale, y: center.y + radius - 5 * scale, fontSize: 18 * scale, color: accentColor, bold: true)
         }
     }
 
@@ -320,11 +320,11 @@ final class OverlayRenderer {
 
     // MARK: - Text helpers
 
-    private func drawLabelValue(ctx: CGContext, label: String, value: String, x: CGFloat, y: CGFloat, labelColor: CGColor, valueSize: CGFloat = 28, valueColor: CGColor? = nil) {
+    private func drawLabelValue(ctx: CGContext, label: String, value: String, x: CGFloat, y: CGFloat, labelColor: CGColor, valueSize: CGFloat = 44, valueColor: CGColor? = nil) {
         // Label
-        drawText(ctx: ctx, text: label, x: x, y: y, fontSize: 12 * scale, color: labelColor, bold: true)
+        drawText(ctx: ctx, text: label, x: x, y: y, fontSize: 18 * scale, color: labelColor, bold: true)
         // Value
-        drawText(ctx: ctx, text: value, x: x, y: y - 28 * scale, fontSize: valueSize * scale, color: valueColor ?? white, bold: true)
+        drawText(ctx: ctx, text: value, x: x, y: y - 40 * scale, fontSize: valueSize * scale, color: valueColor ?? white, bold: true)
     }
 
     private func drawText(ctx: CGContext, text: String, x: CGFloat, y: CGFloat, fontSize: CGFloat, color: CGColor, bold: Bool = false) {
