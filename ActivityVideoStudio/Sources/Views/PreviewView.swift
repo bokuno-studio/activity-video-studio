@@ -5,9 +5,29 @@ import UniformTypeIdentifiers
 /// Main preview screen: video + overlay + minimap + controls.
 struct PreviewView: View {
     @StateObject private var viewModel = PreviewViewModel()
+    @State private var rightPanelTab: RightPanelTab = .settings
+
+    enum RightPanelTab: String, CaseIterable {
+        case settings = "設定"
+        case textOverlay = "テキスト"
+        case trim = "トリム"
+        case youtube = "YouTube"
+    }
 
     var body: some View {
         HSplitView {
+            // Left sidebar: file list
+            if viewModel.showFileList {
+                FileListView(
+                    fitURL: viewModel.fitURL,
+                    fitPointCount: viewModel.fitDataPoints.count,
+                    videoURLs: viewModel.videoURLs,
+                    videoDurations: viewModel.videoMetadatas.map { $0.duration },
+                    onRemoveVideo: { viewModel.removeVideo(at: $0) }
+                )
+                .frame(minWidth: 180, maxWidth: 250)
+            }
+
             // Main content
             VStack(spacing: 0) {
                 // Video area
@@ -49,10 +69,41 @@ struct PreviewView: View {
                 }
             }
 
-            // Settings panel
+            // Right panel
             if viewModel.showSettings {
-                OverlaySettingsView(settings: viewModel.overlaySettings)
-                    .frame(width: 280)
+                VStack(spacing: 0) {
+                    Picker("", selection: $rightPanelTab) {
+                        ForEach(RightPanelTab.allCases, id: \.self) { tab in
+                            Text(tab.rawValue).tag(tab)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(8)
+
+                    ScrollView {
+                        switch rightPanelTab {
+                        case .settings:
+                            OverlaySettingsView(settings: viewModel.overlaySettings)
+                        case .textOverlay:
+                            TextOverlayEditView(
+                                overlays: $viewModel.textOverlays,
+                                videoDuration: viewModel.duration
+                            )
+                        case .trim:
+                            TrimView(
+                                trimSettings: $viewModel.trimSettings,
+                                videoNames: viewModel.videoURLs.map { $0.lastPathComponent },
+                                videoDurations: viewModel.videoMetadatas.map { $0.duration }
+                            )
+                        case .youtube:
+                            YouTubeDescriptionView(
+                                dataPoints: viewModel.fitDataPoints,
+                                videoStartDate: viewModel.videoMetadatas.first?.creationDate
+                            )
+                        }
+                    }
+                }
+                .frame(width: 300)
             }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -70,11 +121,18 @@ struct PreviewView: View {
         .toolbar {
             ToolbarItemGroup {
                 Button {
+                    viewModel.showFileList.toggle()
+                } label: {
+                    Image(systemName: "sidebar.left")
+                }
+                .help("ファイル一覧")
+
+                Button {
                     viewModel.showSettings.toggle()
                 } label: {
                     Image(systemName: "slider.horizontal.3")
                 }
-                .help("オーバーレイ設定")
+                .help("設定パネル")
 
                 Button {
                     viewModel.showExport = true
@@ -84,6 +142,31 @@ struct PreviewView: View {
                 .help("エクスポート")
                 .disabled(!viewModel.videoLoaded || !viewModel.fitLoaded)
             }
+        }
+        // Keyboard shortcuts
+        .onKeyPress(.leftArrow) {
+            viewModel.skipBackward()
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            viewModel.skipForward()
+            return .handled
+        }
+        .onKeyPress("j") {
+            viewModel.skipBackward(10)
+            return .handled
+        }
+        .onKeyPress("l") {
+            viewModel.skipForward(10)
+            return .handled
+        }
+        .onKeyPress("k") {
+            viewModel.togglePlayback()
+            return .handled
+        }
+        .onKeyPress(",") {
+            viewModel.cyclePlaybackRate()
+            return .handled
         }
     }
 
@@ -98,7 +181,9 @@ struct PreviewView: View {
                     .foregroundStyle(.secondary)
 
                 Slider(value: $viewModel.currentTime, in: 0...max(viewModel.duration, 1)) { editing in
-                    if !editing {
+                    if editing {
+                        viewModel.beginSeeking()
+                    } else {
                         viewModel.seek(to: viewModel.currentTime)
                     }
                 }
@@ -115,6 +200,19 @@ struct PreviewView: View {
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.space, modifiers: [])
+
+                // Playback rate
+                Button {
+                    viewModel.cyclePlaybackRate()
+                } label: {
+                    Text("\(String(format: "%.1f", viewModel.playbackRate))x")
+                        .font(.caption.monospacedDigit())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.borderless)
 
                 Spacer()
 
@@ -203,5 +301,5 @@ struct PreviewView: View {
 
 #Preview {
     PreviewView()
-        .frame(width: 1000, height: 700)
+        .frame(width: 1100, height: 700)
 }

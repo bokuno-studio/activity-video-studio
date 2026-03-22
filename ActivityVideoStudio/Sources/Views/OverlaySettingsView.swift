@@ -14,6 +14,8 @@ struct OverlaySettingsView: View {
                 Toggle("標高", isOn: $settings.showAltitude)
                 Toggle("傾斜", isOn: $settings.showGrade)
                 Toggle("ケイデンス", isOn: $settings.showCadence)
+                Toggle("累積獲得標高", isOn: $settings.showElevationGain)
+                Toggle("深部体温 (CORE)", isOn: $settings.showCoreTemp)
             }
 
             Section("ウィジェット") {

@@ -25,6 +25,13 @@
 		A10000010000000000000010 /* VideoExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000010 /* VideoExporter.swift */; };
 		A10000010000000000000011 /* ExportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000011 /* ExportView.swift */; };
 		A10000010000000000000012 /* ExportViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000012 /* ExportViewModel.swift */; };
+		A10000010000000000000013 /* TextOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000013 /* TextOverlay.swift */; };
+		A10000010000000000000014 /* TrimSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000014 /* TrimSettings.swift */; };
+		A10000010000000000000015 /* YouTubeDescriptionGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000015 /* YouTubeDescriptionGenerator.swift */; };
+		A10000010000000000000016 /* TextOverlayEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000016 /* TextOverlayEditView.swift */; };
+		A10000010000000000000017 /* TrimView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000017 /* TrimView.swift */; };
+		A10000010000000000000018 /* FileListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000018 /* FileListView.swift */; };
+		A10000010000000000000019 /* YouTubeDescriptionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000019 /* YouTubeDescriptionView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -46,6 +53,13 @@
 		A20000010000000000000010 /* VideoExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExporter.swift; sourceTree = "<group>"; };
 		A20000010000000000000011 /* ExportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportView.swift; sourceTree = "<group>"; };
 		A20000010000000000000012 /* ExportViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportViewModel.swift; sourceTree = "<group>"; };
+		A20000010000000000000013 /* TextOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlay.swift; sourceTree = "<group>"; };
+		A20000010000000000000014 /* TrimSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrimSettings.swift; sourceTree = "<group>"; };
+		A20000010000000000000015 /* YouTubeDescriptionGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeDescriptionGenerator.swift; sourceTree = "<group>"; };
+		A20000010000000000000016 /* TextOverlayEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextOverlayEditView.swift; sourceTree = "<group>"; };
+		A20000010000000000000017 /* TrimView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrimView.swift; sourceTree = "<group>"; };
+		A20000010000000000000018 /* FileListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileListView.swift; sourceTree = "<group>"; };
+		A20000010000000000000019 /* YouTubeDescriptionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeDescriptionView.swift; sourceTree = "<group>"; };
 		A30000010000000000000001 /* ActivityVideoStudio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ActivityVideoStudio.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -90,6 +104,10 @@
 				A2000001000000000000000F /* OverlaySettingsView.swift */,
 				A20000010000000000000011 /* ExportView.swift */,
 				A20000010000000000000012 /* ExportViewModel.swift */,
+				A20000010000000000000016 /* TextOverlayEditView.swift */,
+				A20000010000000000000017 /* TrimView.swift */,
+				A20000010000000000000018 /* FileListView.swift */,
+				A20000010000000000000019 /* YouTubeDescriptionView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -100,6 +118,8 @@
 				A20000010000000000000003 /* FITDataPoint.swift */,
 				A20000010000000000000004 /* VideoMetadata.swift */,
 				A2000001000000000000000D /* OverlaySettings.swift */,
+				A20000010000000000000013 /* TextOverlay.swift */,
+				A20000010000000000000014 /* TrimSettings.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -112,6 +132,7 @@
 				A20000010000000000000007 /* TimeSync.swift */,
 				A20000010000000000000008 /* OverlayRenderer.swift */,
 				A20000010000000000000010 /* VideoExporter.swift */,
+				A20000010000000000000015 /* YouTubeDescriptionGenerator.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -202,6 +223,13 @@
 				A10000010000000000000010 /* VideoExporter.swift in Sources */,
 				A10000010000000000000011 /* ExportView.swift in Sources */,
 				A10000010000000000000012 /* ExportViewModel.swift in Sources */,
+				A10000010000000000000013 /* TextOverlay.swift in Sources */,
+				A10000010000000000000014 /* TrimSettings.swift in Sources */,
+				A10000010000000000000015 /* YouTubeDescriptionGenerator.swift in Sources */,
+				A10000010000000000000016 /* TextOverlayEditView.swift in Sources */,
+				A10000010000000000000017 /* TrimView.swift in Sources */,
+				A10000010000000000000018 /* FileListView.swift in Sources */,
+				A10000010000000000000019 /* YouTubeDescriptionView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

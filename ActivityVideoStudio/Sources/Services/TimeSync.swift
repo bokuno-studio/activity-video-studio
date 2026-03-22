@@ -111,7 +111,14 @@ final class TimeSync {
         guard range > 0 else { return before }
 
         let fraction = (targetTime - beforeTime) / range
-        return interpolate(before: before, after: after, fraction: fraction)
+        var result = interpolate(before: before, after: after, fraction: fraction)
+
+        // Compute grade from altitude if not present in FIT data
+        if result.grade == nil, lo > 0 {
+            result = computeGrade(result: result, index: lo)
+        }
+
+        return result
     }
 
     /// Elapsed time from activity start for a given playback position.
@@ -149,7 +156,41 @@ final class TimeSync {
             altitude: lerpOptional(before.altitude, after.altitude, fraction),
             cadence: fraction < 0.5 ? before.cadence : after.cadence,
             distance: lerpOptional(before.distance, after.distance, fraction),
-            grade: lerpOptional(before.grade, after.grade, fraction)
+            grade: lerpOptional(before.grade, after.grade, fraction),
+            temperature: fraction < 0.5 ? before.temperature : after.temperature,
+            coreTemperature: lerpOptional(before.coreTemperature, after.coreTemperature, fraction),
+            skinTemperature: lerpOptional(before.skinTemperature, after.skinTemperature, fraction)
+        )
+    }
+
+    /// Compute grade from altitude difference over ~10 data points for smoothing.
+    private func computeGrade(result: FITDataPoint, index: Int) -> FITDataPoint {
+        let lookback = min(index, 10)
+        let prev = dataPoints[index - lookback]
+        let curr = dataPoints[index]
+
+        guard let altPrev = prev.altitude, let altCurr = curr.altitude,
+              let distPrev = prev.distance, let distCurr = curr.distance else {
+            return result
+        }
+
+        let distDelta = distCurr - distPrev
+        guard distDelta > 1 else { return result }
+
+        let grade = ((altCurr - altPrev) / distDelta) * 100.0
+
+        return FITDataPoint(
+            timestamp: result.timestamp,
+            coordinate: result.coordinate,
+            heartRate: result.heartRate,
+            speed: result.speed,
+            altitude: result.altitude,
+            cadence: result.cadence,
+            distance: result.distance,
+            grade: grade,
+            temperature: result.temperature,
+            coreTemperature: result.coreTemperature,
+            skinTemperature: result.skinTemperature
         )
     }
 

@@ -79,6 +79,7 @@ final class FITParser {
         case grade            = 9
         case enhancedSpeed    = 73
         case enhancedAltitude = 78
+        case temperature      = 13
     }
 
     // MARK: - Internal structures
@@ -89,10 +90,17 @@ final class FITParser {
         let baseType: UInt8
     }
 
+    private struct DevFieldDefinition {
+        let fieldNumber: UInt8
+        let size: UInt8
+        let devDataIndex: UInt8
+    }
+
     private struct MessageDefinition {
         let globalMessageNumber: UInt16
         let fields: [FieldDefinition]
-        let devFieldsSize: Int  // Total bytes of developer fields in data messages
+        let devFields: [DevFieldDefinition]
+        let devFieldsSize: Int
         let littleEndian: Bool
     }
 
@@ -256,6 +264,7 @@ final class FITParser {
 
         // Developer fields
         var devFieldsSize = 0
+        var devFields: [DevFieldDefinition] = []
         if hasDeveloperData {
             guard offset < data.count else { throw ParseError.unexpectedEndOfData }
             let devFieldCount = Int(data[offset])
@@ -264,7 +273,14 @@ final class FITParser {
                 throw ParseError.unexpectedEndOfData
             }
             for _ in 0..<devFieldCount {
+                let devFieldNum = data[offset]
                 let devSize = data[offset + 1]
+                let devIdx = data[offset + 2]
+                devFields.append(DevFieldDefinition(
+                    fieldNumber: devFieldNum,
+                    size: devSize,
+                    devDataIndex: devIdx
+                ))
                 devFieldsSize += Int(devSize)
                 offset += 3
             }
@@ -273,6 +289,7 @@ final class FITParser {
         return MessageDefinition(
             globalMessageNumber: globalMessageNumber,
             fields: fields,
+            devFields: devFields,
             devFieldsSize: devFieldsSize,
             littleEndian: littleEndian
         )
@@ -308,6 +325,7 @@ final class FITParser {
         var cadence: UInt8?
         var distance: UInt32?
         var grade: Int16?
+        var temperature: Int8?
 
         for field in definition.fields {
             let fieldStart = offset
@@ -364,6 +382,9 @@ final class FITParser {
                     if field.size >= 2 {
                         grade = readSInt16(data: data, offset: fieldStart, littleEndian: definition.littleEndian)
                     }
+                case .temperature:
+                    let raw = Int8(bitPattern: data[fieldStart])
+                    if raw != 0x7F { temperature = raw }
                 case .none:
                     break
                 }
@@ -372,8 +393,27 @@ final class FITParser {
             offset = fieldEnd
         }
 
-        // Skip developer field data
-        offset += definition.devFieldsSize
+        // Parse developer fields (CORE body temperature)
+        var coreTemp: Double?
+        var skinTemp: Double?
+        for devField in definition.devFields {
+            let devStart = offset
+            let devEnd = devStart + Int(devField.size)
+            guard devEnd <= data.count else { break }
+
+            if devField.devDataIndex == 0 && devField.size == 4 {
+                let rawBits = readUInt32(data: data, offset: devStart, littleEndian: definition.littleEndian)
+                let floatVal = Float(bitPattern: rawBits)
+                if !floatVal.isNaN && floatVal > 0 && floatVal < 50 {
+                    switch devField.fieldNumber {
+                    case 0:  coreTemp = Double(floatVal)  // core_temperature
+                    case 10: skinTemp = Double(floatVal)  // skin_temperature
+                    default: break
+                    }
+                }
+            }
+            offset = devEnd
+        }
 
         // Resolve timestamp
         let resolvedTimestamp = overrideTimestamp ?? timestamp
@@ -420,7 +460,10 @@ final class FITParser {
             altitude: resolvedAltitude,
             cadence: cadence,
             distance: resolvedDistance,
-            grade: resolvedGrade
+            grade: resolvedGrade,
+            temperature: temperature,
+            coreTemperature: coreTemp,
+            skinTemperature: skinTemp
         )
     }
 

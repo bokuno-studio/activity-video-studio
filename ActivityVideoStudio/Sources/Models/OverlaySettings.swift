@@ -9,6 +9,8 @@ final class OverlaySettings: ObservableObject {
     @Published var showGrade = true
     @Published var showAltitude = true
     @Published var showCadence = true
+    @Published var showElevationGain = true
+    @Published var showCoreTemp = true
     @Published var showMiniMap = true
     @Published var showElevationProfile = true
     @Published var overlayOpacity: Double = 0.7
