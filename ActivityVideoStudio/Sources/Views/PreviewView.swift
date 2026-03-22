@@ -31,7 +31,7 @@ struct PreviewView: View {
             // Main content
             VStack(spacing: 0) {
                 // Video area
-                ZStack(alignment: .bottomTrailing) {
+                ZStack(alignment: .topTrailing) {
                     ZStack(alignment: .bottom) {
                         VideoPlayerView(player: viewModel.player)
                             .aspectRatio(16/9, contentMode: .fit)
@@ -41,16 +41,16 @@ struct PreviewView: View {
                             .allowsHitTesting(false)
                     }
 
-                    // Minimap
+                    // Minimap - right top
                     if viewModel.overlaySettings.showMiniMap && !viewModel.trackCoordinates.isEmpty {
                         MiniMapView(
                             trackCoordinates: viewModel.trackCoordinates,
                             currentCoordinate: viewModel.currentCoordinate
                         )
-                        .frame(width: 200, height: 150)
+                        .frame(width: 240, height: 180)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .shadow(radius: 4)
-                        .padding(.bottom, 80)
+                        .padding(.top, 12)
                         .padding(.trailing, 12)
                     }
                 }
