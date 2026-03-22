@@ -54,8 +54,8 @@ struct PreviewView: View {
                                     currentCoordinate: viewModel.currentCoordinate
                                 )
                                 .frame(
-                                    width: geo.size.width * 0.18,
-                                    height: geo.size.width * 0.13
+                                    width: geo.size.width * 0.22,
+                                    height: geo.size.width * 0.16
                                 )
                                 .shadow(radius: 3)
                                 .position(

@@ -16,7 +16,7 @@ struct TextOverlayEditView: View {
                     let overlay = TextOverlay(
                         text: "タイトル",
                         startTime: 0,
-                        duration: 5
+                        duration: 15
                     )
                     overlays.append(overlay)
                 } label: {

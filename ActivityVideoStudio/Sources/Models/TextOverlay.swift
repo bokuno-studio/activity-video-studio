@@ -6,7 +6,7 @@ struct TextOverlay: Identifiable {
     let id = UUID()
     var text: String
     var startTime: TimeInterval      // seconds from video start
-    var duration: TimeInterval        // how long to display
+    var duration: TimeInterval = 15   // how long to display
     var fontSize: CGFloat = 48
     var position: Position = .center
     var color: CGColor = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
