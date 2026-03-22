@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct PreviewView: View {
     @StateObject private var viewModel = PreviewViewModel()
     @State private var rightPanelTab: RightPanelTab = .trim
+    @State private var showRightPanel = false
     @FocusState private var isTextFieldFocused: Bool
 
     enum RightPanelTab: String, CaseIterable {
@@ -16,66 +17,78 @@ struct PreviewView: View {
 
     var body: some View {
         HSplitView {
-            // Left sidebar: file list
+            // Left sidebar: file list + settings
             if viewModel.showFileList {
-                FileListView(
-                    fitURL: viewModel.fitURL,
-                    fitPointCount: viewModel.fitDataPoints.count,
-                    videoURLs: viewModel.videoURLs,
-                    videoDurations: viewModel.videoMetadatas.map { $0.duration },
-                    onRemoveVideo: { viewModel.removeVideo(at: $0) }
-                )
-                .frame(minWidth: 180, maxWidth: 250)
+                VStack(spacing: 0) {
+                    FileListView(
+                        fitURL: viewModel.fitURL,
+                        fitPointCount: viewModel.fitDataPoints.count,
+                        videoURLs: viewModel.videoURLs,
+                        videoDurations: viewModel.videoMetadatas.map { $0.duration },
+                        onRemoveVideo: { viewModel.removeVideo(at: $0) }
+                    )
+
+                    Divider()
+
+                    // Settings inline
+                    ScrollView {
+                        OverlaySettingsView(settings: viewModel.overlaySettings)
+                    }
+                    .frame(maxHeight: 300)
+                }
+                .frame(minWidth: 200, maxWidth: 260)
             }
 
             // Main content
             VStack(spacing: 0) {
                 // Video area
-                GeometryReader { videoGeo in
-                    VideoPlayerView(player: viewModel.player)
-                        .aspectRatio(16/9, contentMode: .fit)
-                        .background(Color.black)
-                        .overlay {
-                            // GPS Track - relative to video size
+                VideoPlayerView(player: viewModel.player)
+                    .aspectRatio(16/9, contentMode: .fit)
+                    .background(Color.black)
+                    .overlay {
+                        // GPS Track - relative to video, proportional size
+                        GeometryReader { geo in
                             if viewModel.overlaySettings.showMiniMap && !viewModel.trackCoordinates.isEmpty {
                                 GPSTrackView(
                                     trackCoordinates: viewModel.trackCoordinates,
                                     currentCoordinate: viewModel.currentCoordinate
                                 )
                                 .frame(
-                                    width: min(videoGeo.size.width * 0.2, 200),
-                                    height: min(videoGeo.size.width * 0.15, 150)
+                                    width: geo.size.width * 0.18,
+                                    height: geo.size.width * 0.13
                                 )
-                                .shadow(radius: 4)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                                .padding(.top, 8)
-                                .padding(.trailing, 8)
+                                .shadow(radius: 3)
+                                .position(
+                                    x: geo.size.width - geo.size.width * 0.09 - 6,
+                                    y: geo.size.width * 0.065 + 6
+                                )
                             }
                         }
-                        .overlay {
-                            // Data + text overlay - on top of map
-                            OverlayView(overlayImage: viewModel.overlayImage)
-                                .allowsHitTesting(false)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                }
-                .frame(maxWidth: .infinity)
+                    }
+                    .overlay {
+                        // Data + text overlay on top
+                        OverlayView(overlayImage: viewModel.overlayImage)
+                            .allowsHitTesting(false)
+                    }
+                    .frame(maxWidth: .infinity)
 
-                // Controls
+                // Compact controls
                 controlsBar
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
 
                 // Status bar
                 if let status = viewModel.statusMessage {
                     Text(status)
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal)
-                        .padding(.bottom, 4)
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 2)
                 }
             }
 
             // Right panel
-            if viewModel.showSettings {
+            if showRightPanel {
                 VStack(spacing: 0) {
                     Picker("", selection: $rightPanelTab) {
                         ForEach(RightPanelTab.allCases, id: \.self) { tab in
@@ -87,18 +100,18 @@ struct PreviewView: View {
 
                     ScrollView {
                         switch rightPanelTab {
-                        case .textOverlay:
-                            TextOverlayEditView(
-                                overlays: $viewModel.textOverlays,
-                                videoDuration: viewModel.duration,
-                                isTextFocused: $isTextFieldFocused
-                            )
                         case .trim:
                             TrimView(
                                 trimSettings: $viewModel.trimSettings,
                                 videoNames: viewModel.videoURLs.map { $0.lastPathComponent },
                                 videoDurations: viewModel.videoMetadatas.map { $0.duration },
                                 onSeek: { time in viewModel.seek(to: time) }
+                            )
+                        case .textOverlay:
+                            TextOverlayEditView(
+                                overlays: $viewModel.textOverlays,
+                                videoDuration: viewModel.duration,
+                                isTextFocused: $isTextFieldFocused
                             )
                         case .youtube:
                             YouTubeDescriptionView(
@@ -123,10 +136,6 @@ struct PreviewView: View {
         .sheet(isPresented: $viewModel.showExport) {
             ExportView(viewModel: viewModel.makeExportViewModel())
         }
-        .popover(isPresented: $viewModel.showSettings, arrowEdge: .top) {
-            OverlaySettingsView(settings: viewModel.overlaySettings)
-                .frame(width: 300, height: 500)
-        }
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -134,14 +143,14 @@ struct PreviewView: View {
                 } label: {
                     Image(systemName: "sidebar.left")
                 }
-                .help("ファイル一覧")
+                .help("ファイル一覧・設定")
 
                 Button {
-                    viewModel.showSettings.toggle()
+                    showRightPanel.toggle()
                 } label: {
-                    Image(systemName: "gearshape")
+                    Image(systemName: "sidebar.right")
                 }
-                .help("オーバーレイ設定")
+                .help("編集パネル")
 
                 Button {
                     viewModel.showExport = true
@@ -185,15 +194,16 @@ struct PreviewView: View {
         }
     }
 
-    // MARK: - Controls bar
+    // MARK: - Controls bar (compact)
 
     private var controlsBar: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 4) {
             // Seek bar with trim indicators
-            HStack {
+            HStack(spacing: 6) {
                 Text(formatTime(viewModel.currentTime))
-                    .font(.caption.monospacedDigit())
+                    .font(.system(size: 10).monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .frame(width: 50, alignment: .trailing)
 
                 ZStack {
                     Slider(value: $viewModel.currentTime, in: 0...max(viewModel.duration, 1)) { editing in
@@ -203,21 +213,17 @@ struct PreviewView: View {
                             viewModel.seek(to: viewModel.currentTime)
                         }
                     }
+                    .controlSize(.small)
 
-                    // Trim indicators on seek bar
                     GeometryReader { geo in
-                        let totalDur = max(viewModel.duration, 1)
                         let trimInfo = viewModel.trimRangesForSeekbar()
-
                         ForEach(Array(trimInfo.enumerated()), id: \.offset) { _, range in
-                            // Start trim
                             if range.startFrac > 0 {
                                 Rectangle()
                                     .fill(Color.red.opacity(0.3))
                                     .frame(width: geo.size.width * range.startFrac)
                                     .allowsHitTesting(false)
                             }
-                            // End trim
                             if range.endFrac > 0 {
                                 Rectangle()
                                     .fill(Color.red.opacity(0.3))
@@ -230,29 +236,27 @@ struct PreviewView: View {
                     .allowsHitTesting(false)
                 }
 
-                // Show trimmed duration instead of total
-                let trimmedDuration = viewModel.trimmedTotalDuration()
-                Text(formatTime(trimmedDuration))
-                    .font(.caption.monospacedDigit())
+                Text(formatTime(viewModel.trimmedTotalDuration()))
+                    .font(.system(size: 10).monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .frame(width: 50, alignment: .leading)
             }
 
-            HStack(spacing: 16) {
+            HStack(spacing: 8) {
                 Button(action: viewModel.togglePlayback) {
                     Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.title2)
+                        .font(.system(size: 14))
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.space, modifiers: [])
 
-                // Playback rate
                 Button {
                     viewModel.cyclePlaybackRate()
                 } label: {
                     Text("\(String(format: "%.1f", viewModel.playbackRate))x")
-                        .font(.caption.monospacedDigit())
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
+                        .font(.system(size: 10).monospacedDigit())
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
                         .background(.quaternary)
                         .clipShape(Capsule())
                 }
@@ -262,33 +266,32 @@ struct PreviewView: View {
 
                 // Sync offset
                 if viewModel.fitLoaded {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 3) {
                         Text("同期:")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                         Slider(value: Binding(
                             get: { viewModel.syncOffset },
                             set: { viewModel.updateSyncOffset($0) }
                         ), in: -30...30, step: 0.5)
-                        .frame(width: 120)
+                        .frame(width: 80)
+                        .controlSize(.small)
                         Text(String(format: "%+.1fs", viewModel.syncOffset))
-                            .font(.caption.monospacedDigit())
-                            .frame(width: 45)
+                            .font(.system(size: 10).monospacedDigit())
+                            .frame(width: 35)
                     }
                 }
 
-                // Video count
                 if viewModel.videoURLs.count > 1 {
                     Text("\(viewModel.videoURLs.count)本")
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
+                        .font(.system(size: 10))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
                         .background(.quaternary)
                         .clipShape(Capsule())
                 }
             }
         }
-        .padding()
     }
 
     // MARK: - Drop prompt
@@ -329,16 +332,12 @@ struct PreviewView: View {
         }
     }
 
-    // MARK: - Formatting
-
     private func formatTime(_ seconds: TimeInterval) -> String {
         let total = max(0, Int(seconds))
         let h = total / 3600
         let m = (total % 3600) / 60
         let s = total % 60
-        if h > 0 {
-            return String(format: "%d:%02d:%02d", h, m, s)
-        }
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
         return String(format: "%02d:%02d", m, s)
     }
 }
