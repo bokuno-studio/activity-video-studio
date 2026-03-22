@@ -72,21 +72,54 @@ final class OverlayRenderer {
             drawWaitingIndicator(ctx: ctx)
         }
 
-        // === RIGHT SIDE (top to bottom) ===
-        // Map is handled by SwiftUI MiniMapView (right top)
-        // Elevation profile right below map area
-        if settings.showElevationProfile {
-            drawElevationProfile(ctx: ctx, currentPoint: dataPoint)
-        }
+        // === LEFT SIDE: HR, PACE, CORE, CADENCE, TIME ===
 
-        // HR gauge - right middle
+        // HR gauge - left upper
         if settings.showHeartRate {
-            let gaugeCenter = CGPoint(x: videoSize.width - 200 * scale, y: videoSize.height * 0.42)
+            let gaugeCenter = CGPoint(x: 220 * scale, y: videoSize.height * 0.52)
             let gaugeRadius = 160 * scale
             drawHeartRateGauge(ctx: ctx, hr: dataPoint.heartRate, center: gaugeCenter, radius: gaugeRadius)
         }
 
-        // SLOPE + ELEVATION - left side, above elev gain
+        // TIME - left, below HR
+        if settings.showTime {
+            let value = formatElapsedTime(elapsedTime)
+            drawLabelValue(ctx: ctx, label: "TIME", value: value, x: 50 * scale, y: videoSize.height * 0.25, labelColor: accentColor)
+        }
+
+        // PACE - left bottom area
+        if settings.showPace {
+            let value = dataPoint.paceFormatted ?? "--'--\""
+            drawLabelValue(ctx: ctx, label: "PACE", value: value, x: 50 * scale, y: 200 * scale, labelColor: accentColor)
+        }
+
+        // CORE - next to PACE
+        if settings.showCoreTemp, let ct = dataPoint.coreTemperature {
+            let value = String(format: "%.1f°C", ct)
+            let c = coreTempColor(ct)
+            drawLabelValue(ctx: ctx, label: "CORE", value: value, x: 350 * scale, y: 200 * scale, labelColor: accentColor, valueColor: c)
+        }
+
+        // CADENCE - bottom left
+        if settings.showCadence {
+            let value = dataPoint.runningCadence.map { "\($0) spm" } ?? "-- spm"
+            drawLabelValue(ctx: ctx, label: "CADENCE", value: value, x: 50 * scale, y: 70 * scale, labelColor: accentColor)
+        }
+
+        // === RIGHT SIDE: Map (SwiftUI), Elevation profile, ELEVATION, SLOPE, ELEV GAIN, Distance ===
+
+        // Elevation profile - right, below map (map is ~350*scale tall from top)
+        if settings.showElevationProfile {
+            drawElevationProfile(ctx: ctx, currentPoint: dataPoint)
+        }
+
+        // ELEVATION + SLOPE - right middle
+        var rightDataY = videoSize.height * 0.38
+        if settings.showAltitude {
+            let value = dataPoint.altitude.map { String(format: "%.0f M", $0) } ?? "-- M"
+            drawLabelValue(ctx: ctx, label: "ELEVATION", value: value, x: videoSize.width - 450 * scale, y: rightDataY, labelColor: accentColor)
+        }
+
         if settings.showGrade {
             let value: String
             if let grade = dataPoint.grade {
@@ -94,53 +127,22 @@ final class OverlayRenderer {
             } else {
                 value = "-- %"
             }
-            drawLabelValue(ctx: ctx, label: "SLOPE", value: value, x: 50 * scale, y: 560 * scale, labelColor: accentColor)
+            drawLabelValue(ctx: ctx, label: "SLOPE", value: value, x: videoSize.width - 200 * scale, y: rightDataY, labelColor: accentColor)
         }
 
-        if settings.showAltitude {
-            let value = dataPoint.altitude.map { String(format: "%.0f M", $0) } ?? "-- M"
-            drawLabelValue(ctx: ctx, label: "ELEVATION", value: value, x: 300 * scale, y: 560 * scale, labelColor: accentColor)
-        }
-
-        // TIME - right, below HR gauge
-        if settings.showTime {
-            let value = formatElapsedTime(elapsedTime)
-            drawLabelValue(ctx: ctx, label: "TIME", value: value, x: videoSize.width - 450 * scale, y: videoSize.height * 0.15, labelColor: accentColor)
-        }
-
-        // Core temp - right bottom area
-        if settings.showCoreTemp, let ct = dataPoint.coreTemperature {
-            let value = String(format: "%.1f°C", ct)
-            let c = coreTempColor(ct)
-            drawLabelValue(ctx: ctx, label: "CORE", value: value, x: videoSize.width - 450 * scale, y: 200 * scale, labelColor: accentColor, valueColor: c)
-        }
-
-        // Pace - right bottom corner
-        if settings.showPace {
-            let value = dataPoint.paceFormatted ?? "--'--\""
-            drawLabelValue(ctx: ctx, label: "PACE", value: value, x: videoSize.width - 250 * scale, y: 200 * scale, labelColor: accentColor)
-        }
-
-        // === LEFT SIDE (bottom to top) ===
-        // Distance - large, bottom left
+        // Distance - right bottom (large)
         if settings.showDistance {
             let current = dataPoint.distance.map { String(format: "%.1f", $0 / 1000.0) } ?? "--"
             let total = String(format: "/ %.1f KM", totalDistance / 1000.0)
-            drawText(ctx: ctx, text: "\(current) KM", x: 50 * scale, y: 80 * scale, fontSize: 90 * scale, color: white, bold: true)
-            drawText(ctx: ctx, text: total, x: 50 * scale, y: 40 * scale, fontSize: 32 * scale, color: white)
+            drawText(ctx: ctx, text: "\(current) KM", x: videoSize.width - 450 * scale, y: 80 * scale, fontSize: 90 * scale, color: white, bold: true)
+            drawText(ctx: ctx, text: total, x: videoSize.width - 450 * scale, y: 40 * scale, fontSize: 32 * scale, color: white)
         }
 
-        // Cadence - above distance
-        if settings.showCadence {
-            let value = dataPoint.runningCadence.map { "\($0) spm" } ?? "-- spm"
-            drawLabelValue(ctx: ctx, label: "CADENCE", value: value, x: 50 * scale, y: 300 * scale, labelColor: accentColor)
-        }
-
-        // Elev gain - above cadence
+        // ELEV GAIN - right, below ELEVATION/SLOPE row
         if settings.showElevationGain {
             let gain = cumulativeElevationGain(upTo: dataPoint.distance)
             let value = String(format: "+%.0f m", gain)
-            drawLabelValue(ctx: ctx, label: "ELEV GAIN", value: value, x: 50 * scale, y: 430 * scale, labelColor: accentColor, valueColor: CGColor(red: 0.3, green: 0.8, blue: 0.3, alpha: 1))
+            drawLabelValue(ctx: ctx, label: "ELEV GAIN", value: value, x: videoSize.width - 450 * scale, y: rightDataY - 130 * scale, labelColor: accentColor, valueColor: CGColor(red: 0.3, green: 0.8, blue: 0.3, alpha: 1))
         }
 
         // Text overlays
@@ -243,10 +245,10 @@ final class OverlayRenderer {
         let altitudes = allDataPoints.compactMap { $0.altitude }
         guard let minAlt = altitudes.min(), let maxAlt = altitudes.max(), maxAlt > minAlt else { return }
 
-        // Position: right top area, below where the minimap sits
+        // Position: right side, below the minimap (map is ~350*scale from top edge)
         let profileRect = CGRect(
             x: videoSize.width - elevationProfileWidth - 30 * scale,
-            y: videoSize.height - 380 * scale,
+            y: videoSize.height - 520 * scale,
             width: elevationProfileWidth,
             height: elevationProfileHeight
         )
