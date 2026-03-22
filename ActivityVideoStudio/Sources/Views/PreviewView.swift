@@ -5,13 +5,12 @@ import UniformTypeIdentifiers
 /// Main preview screen: video + overlay + minimap + controls.
 struct PreviewView: View {
     @StateObject private var viewModel = PreviewViewModel()
-    @State private var rightPanelTab: RightPanelTab = .settings
+    @State private var rightPanelTab: RightPanelTab = .trim
     @FocusState private var isTextFieldFocused: Bool
 
     enum RightPanelTab: String, CaseIterable {
-        case settings = "設定"
-        case textOverlay = "テキスト"
         case trim = "トリム"
+        case textOverlay = "テキスト"
         case youtube = "YouTube"
     }
 
@@ -32,26 +31,33 @@ struct PreviewView: View {
             // Main content
             VStack(spacing: 0) {
                 // Video area
-                ZStack(alignment: .topTrailing) {
+                GeometryReader { videoGeo in
                     VideoPlayerView(player: viewModel.player)
                         .aspectRatio(16/9, contentMode: .fit)
                         .background(Color.black)
-
-                    // GPS Track - right top
-                    if viewModel.overlaySettings.showMiniMap && !viewModel.trackCoordinates.isEmpty {
-                        GPSTrackView(
-                            trackCoordinates: viewModel.trackCoordinates,
-                            currentCoordinate: viewModel.currentCoordinate
-                        )
-                        .frame(width: 240, height: 180)
-                        .shadow(radius: 4)
-                        .padding(.top, 12)
-                        .padding(.trailing, 12)
-                    }
-
-                    // Overlay (data + text) - drawn OVER map
-                    OverlayView(overlayImage: viewModel.overlayImage)
-                        .allowsHitTesting(false)
+                        .overlay {
+                            // GPS Track - relative to video size
+                            if viewModel.overlaySettings.showMiniMap && !viewModel.trackCoordinates.isEmpty {
+                                GPSTrackView(
+                                    trackCoordinates: viewModel.trackCoordinates,
+                                    currentCoordinate: viewModel.currentCoordinate
+                                )
+                                .frame(
+                                    width: min(videoGeo.size.width * 0.2, 200),
+                                    height: min(videoGeo.size.width * 0.15, 150)
+                                )
+                                .shadow(radius: 4)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                                .padding(.top, 8)
+                                .padding(.trailing, 8)
+                            }
+                        }
+                        .overlay {
+                            // Data + text overlay - on top of map
+                            OverlayView(overlayImage: viewModel.overlayImage)
+                                .allowsHitTesting(false)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 }
                 .frame(maxWidth: .infinity)
 
@@ -81,8 +87,6 @@ struct PreviewView: View {
 
                     ScrollView {
                         switch rightPanelTab {
-                        case .settings:
-                            OverlaySettingsView(settings: viewModel.overlaySettings)
                         case .textOverlay:
                             TextOverlayEditView(
                                 overlays: $viewModel.textOverlays,
@@ -93,7 +97,8 @@ struct PreviewView: View {
                             TrimView(
                                 trimSettings: $viewModel.trimSettings,
                                 videoNames: viewModel.videoURLs.map { $0.lastPathComponent },
-                                videoDurations: viewModel.videoMetadatas.map { $0.duration }
+                                videoDurations: viewModel.videoMetadatas.map { $0.duration },
+                                onSeek: { time in viewModel.seek(to: time) }
                             )
                         case .youtube:
                             YouTubeDescriptionView(
@@ -118,6 +123,10 @@ struct PreviewView: View {
         .sheet(isPresented: $viewModel.showExport) {
             ExportView(viewModel: viewModel.makeExportViewModel())
         }
+        .popover(isPresented: $viewModel.showSettings, arrowEdge: .top) {
+            OverlaySettingsView(settings: viewModel.overlaySettings)
+                .frame(width: 300, height: 500)
+        }
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -130,9 +139,9 @@ struct PreviewView: View {
                 Button {
                     viewModel.showSettings.toggle()
                 } label: {
-                    Image(systemName: "slider.horizontal.3")
+                    Image(systemName: "gearshape")
                 }
-                .help("設定パネル")
+                .help("オーバーレイ設定")
 
                 Button {
                     viewModel.showExport = true

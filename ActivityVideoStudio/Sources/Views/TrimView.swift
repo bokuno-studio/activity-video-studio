@@ -5,6 +5,7 @@ struct TrimView: View {
     @Binding var trimSettings: [TrimSettings]
     let videoNames: [String]
     let videoDurations: [TimeInterval]
+    var onSeek: ((TimeInterval) -> Void)?  // Seek video when trim handle changes
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -39,7 +40,9 @@ struct TrimView: View {
                         TrimBarView(
                             startTrim: $trimSettings[index].startTrim,
                             endTrim: $trimSettings[index].endTrim,
-                            duration: dur
+                            duration: dur,
+                            segmentOffset: videoDurations[0..<index].reduce(0, +),
+                            onSeek: onSeek
                         )
                         .frame(height: 40)
 
@@ -101,6 +104,8 @@ struct TrimBarView: View {
     @Binding var startTrim: TimeInterval
     @Binding var endTrim: TimeInterval
     let duration: TimeInterval
+    var segmentOffset: TimeInterval = 0
+    var onSeek: ((TimeInterval) -> Void)?
 
     var body: some View {
         GeometryReader { geo in
@@ -143,6 +148,7 @@ struct TrimBarView: View {
                         .onChanged { value in
                             let frac = max(0, min(value.location.x / w, 1 - endFrac - 0.02))
                             startTrim = Double(frac) * duration
+                            onSeek?(segmentOffset + startTrim)
                         }
                     )
 
@@ -153,6 +159,7 @@ struct TrimBarView: View {
                         .onChanged { value in
                             let frac = max(0, min((w - value.location.x) / w, 1 - startFrac - 0.02))
                             endTrim = Double(frac) * duration
+                            onSeek?(segmentOffset + duration - endTrim)
                         }
                     )
 
