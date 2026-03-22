@@ -42,7 +42,39 @@ final class PreviewViewModel: ObservableObject {
 
     init() {
         setupTimeObserver()
+        #if DEBUG
+        Task { await autoLoadDebugFiles() }
+        #endif
     }
+
+    #if DEBUG
+    /// Auto-load files from command-line arguments or environment for faster debugging.
+    /// Usage: --fit /path/to.fit --video /path/to.mp4 --video /path/to2.mp4
+    private func autoLoadDebugFiles() async {
+        let args = ProcessInfo.processInfo.arguments
+        var fitPath: String?
+        var videoPaths: [String] = []
+
+        var i = 1
+        while i < args.count {
+            switch args[i] {
+            case "--fit":
+                if i + 1 < args.count { fitPath = args[i + 1]; i += 1 }
+            case "--video":
+                if i + 1 < args.count { videoPaths.append(args[i + 1]); i += 1 }
+            default: break
+            }
+            i += 1
+        }
+
+        if let fp = fitPath {
+            loadFITFile(url: URL(fileURLWithPath: fp))
+        }
+        for vp in videoPaths {
+            await loadVideo(url: URL(fileURLWithPath: vp))
+        }
+    }
+    #endif
 
     deinit {
         if let observer = timeObserver {

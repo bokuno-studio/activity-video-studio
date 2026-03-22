@@ -41,14 +41,13 @@ struct PreviewView: View {
                             .allowsHitTesting(false)
                     }
 
-                    // Minimap - right top
+                    // GPS Track - right top (no map tiles, copyright-free)
                     if viewModel.overlaySettings.showMiniMap && !viewModel.trackCoordinates.isEmpty {
-                        MiniMapView(
+                        GPSTrackView(
                             trackCoordinates: viewModel.trackCoordinates,
                             currentCoordinate: viewModel.currentCoordinate
                         )
                         .frame(width: 240, height: 180)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
                         .shadow(radius: 4)
                         .padding(.top, 12)
                         .padding(.trailing, 12)
