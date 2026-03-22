@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct PreviewView: View {
     @StateObject private var viewModel = PreviewViewModel()
     @State private var rightPanelTab: RightPanelTab = .settings
+    @FocusState private var isTextFieldFocused: Bool
 
     enum RightPanelTab: String, CaseIterable {
         case settings = "設定"
@@ -32,16 +33,11 @@ struct PreviewView: View {
             VStack(spacing: 0) {
                 // Video area
                 ZStack(alignment: .topTrailing) {
-                    ZStack(alignment: .bottom) {
-                        VideoPlayerView(player: viewModel.player)
-                            .aspectRatio(16/9, contentMode: .fit)
-                            .background(Color.black)
+                    VideoPlayerView(player: viewModel.player)
+                        .aspectRatio(16/9, contentMode: .fit)
+                        .background(Color.black)
 
-                        OverlayView(overlayImage: viewModel.overlayImage)
-                            .allowsHitTesting(false)
-                    }
-
-                    // GPS Track - right top (no map tiles, copyright-free)
+                    // GPS Track - right top
                     if viewModel.overlaySettings.showMiniMap && !viewModel.trackCoordinates.isEmpty {
                         GPSTrackView(
                             trackCoordinates: viewModel.trackCoordinates,
@@ -52,6 +48,10 @@ struct PreviewView: View {
                         .padding(.top, 12)
                         .padding(.trailing, 12)
                     }
+
+                    // Overlay (data + text) - drawn OVER map
+                    OverlayView(overlayImage: viewModel.overlayImage)
+                        .allowsHitTesting(false)
                 }
                 .frame(maxWidth: .infinity)
 
@@ -86,7 +86,8 @@ struct PreviewView: View {
                         case .textOverlay:
                             TextOverlayEditView(
                                 overlays: $viewModel.textOverlays,
-                                videoDuration: viewModel.duration
+                                videoDuration: viewModel.duration,
+                                isTextFocused: $isTextFieldFocused
                             )
                         case .trim:
                             TrimView(
@@ -142,28 +143,34 @@ struct PreviewView: View {
                 .disabled(!viewModel.videoLoaded || !viewModel.fitLoaded)
             }
         }
-        // Keyboard shortcuts
+        // Keyboard shortcuts (disabled when editing text)
         .onKeyPress(.leftArrow) {
+            guard !isTextFieldFocused else { return .ignored }
             viewModel.skipBackward()
             return .handled
         }
         .onKeyPress(.rightArrow) {
+            guard !isTextFieldFocused else { return .ignored }
             viewModel.skipForward()
             return .handled
         }
         .onKeyPress("j") {
+            guard !isTextFieldFocused else { return .ignored }
             viewModel.skipBackward(10)
             return .handled
         }
         .onKeyPress("l") {
+            guard !isTextFieldFocused else { return .ignored }
             viewModel.skipForward(10)
             return .handled
         }
         .onKeyPress("k") {
+            guard !isTextFieldFocused else { return .ignored }
             viewModel.togglePlayback()
             return .handled
         }
         .onKeyPress(",") {
+            guard !isTextFieldFocused else { return .ignored }
             viewModel.cyclePlaybackRate()
             return .handled
         }
@@ -173,21 +180,50 @@ struct PreviewView: View {
 
     private var controlsBar: some View {
         VStack(spacing: 8) {
-            // Seek bar
+            // Seek bar with trim indicators
             HStack {
                 Text(formatTime(viewModel.currentTime))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
 
-                Slider(value: $viewModel.currentTime, in: 0...max(viewModel.duration, 1)) { editing in
-                    if editing {
-                        viewModel.beginSeeking()
-                    } else {
-                        viewModel.seek(to: viewModel.currentTime)
+                ZStack {
+                    Slider(value: $viewModel.currentTime, in: 0...max(viewModel.duration, 1)) { editing in
+                        if editing {
+                            viewModel.beginSeeking()
+                        } else {
+                            viewModel.seek(to: viewModel.currentTime)
+                        }
                     }
+
+                    // Trim indicators on seek bar
+                    GeometryReader { geo in
+                        let totalDur = max(viewModel.duration, 1)
+                        let trimInfo = viewModel.trimRangesForSeekbar()
+
+                        ForEach(Array(trimInfo.enumerated()), id: \.offset) { _, range in
+                            // Start trim
+                            if range.startFrac > 0 {
+                                Rectangle()
+                                    .fill(Color.red.opacity(0.3))
+                                    .frame(width: geo.size.width * range.startFrac)
+                                    .allowsHitTesting(false)
+                            }
+                            // End trim
+                            if range.endFrac > 0 {
+                                Rectangle()
+                                    .fill(Color.red.opacity(0.3))
+                                    .frame(width: geo.size.width * range.endFrac)
+                                    .offset(x: geo.size.width * (1 - range.endFrac))
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                    }
+                    .allowsHitTesting(false)
                 }
 
-                Text(formatTime(viewModel.duration))
+                // Show trimmed duration instead of total
+                let trimmedDuration = viewModel.trimmedTotalDuration()
+                Text(formatTime(trimmedDuration))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }

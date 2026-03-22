@@ -4,6 +4,7 @@ import SwiftUI
 struct TextOverlayEditView: View {
     @Binding var overlays: [TextOverlay]
     let videoDuration: TimeInterval
+    var isTextFocused: FocusState<Bool>.Binding
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -50,9 +51,10 @@ struct TextOverlayEditView: View {
                     // Text input (multi-line)
                     TextEditor(text: $overlay.text)
                         .font(.body)
-                        .frame(minHeight: 60, maxHeight: 120)
+                        .frame(minHeight: 80, maxHeight: 150)
                         .border(Color.secondary.opacity(0.3))
                         .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .focused(isTextFocused)
 
                     // Timing
                     VStack(alignment: .leading, spacing: 6) {
@@ -67,6 +69,7 @@ struct TextOverlayEditView: View {
                                 TextField("0", value: $overlay.startTime, format: .number)
                                     .textFieldStyle(.roundedBorder)
                                     .frame(width: 80)
+                                    .focused(isTextFocused)
                             }
 
                             VStack(alignment: .leading, spacing: 2) {
@@ -76,6 +79,7 @@ struct TextOverlayEditView: View {
                                 TextField("5", value: $overlay.duration, format: .number)
                                     .textFieldStyle(.roundedBorder)
                                     .frame(width: 80)
+                                    .focused(isTextFocused)
                             }
                         }
                     }
@@ -99,9 +103,17 @@ struct TextOverlayEditView: View {
                             Text("サイズ: \(Int(overlay.fontSize))pt")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Slider(value: $overlay.fontSize, in: 24...120, step: 2)
+                            Slider(value: $overlay.fontSize, in: 24...300, step: 2)
                         }
                     }
+
+                    // Auto-fit button
+                    Button {
+                        autoFitFontSize(overlay: &overlay)
+                    } label: {
+                        Label("画面幅に合わせる", systemImage: "arrow.left.and.right")
+                    }
+                    .buttonStyle(.bordered)
                 }
                 .padding(12)
                 .background(.quaternary.opacity(0.5))
@@ -109,5 +121,26 @@ struct TextOverlayEditView: View {
             }
         }
         .padding()
+    }
+
+    /// Measure actual text width and compute font size to fill ~95% of screen width.
+    private func autoFitFontSize(overlay: inout TextOverlay) {
+        let lines = overlay.text.components(separatedBy: "\n")
+        let longest = lines.max(by: { $0.count < $1.count }) ?? overlay.text
+        guard !longest.isEmpty else { return }
+
+        let targetWidth: CGFloat = 3840 * 0.95  // 95% of 4K width
+
+        // Measure at a reference size, then scale
+        let refSize: CGFloat = 100
+        let font = CTFontCreateWithName("Helvetica-Bold" as CFString, refSize, nil)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        let attrStr = NSAttributedString(string: longest, attributes: attrs)
+        let line = CTLineCreateWithAttributedString(attrStr)
+        let bounds = CTLineGetBoundsWithOptions(line, [])
+
+        guard bounds.width > 0 else { return }
+        let fontSize = refSize * targetWidth / bounds.width
+        overlay.fontSize = min(max(fontSize / 2, 24), 300)  // /2 because scale=2 for 4K
     }
 }

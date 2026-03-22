@@ -361,7 +361,7 @@ final class PreviewViewModel: ObservableObject {
             // Check if FIT recording is active (elapsed > 0 means past FIT start)
             renderer.fitRecordingActive = elapsed >= 0 && (dataPoint.distance ?? 0) > 0
             renderer.textOverlays = textOverlays
-            overlayImage = renderer.render(dataPoint: dataPoint, elapsedTime: elapsed, globalPlaybackTime: currentTime)
+            overlayImage = renderer.render(dataPoint: dataPoint, elapsedTime: elapsed, globalPlaybackTime: trimmedPlaybackTime())
             currentCoordinate = dataPoint.coordinate
         }
     }
@@ -387,5 +387,55 @@ final class PreviewViewModel: ObservableObject {
             return String(format: "%d:%02d:%02d", h, m, s)
         }
         return String(format: "%02d:%02d", m, s)
+    }
+
+    // MARK: - Trim helpers
+
+    struct TrimRange {
+        let startFrac: CGFloat  // fraction of total duration trimmed from start
+        let endFrac: CGFloat    // fraction of total duration trimmed from end
+    }
+
+    /// Get trim ranges mapped to the combined timeline for seekbar display.
+    func trimRangesForSeekbar() -> [TrimRange] {
+        guard duration > 0 else { return [] }
+
+        var cumulativeStart: TimeInterval = 0
+        var ranges: [TrimRange] = []
+
+        // Combine all segments into one range for the full timeline
+        var totalStartTrim: TimeInterval = 0
+        var totalEndTrim: TimeInterval = 0
+
+        for (i, dur) in segmentDurations.enumerated() {
+            if i < trimSettings.count {
+                if i == 0 {
+                    totalStartTrim = trimSettings[i].startTrim
+                }
+                if i == segmentDurations.count - 1 {
+                    totalEndTrim = trimSettings[i].endTrim
+                }
+            }
+        }
+
+        return [TrimRange(
+            startFrac: CGFloat(totalStartTrim / duration),
+            endFrac: CGFloat(totalEndTrim / duration)
+        )]
+    }
+
+    /// Total duration after trimming.
+    func trimmedTotalDuration() -> TimeInterval {
+        zip(segmentDurations, trimSettings).reduce(0) { sum, pair in
+            sum + pair.1.trimmedDuration(original: pair.0)
+        }
+    }
+
+    /// Convert current playback time to trimmed time (time after trim start).
+    func trimmedPlaybackTime() -> TimeInterval {
+        // For the first segment, subtract the start trim
+        guard !trimSettings.isEmpty else { return currentTime }
+        let startTrim = trimSettings[0].startTrim
+        return max(0, currentTime - startTrim)
     }
 }
