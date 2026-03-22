@@ -120,12 +120,35 @@ final class FITParser {
         }
     }
 
-    func parse(url: URL) throws -> [FITDataPoint] {
-        let data = try Data(contentsOf: url)
-        return try parse(data: data)
+    /// Heart rate zone configuration from FIT zones_target message.
+    struct HRZoneConfig {
+        let maxHeartRate: UInt8
+        let thresholdHeartRate: UInt8
+
+        /// Compute zone boundaries as % of max HR (Garmin default).
+        var z1Max: UInt8 { UInt8(Double(maxHeartRate) * 0.60) }
+        var z2Max: UInt8 { UInt8(Double(maxHeartRate) * 0.70) }
+        var z3Max: UInt8 { UInt8(Double(maxHeartRate) * 0.80) }
+        var z4Max: UInt8 { UInt8(Double(maxHeartRate) * 0.90) }
     }
 
-    func parse(data: Data) throws -> [FITDataPoint] {
+    /// Result of parsing a FIT file.
+    struct ParseResult {
+        let dataPoints: [FITDataPoint]
+        let hrZoneConfig: HRZoneConfig?
+    }
+
+    func parse(url: URL) throws -> ParseResult {
+        let data = try Data(contentsOf: url)
+        return try parseAll(data: data)
+    }
+
+    /// Parse and return only data points (backward compatible).
+    func parseDataPoints(url: URL) throws -> [FITDataPoint] {
+        try parse(url: url).dataPoints
+    }
+
+    private func parseAll(data: Data) throws -> ParseResult {
         guard data.count >= 14 else { throw ParseError.invalidHeader }
 
         let headerSize = data[0]
@@ -149,6 +172,7 @@ final class FITParser {
         var definitions: [UInt8: MessageDefinition] = [:]
         var dataPoints: [FITDataPoint] = []
         var lastTimestamp: UInt32 = 0
+        var hrZoneConfig: HRZoneConfig?
 
         while offset < dataEnd {
             guard offset < data.count else { throw ParseError.unexpectedEndOfData }
@@ -205,13 +229,18 @@ final class FITParser {
                 }
 
                 let fieldDataStart = offset
-                if let point = parseDataMessage(
+
+                // zones_target message (global 7)
+                if definition.globalMessageNumber == 7 && hrZoneConfig == nil {
+                    if let config = parseZonesTarget(data: data, offset: &offset, definition: definition) {
+                        hrZoneConfig = config
+                    }
+                } else if let point = parseDataMessage(
                     data: data, offset: &offset,
                     definition: definition,
                     overrideTimestamp: nil
                 ) {
                     dataPoints.append(point)
-                    // Extract timestamp for compressed timestamp tracking
                     if let ts = extractTimestamp(
                         data: data, offset: fieldDataStart, definition: definition
                     ) {
@@ -221,7 +250,39 @@ final class FITParser {
             }
         }
 
-        return dataPoints
+        return ParseResult(dataPoints: dataPoints, hrZoneConfig: hrZoneConfig)
+    }
+
+    // MARK: - zones_target parsing
+
+    private func parseZonesTarget(data: Data, offset: inout Int, definition: MessageDefinition) -> HRZoneConfig? {
+        let fieldsSize = totalFieldSize(definition)
+        let totalSize = fieldsSize + definition.devFieldsSize
+        guard offset + totalSize <= data.count else { offset += totalSize; return nil }
+
+        var maxHR: UInt8?
+        var thresholdHR: UInt8?
+
+        for field in definition.fields {
+            let fieldStart = offset
+            offset += Int(field.size)
+
+            switch field.fieldNumber {
+            case 1: // max_heart_rate
+                if field.size == 1 && data[fieldStart] != 0xFF {
+                    maxHR = data[fieldStart]
+                }
+            case 2: // threshold_heart_rate
+                if field.size == 1 && data[fieldStart] != 0xFF {
+                    thresholdHR = data[fieldStart]
+                }
+            default: break
+            }
+        }
+        offset += definition.devFieldsSize
+
+        guard let mhr = maxHR else { return nil }
+        return HRZoneConfig(maxHeartRate: mhr, thresholdHeartRate: thresholdHR ?? mhr)
     }
 
     // MARK: - Private parsing helpers

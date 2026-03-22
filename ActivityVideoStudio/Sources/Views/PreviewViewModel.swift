@@ -87,9 +87,19 @@ final class PreviewViewModel: ObservableObject {
     func loadFITFile(url: URL) {
         do {
             let parser = FITParser()
-            fitDataPoints = try parser.parse(url: url)
+            let result = try parser.parse(url: url)
+            fitDataPoints = result.dataPoints
             fitLoaded = !fitDataPoints.isEmpty
             fitURL = url
+
+            // Apply HR zones from FIT
+            if let zoneConfig = result.hrZoneConfig {
+                overlaySettings.z1Max = zoneConfig.z1Max
+                overlaySettings.z2Max = zoneConfig.z2Max
+                overlaySettings.z3Max = zoneConfig.z3Max
+                overlaySettings.z4Max = zoneConfig.z4Max
+                statusMessage = "FIT: \(fitDataPoints.count) データポイント, HR Zone: max \(zoneConfig.maxHeartRate)bpm"
+            }
 
             trackCoordinates = fitDataPoints.compactMap { $0.coordinate }
 

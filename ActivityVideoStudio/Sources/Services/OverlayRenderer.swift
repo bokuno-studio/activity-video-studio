@@ -73,31 +73,43 @@ final class OverlayRenderer {
         }
 
         // === LEFT SIDE (top→bottom): HR → PACE → CADENCE → CORE ===
+        var leftY = videoSize.height - 50 * scale
 
-        // HR gauge - left upper
+        // HR + Zone
         if settings.showHeartRate {
-            let gaugeCenter = CGPoint(x: 220 * scale, y: videoSize.height * 0.62)
-            let gaugeRadius = 160 * scale
-            drawHeartRateGauge(ctx: ctx, hr: dataPoint.heartRate, center: gaugeCenter, radius: gaugeRadius)
+            let hrValue: String
+            let hrColor: CGColor
+            if let hr = dataPoint.heartRate {
+                let zone = heartRateZone(hr)
+                hrValue = "\(hr) bpm  Z\(zone)"
+                hrColor = hrZoneColorByZone(zone)
+            } else {
+                hrValue = "-- bpm"
+                hrColor = white
+            }
+            drawLabelValue(ctx: ctx, label: "HEART RATE", value: hrValue, x: 50 * scale, y: leftY, labelColor: accentColor, valueColor: hrColor)
+            leftY -= 130 * scale
         }
 
-        // PACE - left, below HR
+        // PACE
         if settings.showPace {
             let value = dataPoint.paceFormatted ?? "--'--\""
-            drawLabelValue(ctx: ctx, label: "PACE", value: value, x: 50 * scale, y: videoSize.height * 0.30, labelColor: accentColor)
+            drawLabelValue(ctx: ctx, label: "PACE", value: value, x: 50 * scale, y: leftY, labelColor: accentColor)
+            leftY -= 130 * scale
         }
 
-        // CADENCE - left, below PACE
+        // CADENCE
         if settings.showCadence {
             let value = dataPoint.runningCadence.map { "\($0) spm" } ?? "-- spm"
-            drawLabelValue(ctx: ctx, label: "CADENCE", value: value, x: 50 * scale, y: videoSize.height * 0.17, labelColor: accentColor)
+            drawLabelValue(ctx: ctx, label: "CADENCE", value: value, x: 50 * scale, y: leftY, labelColor: accentColor)
+            leftY -= 130 * scale
         }
 
-        // CORE - left bottom
+        // CORE TEMP
         if settings.showCoreTemp, let ct = dataPoint.coreTemperature {
             let value = String(format: "%.1f°C", ct)
             let c = coreTempColor(ct)
-            drawLabelValue(ctx: ctx, label: "CORE TEMP", value: value, x: 50 * scale, y: 70 * scale, labelColor: accentColor, valueColor: c)
+            drawLabelValue(ctx: ctx, label: "CORE TEMP", value: value, x: 50 * scale, y: leftY, labelColor: accentColor, valueColor: c)
         }
 
         // === RIGHT SIDE (top→bottom): GPS Track(SwiftUI) → Distance → TIME → ELEV GAIN → ALTITUDE → 標高グラフ ===
@@ -149,87 +161,23 @@ final class OverlayRenderer {
         return ctx.makeImage()
     }
 
-    // MARK: - HR Gauge
+    // MARK: - HR Zone
 
-    private func drawHeartRateGauge(ctx: CGContext, hr: UInt8?, center: CGPoint, radius: CGFloat) {
-        let startAngle = CGFloat.pi * 0.75  // bottom-left
-        let endAngle = CGFloat.pi * 0.25    // bottom-right (going clockwise through top)
-        let totalArc = CGFloat.pi * 1.5
-
-        // Background arc
-        ctx.saveGState()
-        ctx.setShadow(offset: .zero, blur: 0)
-        ctx.setStrokeColor(CGColor(red: 0.3, green: 0.3, blue: 0.3, alpha: 0.5))
-        ctx.setLineWidth(18 * scale)
-        ctx.setLineCap(.round)
-        ctx.addArc(center: center, radius: radius, startAngle: startAngle, endAngle: endAngle, clockwise: true)
-        ctx.strokePath()
-        ctx.restoreGState()
-
-        // HR value arc
-        if let hr = hr {
-            let hrFraction = CGFloat(min(max(Int(hr) - 60, 0), 140)) / 140.0 // 60-200 range
-            let hrAngle = startAngle - totalArc * hrFraction
-
-            // Draw colored arc segments
-            let segments = 50
-            for i in 0..<segments {
-                let segFraction = CGFloat(i) / CGFloat(segments)
-                if segFraction > hrFraction { break }
-
-                let segStart = startAngle - totalArc * segFraction
-                let segEnd = startAngle - totalArc * min(segFraction + 1.0 / CGFloat(segments), hrFraction)
-
-                let color = hrZoneColor(fraction: segFraction)
-
-                ctx.saveGState()
-                ctx.setShadow(offset: .zero, blur: 0)
-                ctx.setStrokeColor(color)
-                ctx.setLineWidth(18 * scale)
-                ctx.setLineCap(.butt)
-                ctx.addArc(center: center, radius: radius, startAngle: segStart, endAngle: segEnd, clockwise: true)
-                ctx.strokePath()
-                ctx.restoreGState()
-            }
-
-            // HR number
-            let hrStr = "\(hr)"
-            let hrFont = CTFontCreateWithName("Helvetica-Bold" as CFString, 120 * scale, nil)
-            let hrAttrs: [NSAttributedString.Key: Any] = [
-                .font: hrFont,
-                .foregroundColor: NSColor.white
-            ]
-            let hrAttrStr = NSAttributedString(string: hrStr, attributes: hrAttrs)
-            let hrLine = CTLineCreateWithAttributedString(hrAttrStr)
-            let hrBounds = CTLineGetBoundsWithOptions(hrLine, [])
-            let hrX = center.x - hrBounds.width / 2
-            let hrY = center.y - 10 * scale
-
-            ctx.saveGState()
-            ctx.textPosition = CGPoint(x: hrX, y: hrY)
-            CTLineDraw(hrLine, ctx)
-            ctx.restoreGState()
-
-            // "BPM" label below number
-            drawText(ctx: ctx, text: "BPM", x: center.x - 40 * scale, y: center.y - radius + 20 * scale, fontSize: 32 * scale, color: accentColor, bold: true)
-
-            // "HR" label above
-            drawText(ctx: ctx, text: "HR", x: center.x - 20 * scale, y: center.y + radius - 5 * scale, fontSize: 28 * scale, color: accentColor, bold: true)
-        }
+    private func heartRateZone(_ hr: UInt8) -> Int {
+        if hr <= settings.z1Max { return 1 }
+        else if hr <= settings.z2Max { return 2 }
+        else if hr <= settings.z3Max { return 3 }
+        else if hr <= settings.z4Max { return 4 }
+        else { return 5 }
     }
 
-    /// Color for HR gauge arc by fraction (0=low, 1=high).
-    private func hrZoneColor(fraction: CGFloat) -> CGColor {
-        if fraction < 0.3 {
-            return CGColor(red: 0.2, green: 0.8, blue: 0.2, alpha: 1)   // Green (Z1-Z2)
-        } else if fraction < 0.5 {
-            return CGColor(red: 0.4, green: 0.9, blue: 0.1, alpha: 1)   // Light green
-        } else if fraction < 0.65 {
-            return CGColor(red: 1.0, green: 0.8, blue: 0.0, alpha: 1)   // Yellow (Z3)
-        } else if fraction < 0.8 {
-            return CGColor(red: 1.0, green: 0.45, blue: 0.1, alpha: 1)  // Orange (Z4)
-        } else {
-            return CGColor(red: 1.0, green: 0.15, blue: 0.15, alpha: 1) // Red (Z5)
+    private func hrZoneColorByZone(_ zone: Int) -> CGColor {
+        switch zone {
+        case 1: return CGColor(red: 0.6, green: 0.6, blue: 0.6, alpha: 1)   // Gray
+        case 2: return CGColor(red: 0.2, green: 0.8, blue: 0.2, alpha: 1)   // Green
+        case 3: return CGColor(red: 1.0, green: 0.8, blue: 0.0, alpha: 1)   // Yellow
+        case 4: return CGColor(red: 1.0, green: 0.45, blue: 0.1, alpha: 1)  // Orange
+        default: return CGColor(red: 1.0, green: 0.15, blue: 0.15, alpha: 1) // Red
         }
     }
 

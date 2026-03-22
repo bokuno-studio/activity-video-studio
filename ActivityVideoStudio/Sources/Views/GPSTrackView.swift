@@ -69,8 +69,8 @@ struct GPSTrackView: View {
                     path.addLine(to: toPixel(coord))
                 }
                 // Track outline for visibility
-                context.stroke(path, with: .color(.black.opacity(0.4)), lineWidth: 5)
-                context.stroke(path, with: .color(.blue), lineWidth: 3)
+                context.stroke(path, with: .color(.black.opacity(0.5)), lineWidth: 5)
+                context.stroke(path, with: .color(.cyan), lineWidth: 3)
 
                 // Current position
                 if let current = currentCoordinate {
@@ -87,7 +87,7 @@ struct GPSTrackView: View {
         .background(Color(white: 0.15))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(alignment: .bottomTrailing) {
-            Text("© OpenTopoMap")
+            Text("© Esri")
                 .font(.system(size: 7))
                 .foregroundStyle(.secondary)
                 .padding(3)
@@ -149,8 +149,7 @@ class TileLoader: ObservableObject {
         guard tiles[key] == nil, !loading.contains(key) else { return }
         loading.insert(key)
 
-        let subdomain = ["a", "b", "c"][(x + y) % 3]
-        let urlStr = "https://\(subdomain).tile.opentopomap.org/\(z)/\(x)/\(y).png"
+        let urlStr = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/\(z)/\(y)/\(x)"
         guard let url = URL(string: urlStr) else { return }
 
         let request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 10)
