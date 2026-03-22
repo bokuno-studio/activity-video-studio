@@ -102,7 +102,7 @@ struct PreviewView: View {
                         }
                     }
                 }
-                .frame(width: 300)
+                .frame(width: 340)
             }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in

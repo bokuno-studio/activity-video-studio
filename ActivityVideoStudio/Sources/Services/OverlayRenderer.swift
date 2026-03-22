@@ -293,22 +293,43 @@ final class OverlayRenderer {
         let fontSize = overlay.fontSize * scale
         let font = CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
         let textColor = NSColor(cgColor: overlay.color)?.withAlphaComponent(opacity) ?? NSColor.white.withAlphaComponent(opacity)
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: textColor]
-        let attrStr = NSAttributedString(string: overlay.text, attributes: attrs)
-        let line = CTLineCreateWithAttributedString(attrStr)
-        let bounds = CTLineGetBoundsWithOptions(line, [])
+        let padding = 30 * scale
+        let lineSpacing = fontSize * 1.2
 
-        let x = (videoSize.width - bounds.width) / 2
-        let y: CGFloat
-        let padding = 20 * scale
+        // Split text into lines
+        let lines = overlay.text.components(separatedBy: "\n")
+        var lineData: [(CTLine, CGRect)] = []
+        var maxWidth: CGFloat = 0
 
-        switch overlay.position {
-        case .topCenter: y = videoSize.height - padding - fontSize
-        case .center: y = (videoSize.height - fontSize) / 2
-        case .bottomCenter: y = padding + fontSize + 80 * scale
+        for lineText in lines {
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: textColor]
+            let attrStr = NSAttributedString(string: lineText, attributes: attrs)
+            let ctLine = CTLineCreateWithAttributedString(attrStr)
+            let bounds = CTLineGetBoundsWithOptions(ctLine, [])
+            lineData.append((ctLine, bounds))
+            maxWidth = max(maxWidth, bounds.width)
         }
 
-        let bgRect = CGRect(x: x - padding, y: y - padding / 2, width: bounds.width + padding * 2, height: fontSize + padding)
+        let totalHeight = lineSpacing * CGFloat(lines.count)
+
+        // Vertical position
+        let baseY: CGFloat
+        switch overlay.position {
+        case .topCenter:
+            baseY = videoSize.height - padding - totalHeight
+        case .center:
+            baseY = (videoSize.height + totalHeight) / 2 - lineSpacing
+        case .bottomCenter:
+            baseY = padding + 80 * scale + totalHeight - lineSpacing
+        }
+
+        // Background
+        let bgRect = CGRect(
+            x: (videoSize.width - maxWidth) / 2 - padding,
+            y: baseY - totalHeight + lineSpacing - padding / 2,
+            width: maxWidth + padding * 2,
+            height: totalHeight + padding
+        )
         ctx.saveGState()
         ctx.setAlpha(opacity)
         ctx.setFillColor(overlay.backgroundColor)
@@ -316,10 +337,15 @@ final class OverlayRenderer {
         ctx.fill(bgRect)
         ctx.restoreGState()
 
-        ctx.saveGState()
-        ctx.textPosition = CGPoint(x: x, y: y)
-        CTLineDraw(line, ctx)
-        ctx.restoreGState()
+        // Draw each line centered
+        for (i, (ctLine, bounds)) in lineData.enumerated() {
+            let x = (videoSize.width - bounds.width) / 2
+            let y = baseY - lineSpacing * CGFloat(i)
+            ctx.saveGState()
+            ctx.textPosition = CGPoint(x: x, y: y)
+            CTLineDraw(ctLine, ctx)
+            ctx.restoreGState()
+        }
     }
 
     // MARK: - Waiting indicator
