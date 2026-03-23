@@ -12,7 +12,9 @@ struct PreviewView: View {
     enum RightPanelTab: String, CaseIterable {
         case trim = "トリム"
         case textOverlay = "テキスト"
+        case chapters = "チャプター"
         case youtube = "YouTube"
+        case preview = "確認"
     }
 
     var body: some View {
@@ -113,10 +115,22 @@ struct PreviewView: View {
                                 videoDuration: viewModel.duration,
                                 isTextFocused: $isTextFieldFocused
                             )
+                        case .chapters:
+                            ChapterMarkerView(
+                                markers: $viewModel.chapterMarkers,
+                                onSeek: { viewModel.seekToMarker($0) },
+                                onAdd: { viewModel.addChapterMarker() },
+                                isTextFocused: $isTextFieldFocused
+                            )
                         case .youtube:
                             YouTubeDescriptionView(
                                 dataPoints: viewModel.fitDataPoints,
                                 videoStartDate: viewModel.videoMetadatas.first?.creationDate
+                            )
+                        case .preview:
+                            ExportPreviewView(
+                                previewImage: viewModel.exportPreviewImage,
+                                onGenerate: { viewModel.generateExportPreview() }
                             )
                         }
                     }
@@ -192,6 +206,11 @@ struct PreviewView: View {
             viewModel.cyclePlaybackRate()
             return .handled
         }
+        .onKeyPress("m") {
+            guard !isTextFieldFocused else { return .ignored }
+            viewModel.addChapterMarker()
+            return .handled
+        }
     }
 
     // MARK: - Controls bar (compact)
@@ -231,6 +250,21 @@ struct PreviewView: View {
                                     .offset(x: geo.size.width * (1 - range.endFrac))
                                     .allowsHitTesting(false)
                             }
+                        }
+                    }
+                    .allowsHitTesting(false)
+
+                    // Chapter markers on seekbar
+                    GeometryReader { geo in
+                        let totalDur = max(viewModel.duration, 1)
+                        let startTrim = viewModel.trimSettings.first?.startTrim ?? 0
+                        ForEach(viewModel.chapterMarkers) { marker in
+                            let globalTime = marker.time + startTrim
+                            let frac = globalTime / totalDur
+                            Rectangle()
+                                .fill(Color.orange)
+                                .frame(width: 2, height: geo.size.height)
+                                .offset(x: geo.size.width * CGFloat(frac))
                         }
                     }
                     .allowsHitTesting(false)

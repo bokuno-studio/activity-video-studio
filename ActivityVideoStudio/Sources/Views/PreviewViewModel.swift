@@ -25,6 +25,8 @@ final class PreviewViewModel: ObservableObject {
     @Published var textOverlays: [TextOverlay] = []
     @Published var trimSettings: [TrimSettings] = []
     @Published var playbackRate: Float = 1.0
+    @Published var chapterMarkers: [ChapterMarker] = []
+    @Published var exportPreviewImage: CGImage?
 
     let player = AVPlayer()
     let overlaySettings = OverlaySettings()
@@ -296,6 +298,65 @@ final class PreviewViewModel: ObservableObject {
             timeSync.updateOffset(segmentIndex: 0, offsetSeconds: offset)
         }
         updateOverlay()
+    }
+
+    // MARK: - Chapter markers
+
+    func addChapterMarker() {
+        let trimmedTime = trimmedPlaybackTime()
+        let marker = ChapterMarker(time: trimmedTime)
+        chapterMarkers.append(marker)
+        chapterMarkers.sort { $0.time < $1.time }
+        statusMessage = "チャプターマーカー追加: \(formatDuration(trimmedTime))"
+    }
+
+    func removeChapterMarker(id: UUID) {
+        chapterMarkers.removeAll { $0.id == id }
+    }
+
+    func seekToMarker(_ marker: ChapterMarker) {
+        // Convert trimmed time back to global time
+        let globalTime = marker.time + (trimSettings.first?.startTrim ?? 0)
+        seek(to: globalTime)
+    }
+
+    /// Generate chapter list text for YouTube description.
+    func generateChapterList() -> String {
+        var lines: [String] = []
+        // Always start with 0:00
+        if chapterMarkers.isEmpty || chapterMarkers.first?.time ?? 1 > 0 {
+            lines.append("0:00 スタート")
+        }
+        for marker in chapterMarkers {
+            let timeStr = formatChapterTime(marker.time)
+            let label = marker.label.isEmpty ? "チャプター" : marker.label
+            lines.append("\(timeStr) \(label)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func formatChapterTime(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%d:%02d", m, s)
+    }
+
+    // MARK: - Export preview
+
+    func generateExportPreview() {
+        guard let renderer = overlayRenderer,
+              let timeSync = timeSync,
+              !timeSync.segments.isEmpty else { return }
+
+        let (segmentIndex, segmentPlaybackTime) = resolveSegment(globalTime: currentTime)
+
+        if let dataPoint = timeSync.dataPoint(segmentIndex: segmentIndex, playbackTime: segmentPlaybackTime),
+           let elapsed = timeSync.elapsedTime(segmentIndex: segmentIndex, playbackTime: segmentPlaybackTime) {
+            exportPreviewImage = renderer.render(dataPoint: dataPoint, elapsedTime: elapsed, globalPlaybackTime: trimmedPlaybackTime())
+        }
     }
 
     // MARK: - Export

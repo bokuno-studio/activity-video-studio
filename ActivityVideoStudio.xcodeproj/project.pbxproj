@@ -33,6 +33,9 @@
 		A10000010000000000000018 /* FileListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000018 /* FileListView.swift */; };
 		A10000010000000000000019 /* YouTubeDescriptionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000019 /* YouTubeDescriptionView.swift */; };
 		A1000001000000000000001A /* GPSTrackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001A /* GPSTrackView.swift */; };
+		A1000001000000000000001B /* ChapterMarker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001B /* ChapterMarker.swift */; };
+		A1000001000000000000001C /* ChapterMarkerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001C /* ChapterMarkerView.swift */; };
+		A1000001000000000000001D /* ExportPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001D /* ExportPreviewView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -62,6 +65,9 @@
 		A20000010000000000000018 /* FileListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileListView.swift; sourceTree = "<group>"; };
 		A20000010000000000000019 /* YouTubeDescriptionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeDescriptionView.swift; sourceTree = "<group>"; };
 		A2000001000000000000001A /* GPSTrackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPSTrackView.swift; sourceTree = "<group>"; };
+		A2000001000000000000001B /* ChapterMarker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterMarker.swift; sourceTree = "<group>"; };
+		A2000001000000000000001C /* ChapterMarkerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterMarkerView.swift; sourceTree = "<group>"; };
+		A2000001000000000000001D /* ExportPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportPreviewView.swift; sourceTree = "<group>"; };
 		A30000010000000000000001 /* ActivityVideoStudio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ActivityVideoStudio.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -111,6 +117,8 @@
 				A20000010000000000000018 /* FileListView.swift */,
 				A20000010000000000000019 /* YouTubeDescriptionView.swift */,
 				A2000001000000000000001A /* GPSTrackView.swift */,
+				A2000001000000000000001C /* ChapterMarkerView.swift */,
+				A2000001000000000000001D /* ExportPreviewView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -123,6 +131,7 @@
 				A2000001000000000000000D /* OverlaySettings.swift */,
 				A20000010000000000000013 /* TextOverlay.swift */,
 				A20000010000000000000014 /* TrimSettings.swift */,
+				A2000001000000000000001B /* ChapterMarker.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -234,6 +243,9 @@
 				A10000010000000000000018 /* FileListView.swift in Sources */,
 				A10000010000000000000019 /* YouTubeDescriptionView.swift in Sources */,
 				A1000001000000000000001A /* GPSTrackView.swift in Sources */,
+				A1000001000000000000001B /* ChapterMarker.swift in Sources */,
+				A1000001000000000000001C /* ChapterMarkerView.swift in Sources */,
+				A1000001000000000000001D /* ExportPreviewView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
