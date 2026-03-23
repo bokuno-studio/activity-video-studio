@@ -47,11 +47,12 @@ struct ChapterMarkerView: View {
                     .buttonStyle(.borderless)
                     .help("この位置にシーク")
 
-                    // Label
+                    // Label (Enter/Esc to unfocus)
                     TextField("ラベルを入力", text: $marker.label)
                         .textFieldStyle(.roundedBorder)
                         .font(.subheadline)
                         .focused(isTextFocused)
+                        .onSubmit { isTextFocused.wrappedValue = false }
 
                     // Delete
                     Button(role: .destructive) {

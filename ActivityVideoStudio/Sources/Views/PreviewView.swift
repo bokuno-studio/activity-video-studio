@@ -47,24 +47,20 @@ struct PreviewView: View {
                 VideoPlayerView(player: viewModel.player)
                     .aspectRatio(16/9, contentMode: .fit)
                     .background(Color.black)
-                    .overlay {
-                        // GPS Track - relative to video, proportional size
-                        GeometryReader { geo in
-                            if viewModel.overlaySettings.showMiniMap && !viewModel.trackCoordinates.isEmpty {
+                    .overlay(alignment: .topTrailing) {
+                        // GPS Track - right top, flush with video edge
+                        if viewModel.overlaySettings.showMiniMap && !viewModel.trackCoordinates.isEmpty {
+                            GeometryReader { geo in
                                 GPSTrackView(
                                     trackCoordinates: viewModel.trackCoordinates,
                                     currentCoordinate: viewModel.currentCoordinate
                                 )
                                 .frame(
-                                    width: geo.size.width * 0.22,
-                                    height: geo.size.width * 0.16
-                                )
-                                .shadow(radius: 3)
-                                .position(
-                                    x: geo.size.width - geo.size.width * 0.09 - 6,
-                                    y: geo.size.width * 0.065 + 6
+                                    width: geo.size.width * 0.23,
+                                    height: geo.size.width * 0.17
                                 )
                             }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                         }
                     }
                     .overlay {
@@ -77,7 +73,7 @@ struct PreviewView: View {
                 // Compact controls
                 controlsBar
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 2)
 
                 // Status bar
                 if let status = viewModel.statusMessage {
@@ -216,9 +212,9 @@ struct PreviewView: View {
     // MARK: - Controls bar (compact)
 
     private var controlsBar: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 2) {
             // Seek bar with trim indicators
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 Text(formatTime(viewModel.currentTime))
                     .font(.system(size: 10).monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -276,7 +272,7 @@ struct PreviewView: View {
                     .frame(width: 50, alignment: .leading)
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Button(action: viewModel.togglePlayback) {
                     Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 14))
