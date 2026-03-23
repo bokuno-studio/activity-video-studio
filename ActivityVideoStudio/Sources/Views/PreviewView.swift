@@ -41,41 +41,40 @@ struct PreviewView: View {
                 .frame(minWidth: 200, maxWidth: 260)
             }
 
-            // Main content - video fills everything, controls overlay bottom
-            ZStack(alignment: .bottom) {
-                // Video fills entire area
-                ZStack(alignment: .topTrailing) {
-                    VideoPlayerView(player: viewModel.player)
-
-                    // Data + text overlay
-                    OverlayView(overlayImage: viewModel.overlayImage)
-                        .allowsHitTesting(false)
-
-                    // GPS Track - right top corner
-                    if viewModel.overlaySettings.showMiniMap && !viewModel.trackCoordinates.isEmpty {
-                        GPSTrackView(
-                            trackCoordinates: viewModel.trackCoordinates,
-                            currentCoordinate: viewModel.currentCoordinate
-                        )
-                        .aspectRatio(4/3, contentMode: .fit)
-                        .frame(maxWidth: 200)
+            // Main content
+            VStack(spacing: 0) {
+                // Video with overlays
+                VideoPlayerView(player: viewModel.player)
+                    .aspectRatio(16/9, contentMode: .fit)
+                    .overlay {
+                        OverlayView(overlayImage: viewModel.overlayImage)
+                            .allowsHitTesting(false)
                     }
-                }
-                .background(Color.black)
-
-                // Controls overlay at bottom
-                VStack(spacing: 1) {
-                    controlsBar
-
-                    if let status = viewModel.statusMessage {
-                        Text(status)
-                            .font(.system(size: 9))
-                            .foregroundStyle(.white.opacity(0.6))
+                    .overlay(alignment: .topTrailing) {
+                        if viewModel.overlaySettings.showMiniMap && !viewModel.trackCoordinates.isEmpty {
+                            GPSTrackView(
+                                trackCoordinates: viewModel.trackCoordinates,
+                                currentCoordinate: viewModel.currentCoordinate
+                            )
+                            .aspectRatio(4/3, contentMode: .fit)
+                            .frame(maxWidth: 180)
+                        }
                     }
+                    .background(Color.black)
+                    .layoutPriority(1)
+
+                // Thin controls bar
+                controlsBar
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let status = viewModel.statusMessage {
+                    Text(status)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .padding(.bottom, 1)
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(.black.opacity(0.5))
             }
 
             // Right panel

@@ -93,6 +93,10 @@ struct ChapterMarkerView: View {
             }
         }
         .padding()
+        .contentShape(Rectangle())
+        .onTapGesture {
+            isTextFocused.wrappedValue = false
+        }
     }
 
     private func generateChapterText() -> String {
