@@ -284,12 +284,18 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func cyclePlaybackRate() {
-        let rates: [Float] = [0.5, 1.0, 1.5, 2.0]
+        let rates: [Float] = [0.5, 1.0, 2.0, 4.0, 8.0, 10.0]
         if let idx = rates.firstIndex(of: playbackRate) {
             setPlaybackRate(rates[(idx + 1) % rates.count])
         } else {
             setPlaybackRate(1.0)
         }
+    }
+
+    /// Seek to the start of trimmed content.
+    func seekToTrimStart() {
+        let startTrim = trimSettings.first?.startTrim ?? 0
+        seek(to: startTrim)
     }
 
     func updateSyncOffset(_ offset: Double) {

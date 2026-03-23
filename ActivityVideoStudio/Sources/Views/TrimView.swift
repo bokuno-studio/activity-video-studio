@@ -1,11 +1,15 @@
 import SwiftUI
 
-/// Trim settings with visual timeline bar for each video segment.
+/// Simplified trim: cut from start of first video and end of last video only.
 struct TrimView: View {
     @Binding var trimSettings: [TrimSettings]
     let videoNames: [String]
     let videoDurations: [TimeInterval]
-    var onSeek: ((TimeInterval) -> Void)?  // Seek video when trim handle changes
+    var onSeek: ((TimeInterval) -> Void)?
+
+    private var totalDuration: TimeInterval {
+        videoDurations.reduce(0, +)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -13,74 +17,95 @@ struct TrimView: View {
                 Text("トリミング")
                     .font(.headline)
                 Spacer()
-                // Total trimmed duration
-                let totalTrimmed = zip(trimSettings, videoDurations).reduce(0.0) { sum, pair in
-                    sum + pair.0.trimmedDuration(original: pair.1)
-                }
-                Text("合計: \(formatTime(totalTrimmed))")
+                let trimmedDur = trimmedTotalDuration()
+                Text("出力: \(formatTime(trimmedDur)) / \(formatTime(totalDuration))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            ForEach(Array(zip(trimSettings.indices, videoNames)), id: \.0) { index, name in
-                if index < trimSettings.count && index < videoDurations.count {
-                    let dur = videoDurations[index]
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text(name)
-                                .font(.subheadline.bold())
-                            Spacer()
-                            let trimmed = trimSettings[index].trimmedDuration(original: dur)
-                            Text("\(formatTime(trimmed)) / \(formatTime(dur))")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
+            if !trimSettings.isEmpty && !videoDurations.isEmpty {
+                // Start trim (first video)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("先頭カット")
+                        .font(.subheadline.bold())
 
-                        // Visual trim bar
+                    TrimBarView(
+                        startTrim: $trimSettings[0].startTrim,
+                        endTrim: .constant(0),
+                        duration: videoDurations[0],
+                        segmentOffset: 0,
+                        onSeek: onSeek
+                    )
+                    .frame(height: 36)
+
+                    HStack {
+                        Text(formatTime(trimSettings[0].startTrim))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("リセット") { trimSettings[0].startTrim = 0 }
+                            .font(.caption)
+                    }
+                }
+                .padding(10)
+                .background(.quaternary.opacity(0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                // End trim (last video)
+                if trimSettings.count > 1 {
+                    let lastIdx = trimSettings.count - 1
+                    let lastOffset = videoDurations[0..<lastIdx].reduce(0, +)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("末尾カット")
+                            .font(.subheadline.bold())
+
                         TrimBarView(
-                            startTrim: $trimSettings[index].startTrim,
-                            endTrim: $trimSettings[index].endTrim,
-                            duration: dur,
-                            segmentOffset: videoDurations[0..<index].reduce(0, +),
+                            startTrim: .constant(0),
+                            endTrim: $trimSettings[lastIdx].endTrim,
+                            duration: videoDurations[lastIdx],
+                            segmentOffset: lastOffset,
                             onSeek: onSeek
                         )
-                        .frame(height: 40)
+                        .frame(height: 36)
 
-                        // Numeric inputs
-                        HStack(spacing: 20) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("先頭カット")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                HStack(spacing: 4) {
-                                    TextField("0", value: $trimSettings[index].startTrim, format: .number)
-                                        .textFieldStyle(.roundedBorder)
-                                        .frame(width: 60)
-                                    Text("秒")
-                                        .font(.caption)
-                                }
-                            }
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("末尾カット")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                HStack(spacing: 4) {
-                                    TextField("0", value: $trimSettings[index].endTrim, format: .number)
-                                        .textFieldStyle(.roundedBorder)
-                                        .frame(width: 60)
-                                    Text("秒")
-                                        .font(.caption)
-                                }
-                            }
+                        HStack {
+                            Text(formatTime(trimSettings[lastIdx].endTrim))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
                             Spacer()
-                            Button("リセット") {
-                                trimSettings[index].startTrim = 0
-                                trimSettings[index].endTrim = 0
-                            }
-                            .font(.caption)
+                            Button("リセット") { trimSettings[lastIdx].endTrim = 0 }
+                                .font(.caption)
                         }
                     }
-                    .padding(12)
+                    .padding(10)
+                    .background(.quaternary.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    // Single video: end trim on same video
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("末尾カット")
+                            .font(.subheadline.bold())
+
+                        TrimBarView(
+                            startTrim: .constant(0),
+                            endTrim: $trimSettings[0].endTrim,
+                            duration: videoDurations[0],
+                            segmentOffset: 0,
+                            onSeek: onSeek
+                        )
+                        .frame(height: 36)
+
+                        HStack {
+                            Text(formatTime(trimSettings[0].endTrim))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("リセット") { trimSettings[0].endTrim = 0 }
+                                .font(.caption)
+                        }
+                    }
+                    .padding(10)
                     .background(.quaternary.opacity(0.5))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
@@ -89,11 +114,16 @@ struct TrimView: View {
         .padding()
     }
 
+    private func trimmedTotalDuration() -> TimeInterval {
+        guard !trimSettings.isEmpty else { return totalDuration }
+        let startTrim = trimSettings.first?.startTrim ?? 0
+        let endTrim = trimSettings.last?.endTrim ?? 0
+        return max(0, totalDuration - startTrim - endTrim)
+    }
+
     private func formatTime(_ seconds: TimeInterval) -> String {
         let total = max(0, Int(seconds))
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
+        let h = total / 3600; let m = (total % 3600) / 60; let s = total % 60
         if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
         return String(format: "%d:%02d", m, s)
     }
@@ -116,23 +146,16 @@ struct TrimBarView: View {
             let activeEnd = w - endFrac * w
 
             ZStack(alignment: .leading) {
-                // Full bar background
                 RoundedRectangle(cornerRadius: 4)
                     .fill(Color.secondary.opacity(0.15))
 
-                // Trimmed-out regions (dark)
-                HStack(spacing: 0) {
-                    // Start trim region
-                    Rectangle()
-                        .fill(Color.red.opacity(0.25))
-                        .frame(width: activeStart)
-
-                    Spacer()
-
-                    // End trim region
-                    Rectangle()
-                        .fill(Color.red.opacity(0.25))
-                        .frame(width: endFrac * w)
+                // Trimmed regions
+                if startFrac > 0 {
+                    Rectangle().fill(Color.red.opacity(0.25)).frame(width: activeStart)
+                }
+                if endFrac > 0 {
+                    Rectangle().fill(Color.red.opacity(0.25)).frame(width: endFrac * w)
+                        .offset(x: activeEnd)
                 }
 
                 // Active region border
@@ -142,47 +165,28 @@ struct TrimBarView: View {
                     .offset(x: activeStart)
 
                 // Start handle
-                TrimHandle(color: .orange)
-                    .offset(x: activeStart - 6)
-                    .gesture(DragGesture()
-                        .onChanged { value in
+                if startTrim >= 0 {
+                    TrimHandle(color: .orange)
+                        .offset(x: activeStart - 6)
+                        .gesture(DragGesture().onChanged { value in
                             let frac = max(0, min(value.location.x / w, 1 - endFrac - 0.02))
                             startTrim = Double(frac) * duration
                             onSeek?(segmentOffset + startTrim)
-                        }
-                    )
+                        })
+                }
 
                 // End handle
-                TrimHandle(color: .orange)
-                    .offset(x: activeEnd - 6)
-                    .gesture(DragGesture()
-                        .onChanged { value in
+                if endTrim >= 0 {
+                    TrimHandle(color: .orange)
+                        .offset(x: activeEnd - 6)
+                        .gesture(DragGesture().onChanged { value in
                             let frac = max(0, min((w - value.location.x) / w, 1 - startFrac - 0.02))
                             endTrim = Double(frac) * duration
                             onSeek?(segmentOffset + duration - endTrim)
-                        }
-                    )
-
-                // Time labels
-                HStack {
-                    Text(formatTime(startTrim))
-                        .font(.system(size: 9).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .offset(x: activeStart + 4)
-                    Spacer()
-                    Text(formatTime(duration - endTrim))
-                        .font(.system(size: 9).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .offset(x: -endFrac * w - 4)
+                        })
                 }
             }
         }
-    }
-
-    private func formatTime(_ seconds: TimeInterval) -> String {
-        let total = max(0, Int(seconds))
-        let m = total / 60; let s = total % 60
-        return String(format: "%d:%02d", m, s)
     }
 }
 
@@ -191,7 +195,7 @@ struct TrimHandle: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 2)
             .fill(color)
-            .frame(width: 12, height: 40)
+            .frame(width: 12, height: 36)
             .shadow(radius: 2)
     }
 }

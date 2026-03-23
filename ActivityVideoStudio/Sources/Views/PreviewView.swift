@@ -52,12 +52,14 @@ struct PreviewView: View {
                     }
                     .overlay(alignment: .topTrailing) {
                         if viewModel.overlaySettings.showMiniMap && !viewModel.trackCoordinates.isEmpty {
-                            GPSTrackView(
-                                trackCoordinates: viewModel.trackCoordinates,
-                                currentCoordinate: viewModel.currentCoordinate
-                            )
-                            .aspectRatio(4/3, contentMode: .fit)
-                            .frame(maxWidth: 180)
+                            GeometryReader { geo in
+                                GPSTrackView(
+                                    trackCoordinates: viewModel.trackCoordinates,
+                                    currentCoordinate: viewModel.currentCoordinate
+                                )
+                                .frame(width: geo.size.width * 0.25, height: geo.size.height * 0.35)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                            }
                         }
                     }
                     .background(Color.black)
@@ -113,7 +115,8 @@ struct PreviewView: View {
                         case .youtube:
                             YouTubeDescriptionView(
                                 dataPoints: viewModel.fitDataPoints,
-                                videoStartDate: viewModel.videoMetadatas.first?.creationDate
+                                videoStartDate: viewModel.videoMetadatas.first?.creationDate,
+                                chapterMarkers: viewModel.chapterMarkers
                             )
                         case .preview:
                             ExportPreviewView(
@@ -265,6 +268,20 @@ struct PreviewView: View {
             }
 
             HStack(spacing: 6) {
+                // Trim start
+                Button { viewModel.seekToTrimStart() } label: {
+                    Image(systemName: "backward.end.fill").font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                .help("トリム先頭に戻る")
+
+                // Skip back 5s
+                Button { viewModel.skipBackward() } label: {
+                    Image(systemName: "gobackward.5").font(.system(size: 12))
+                }
+                .buttonStyle(.borderless)
+
+                // Play/Pause
                 Button(action: viewModel.togglePlayback) {
                     Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 14))
@@ -272,10 +289,17 @@ struct PreviewView: View {
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.space, modifiers: [])
 
+                // Skip forward 5s
+                Button { viewModel.skipForward() } label: {
+                    Image(systemName: "goforward.5").font(.system(size: 12))
+                }
+                .buttonStyle(.borderless)
+
+                // Speed
                 Button {
                     viewModel.cyclePlaybackRate()
                 } label: {
-                    Text("\(String(format: "%.1f", viewModel.playbackRate))x")
+                    Text("\(String(format: viewModel.playbackRate == Float(Int(viewModel.playbackRate)) ? "%.0f" : "%.1f", viewModel.playbackRate))x")
                         .font(.system(size: 10).monospacedDigit())
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)

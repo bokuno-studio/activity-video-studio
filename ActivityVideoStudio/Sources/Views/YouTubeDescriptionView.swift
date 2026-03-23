@@ -5,8 +5,8 @@ import AppKit
 struct YouTubeDescriptionView: View {
     let dataPoints: [FITDataPoint]
     let videoStartDate: Date?
+    let chapterMarkers: [ChapterMarker]
     @State private var description: String = ""
-    @State private var chapterInterval: Double = 1.0
     @State private var copied = false
 
     var body: some View {
@@ -16,19 +16,10 @@ struct YouTubeDescriptionView: View {
                     .font(.headline)
                 Spacer()
 
-                HStack(spacing: 4) {
-                    Text("チャプター間隔:")
-                        .font(.caption)
-                    Picker("", selection: $chapterInterval) {
-                        Text("0.5 km").tag(0.5)
-                        Text("1 km").tag(1.0)
-                        Text("2 km").tag(2.0)
-                        Text("5 km").tag(5.0)
-                    }
-                    .frame(width: 80)
-                    .onChange(of: chapterInterval) {
-                        regenerate()
-                    }
+                Button {
+                    regenerate()
+                } label: {
+                    Label("生成", systemImage: "arrow.clockwise")
                 }
 
                 Button {
@@ -55,15 +46,9 @@ struct YouTubeDescriptionView: View {
             return
         }
 
-        let chapters: [(time: TimeInterval, label: String)]
-        if let startDate = videoStartDate {
-            chapters = YouTubeDescriptionGenerator.autoChapters(
-                dataPoints: dataPoints,
-                videoStartDate: startDate,
-                intervalKm: chapterInterval
-            )
-        } else {
-            chapters = []
+        // Use chapter markers instead of auto-generated distance chapters
+        let chapters = chapterMarkers.map { marker in
+            (time: marker.time, label: marker.label.isEmpty ? "チャプター" : marker.label)
         }
 
         description = YouTubeDescriptionGenerator.generate(
