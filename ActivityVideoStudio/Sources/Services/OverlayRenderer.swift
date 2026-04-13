@@ -245,9 +245,9 @@ final class OverlayRenderer {
         let altitudes = allDataPoints.compactMap { $0.altitude }
         guard let minAlt = altitudes.min(), let maxAlt = altitudes.max(), maxAlt > minAlt else { return }
 
-        // Position: right bottom
+        // Position: center bottom (avoids overlap with right metrics column)
         let profileRect = CGRect(
-            x: videoSize.width - elevationProfileWidth - 30 * scale,
+            x: (videoSize.width - elevationProfileWidth) / 2,
             y: 30 * scale,
             width: elevationProfileWidth,
             height: elevationProfileHeight
@@ -345,19 +345,21 @@ final class OverlayRenderer {
     }
 
     private func labelValueRect(x: CGFloat, y: CGFloat, valueSize: CGFloat) -> CGRect {
+        // Width 700 comfortably fits long values like "150 bpm  Z3" at 80pt
         CGRect(
             x: x - 18 * scale,
             y: y - 88 * scale,
-            width: 420 * scale,
+            width: 700 * scale,
             height: valueSize + 62 * scale
         )
     }
 
     private func textRect(x: CGFloat, y: CGFloat, fontSize: CGFloat) -> CGRect {
+        // Width 600 comfortably fits "X.X / Y.Y KM" at 68pt
         CGRect(
             x: x - 18 * scale,
             y: y - 18 * scale,
-            width: 420 * scale,
+            width: 600 * scale,
             height: fontSize + 30 * scale
         )
     }
