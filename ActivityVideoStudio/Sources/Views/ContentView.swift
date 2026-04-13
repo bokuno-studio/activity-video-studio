@@ -7,6 +7,8 @@ struct ContentView: View {
     }
 }
 
+#if false
 #Preview {
     ContentView()
 }
+#endif

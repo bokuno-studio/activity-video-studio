@@ -44,6 +44,7 @@ final class ExportViewModel: ObservableObject {
     @Published var exportComplete = false
     @Published var progress: Double = 0
     @Published var estimatedRemaining: TimeInterval?
+    @Published var statusMessage: String?
     @Published var errorMessage: String?
     @Published var outputURL: URL?
 
@@ -68,6 +69,7 @@ final class ExportViewModel: ObservableObject {
         isExporting = true
         exportComplete = false
         errorMessage = nil
+        statusMessage = nil
         progress = 0
 
         let exporter = VideoExporter()
@@ -89,13 +91,19 @@ final class ExportViewModel: ObservableObject {
                         videoURLs: videoURLs,
                         timeSync: timeSync,
                         overlayRenderer: renderer,
-                        config: config
-                    ) { [weak self] fraction, remaining in
-                        Task { @MainActor in
-                            self?.progress = fraction
-                            self?.estimatedRemaining = remaining
+                        config: config,
+                        onStatus: { [weak self] msg in
+                            Task { @MainActor in
+                                self?.statusMessage = msg
+                            }
+                        },
+                        progress: { [weak self] fraction, remaining in
+                            Task { @MainActor in
+                                self?.progress = fraction
+                                self?.estimatedRemaining = remaining
+                            }
                         }
-                    }
+                    )
                 } else {
                     try await exporter.exportSingleVideo(
                         videoURL: videoURLs[0],

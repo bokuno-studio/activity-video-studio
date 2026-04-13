@@ -65,6 +65,5 @@ struct OverlaySettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 280)
     }
 }

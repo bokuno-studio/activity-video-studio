@@ -371,6 +371,7 @@ final class PreviewViewModel: ObservableObject {
         let vm = ExportViewModel()
         vm.videoURLs = videoURLs
         vm.timeSync = timeSync
+        overlayRenderer?.textOverlays = textOverlays
         vm.overlayRenderer = overlayRenderer
         vm.onDismiss = { [weak self] in
             self?.showExport = false

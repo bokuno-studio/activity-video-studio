@@ -76,7 +76,11 @@ struct ExportView: View {
             Text(String(format: "%.0f%%", viewModel.progress * 100))
                 .font(.title2.monospacedDigit())
 
-            if let remaining = viewModel.estimatedRemaining {
+            if let msg = viewModel.statusMessage {
+                Text(msg)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let remaining = viewModel.estimatedRemaining {
                 Text("残り約 \(formatTime(remaining))")
                     .font(.caption)
                     .foregroundStyle(.secondary)

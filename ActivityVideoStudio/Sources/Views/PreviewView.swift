@@ -46,10 +46,6 @@ struct PreviewView: View {
                 // Video with overlays
                 VideoPlayerView(player: viewModel.player)
                     .aspectRatio(16/9, contentMode: .fit)
-                    .overlay {
-                        OverlayView(overlayImage: viewModel.overlayImage)
-                            .allowsHitTesting(false)
-                    }
                     .overlay(alignment: .topTrailing) {
                         if viewModel.overlaySettings.showMiniMap && !viewModel.trackCoordinates.isEmpty {
                             GeometryReader { geo in
@@ -61,6 +57,10 @@ struct PreviewView: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                             }
                         }
+                    }
+                    .overlay {
+                        OverlayView(overlayImage: viewModel.overlayImage)
+                            .allowsHitTesting(false)
                     }
                     .background(Color.black)
                     .layoutPriority(1)
@@ -401,7 +401,9 @@ struct PreviewView: View {
     }
 }
 
+#if false
 #Preview {
     PreviewView()
         .frame(width: 1100, height: 700)
 }
+#endif

@@ -34,6 +34,7 @@ final class VideoExporter {
 
     /// Progress callback: fraction (0-1), estimated remaining seconds
     typealias ProgressCallback = @Sendable (Double, TimeInterval?) -> Void
+    typealias StatusCallback = @Sendable (String) -> Void
 
     private var isCancelled = false
 
@@ -195,11 +196,15 @@ final class VideoExporter {
     }
 
     /// Concatenate multiple videos and export with overlay.
+    ///
+    /// Each video is exported separately (with the correct segment overlay),
+    /// then the results are joined via passthrough concat — no double-encode.
     func exportConcatenated(
         videoURLs: [URL],
         timeSync: TimeSync,
         overlayRenderer: OverlayRenderer,
         config: ExportConfig,
+        onStatus: @escaping StatusCallback = { _ in },
         progress: @escaping ProgressCallback
     ) async throws {
         guard !videoURLs.isEmpty else { throw ExportError.noVideos }
@@ -216,60 +221,102 @@ final class VideoExporter {
             return
         }
 
-        // For multiple videos: compose with AVMutableComposition
+        // --- Phase 1: pre-load durations for accurate progress ---
+        var segmentDurations: [Double] = []
+        for url in videoURLs {
+            let dur = CMTimeGetSeconds(try await AVURLAsset(url: url).load(.duration))
+            segmentDurations.append(max(dur, 0.001))
+        }
+        let totalDuration = segmentDurations.reduce(0, +)
+
+        // --- Phase 2: export each segment to a temp file ---
+        var tempURLs: [URL] = []
+        defer {
+            for url in tempURLs {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+
+        var completedDuration = 0.0
+        for (segIdx, url) in videoURLs.enumerated() {
+            if isCancelled { throw ExportError.cancelled }
+
+            onStatus("動画 \(segIdx + 1) / \(videoURLs.count) を処理中...")
+
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("mp4")
+
+            var segConfig = config
+            segConfig.outputURL = tempURL
+
+            let segDuration = segmentDurations[segIdx]
+            let baseFraction = completedDuration / totalDuration
+            let segWeight = segDuration / totalDuration
+
+            try await exportSingleVideo(
+                videoURL: url,
+                timeSync: timeSync,
+                segmentIndex: segIdx,
+                overlayRenderer: overlayRenderer,
+                config: segConfig
+            ) { fraction, remaining in
+                let overall = baseFraction + fraction * segWeight
+                progress(min(overall, 0.99), remaining)
+            }
+
+            tempURLs.append(tempURL)
+            completedDuration += segDuration
+        }
+
+        // --- Phase 3: passthrough concat (no re-encode, fast) ---
+        if isCancelled { throw ExportError.cancelled }
+        onStatus("動画を結合中...")
+
         let composition = AVMutableComposition()
-        guard let videoCompositionTrack = composition.addMutableTrack(
+        guard let videoCompTrack = composition.addMutableTrack(
             withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid
         ) else { throw ExportError.cannotCreateWriter }
-
-        let audioCompositionTrack = composition.addMutableTrack(
+        let audioCompTrack = composition.addMutableTrack(
             withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid
         )
 
         var insertTime = CMTime.zero
-
-        for url in videoURLs {
-            let asset = AVURLAsset(url: url)
-            let tracks = try await asset.load(.tracks)
+        for tempURL in tempURLs {
+            let asset = AVURLAsset(url: tempURL)
             let duration = try await asset.load(.duration)
             let timeRange = CMTimeRange(start: .zero, duration: duration)
+            let tracks = try await asset.load(.tracks)
 
-            if let vTrack = tracks.first(where: { $0.mediaType == .video }) {
-                try videoCompositionTrack.insertTimeRange(timeRange, of: vTrack, at: insertTime)
+            if let vt = tracks.first(where: { $0.mediaType == .video }) {
+                try videoCompTrack.insertTimeRange(timeRange, of: vt, at: insertTime)
             }
-            if let aTrack = tracks.first(where: { $0.mediaType == .audio }) {
-                try audioCompositionTrack?.insertTimeRange(timeRange, of: aTrack, at: insertTime)
+            if let at = tracks.first(where: { $0.mediaType == .audio }) {
+                try? audioCompTrack?.insertTimeRange(timeRange, of: at, at: insertTime)
             }
             insertTime = CMTimeAdd(insertTime, duration)
         }
 
-        // Export the composition as a single temporary file, then overlay
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("mp4")
-
-        let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality)
-        exportSession?.outputURL = tempURL
-        exportSession?.outputFileType = .mp4
-
-        await exportSession?.export()
-
-        guard exportSession?.status == .completed else {
-            throw ExportError.exportFailed(exportSession?.error?.localizedDescription ?? "Merge failed")
+        if FileManager.default.fileExists(atPath: config.outputURL.path) {
+            try FileManager.default.removeItem(at: config.outputURL)
         }
 
-        // Now export with overlay
-        try await exportSingleVideo(
-            videoURL: tempURL,
-            timeSync: timeSync,
-            segmentIndex: 0,
-            overlayRenderer: overlayRenderer,
-            config: config,
-            progress: progress
-        )
+        guard let exportSession = AVAssetExportSession(
+            asset: composition,
+            presetName: AVAssetExportPresetPassthrough
+        ) else { throw ExportError.cannotCreateWriter }
 
-        // Cleanup temp
-        try? FileManager.default.removeItem(at: tempURL)
+        exportSession.outputURL = config.outputURL
+        exportSession.outputFileType = .mp4
+        await exportSession.export()
+
+        guard exportSession.status == .completed else {
+            throw ExportError.exportFailed(
+                exportSession.error?.localizedDescription ?? "結合に失敗しました"
+            )
+        }
+
+        progress(1.0, 0)
     }
 
     // MARK: - Overlay compositing
