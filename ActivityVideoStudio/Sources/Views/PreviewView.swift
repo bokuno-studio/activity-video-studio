@@ -57,7 +57,7 @@ struct PreviewView: View {
                                     trackCoordinates: viewModel.trackCoordinates,
                                     currentCoordinate: viewModel.currentCoordinate
                                 )
-                                .frame(width: geo.size.width * 0.25, height: geo.size.height * 0.35)
+                                .frame(width: geo.size.width * 0.22, height: geo.size.height * 0.28)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                             }
                         }
@@ -68,7 +68,7 @@ struct PreviewView: View {
                 // Thin controls bar
                 controlsBar
                     .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
+                    .padding(.vertical, 6)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let status = viewModel.statusMessage {
@@ -312,19 +312,32 @@ struct PreviewView: View {
 
                 // Sync offset
                 if viewModel.fitLoaded {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 4) {
                         Text("同期:")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
-                        Slider(value: Binding(
-                            get: { viewModel.syncOffset },
-                            set: { viewModel.updateSyncOffset($0) }
-                        ), in: -30...30, step: 0.5)
-                        .frame(width: 80)
-                        .controlSize(.small)
+
+                        Button {
+                            viewModel.updateSyncOffset(viewModel.syncOffset - 0.5)
+                        } label: {
+                            Text("−")
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(width: 18)
+                        }
+                        .buttonStyle(.borderless)
+
                         Text(String(format: "%+.1fs", viewModel.syncOffset))
                             .font(.system(size: 10).monospacedDigit())
-                            .frame(width: 35)
+                            .frame(width: 42)
+
+                        Button {
+                            viewModel.updateSyncOffset(viewModel.syncOffset + 0.5)
+                        } label: {
+                            Text("＋")
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(width: 18)
+                        }
+                        .buttonStyle(.borderless)
                     }
                 }
 
@@ -346,16 +359,16 @@ struct PreviewView: View {
         VStack(spacing: 12) {
             Image(systemName: "arrow.down.doc")
                 .font(.system(size: 40))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.white.opacity(0.7))
             Text("FIT ファイルと動画をドラッグ&ドロップ")
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary)
             Text(".fit + .mp4 / .mov")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.black.opacity(0.3))
+        .background(Color(white: 0.12).opacity(0.95))
     }
 
     // MARK: - Drop handling

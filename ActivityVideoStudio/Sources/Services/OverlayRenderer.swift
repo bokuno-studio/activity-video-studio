@@ -45,6 +45,7 @@ final class OverlayRenderer {
     private let accentRed = CGColor(red: 1.0, green: 0.2, blue: 0.15, alpha: 1)
     private let white = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
     private let shadowColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0.7)
+    private let metricsBackgroundColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0.45)
 
     // Elevation profile
     private var elevationProfileHeight: CGFloat { 120 * scale }
@@ -73,7 +74,34 @@ final class OverlayRenderer {
         }
 
         // === LEFT SIDE (top→bottom): HR → PACE → CADENCE → CORE ===
+        let leftX = 50 * scale
         var leftY = videoSize.height - 50 * scale
+        var leftMetricRects: [CGRect] = []
+
+        if settings.showHeartRate {
+            leftMetricRects.append(labelValueRect(x: leftX, y: leftY, valueSize: 80 * scale))
+            leftY -= 130 * scale
+        }
+
+        if settings.showPace {
+            leftMetricRects.append(labelValueRect(x: leftX, y: leftY, valueSize: 80 * scale))
+            leftY -= 130 * scale
+        }
+
+        if settings.showCadence {
+            leftMetricRects.append(labelValueRect(x: leftX, y: leftY, valueSize: 80 * scale))
+            leftY -= 130 * scale
+        }
+
+        if settings.showCoreTemp, dataPoint.coreTemperature != nil {
+            leftMetricRects.append(labelValueRect(x: leftX, y: leftY, valueSize: 80 * scale))
+        }
+
+        if let leftBackgroundRect = unionRect(for: leftMetricRects) {
+            drawMetricsBackground(ctx: ctx, rect: leftBackgroundRect)
+        }
+
+        leftY = videoSize.height - 50 * scale
 
         // HR + Zone
         if settings.showHeartRate {
@@ -87,21 +115,21 @@ final class OverlayRenderer {
                 hrValue = "-- bpm"
                 hrColor = white
             }
-            drawLabelValue(ctx: ctx, label: "HEART RATE", value: hrValue, x: 50 * scale, y: leftY, labelColor: accentColor, valueColor: hrColor)
+            drawLabelValue(ctx: ctx, label: "HEART RATE", value: hrValue, x: leftX, y: leftY, labelColor: accentColor, valueColor: hrColor)
             leftY -= 130 * scale
         }
 
         // PACE
         if settings.showPace {
             let value = dataPoint.paceFormatted ?? "--'--\""
-            drawLabelValue(ctx: ctx, label: "PACE", value: value, x: 50 * scale, y: leftY, labelColor: accentColor)
+            drawLabelValue(ctx: ctx, label: "PACE", value: value, x: leftX, y: leftY, labelColor: accentColor)
             leftY -= 130 * scale
         }
 
         // CADENCE
         if settings.showCadence {
             let value = dataPoint.runningCadence.map { "\($0) spm" } ?? "-- spm"
-            drawLabelValue(ctx: ctx, label: "CADENCE", value: value, x: 50 * scale, y: leftY, labelColor: accentColor)
+            drawLabelValue(ctx: ctx, label: "CADENCE", value: value, x: leftX, y: leftY, labelColor: accentColor)
             leftY -= 130 * scale
         }
 
@@ -109,21 +137,50 @@ final class OverlayRenderer {
         if settings.showCoreTemp, let ct = dataPoint.coreTemperature {
             let value = String(format: "%.1f°C", ct)
             let c = coreTempColor(ct)
-            drawLabelValue(ctx: ctx, label: "CORE TEMP", value: value, x: 50 * scale, y: leftY, labelColor: accentColor, valueColor: c)
+            drawLabelValue(ctx: ctx, label: "CORE TEMP", value: value, x: leftX, y: leftY, labelColor: accentColor, valueColor: c)
         }
 
         // === RIGHT SIDE (top→bottom): GPS Track(SwiftUI) → Distance → TIME → ELEV GAIN → ALTITUDE → 標高グラフ ===
 
-        // Distance - right, below GPS track area
+        // Distance - right, below GPS track area.
+        // GPS map (SwiftUI) occupies top 35% of the frame height; start below it.
+        // Formula keeps the text clear of the map across 720p / 1080p / 4K.
         let rightX = videoSize.width - 450 * scale
-        var rightY = videoSize.height - 420 * scale
+        var rightY = videoSize.height * 0.65 - 130 * scale
+        var rightMetricRects: [CGRect] = []
+
+        if settings.showDistance {
+            rightMetricRects.append(textRect(x: rightX, y: rightY, fontSize: 68 * scale))
+            rightY -= 120 * scale
+        }
+
+        if settings.showTime {
+            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: 80 * scale))
+            rightY -= 130 * scale
+        }
+
+        if settings.showElevationGain {
+            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: 80 * scale))
+            rightY -= 130 * scale
+        }
+
+        if settings.showAltitude {
+            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: 80 * scale))
+        }
+
+        if let rightBackgroundRect = unionRect(for: rightMetricRects) {
+            drawMetricsBackground(ctx: ctx, rect: rightBackgroundRect)
+        }
+
+        rightY = videoSize.height * 0.65 - 130 * scale
 
         if settings.showDistance {
             let current = dataPoint.distance.map { String(format: "%.1f", $0 / 1000.0) } ?? "--"
-            let total = String(format: "/ %.1f KM", totalDistance / 1000.0)
-            drawText(ctx: ctx, text: "\(current) KM", x: rightX, y: rightY, fontSize: 90 * scale, color: white, bold: true)
-            drawText(ctx: ctx, text: total, x: rightX, y: rightY - 40 * scale, fontSize: 32 * scale, color: white)
-            rightY -= 150 * scale
+            let total = String(format: "%.1f KM", totalDistance / 1000.0)
+            // Show as "X.X / Y.Y KM" on a single line to avoid visual confusion
+            let distText = "\(current) / \(total)"
+            drawText(ctx: ctx, text: distText, x: rightX, y: rightY, fontSize: 68 * scale, color: white, bold: true)
+            rightY -= 120 * scale
         }
 
         // TIME - right, below distance
@@ -284,6 +341,47 @@ final class OverlayRenderer {
         ctx.saveGState()
         ctx.textPosition = CGPoint(x: x, y: y)
         CTLineDraw(line, ctx)
+        ctx.restoreGState()
+    }
+
+    private func labelValueRect(x: CGFloat, y: CGFloat, valueSize: CGFloat) -> CGRect {
+        CGRect(
+            x: x - 18 * scale,
+            y: y - 88 * scale,
+            width: 420 * scale,
+            height: valueSize + 62 * scale
+        )
+    }
+
+    private func textRect(x: CGFloat, y: CGFloat, fontSize: CGFloat) -> CGRect {
+        CGRect(
+            x: x - 18 * scale,
+            y: y - 18 * scale,
+            width: 420 * scale,
+            height: fontSize + 30 * scale
+        )
+    }
+
+    private func unionRect(for rects: [CGRect]) -> CGRect? {
+        guard var union = rects.first else { return nil }
+        for rect in rects.dropFirst() {
+            union = union.union(rect)
+        }
+        return union.insetBy(dx: -14 * scale, dy: -12 * scale)
+    }
+
+    private func drawMetricsBackground(ctx: CGContext, rect: CGRect) {
+        ctx.saveGState()
+        ctx.setShadow(offset: .zero, blur: 0)
+        ctx.setFillColor(metricsBackgroundColor)
+        let path = CGPath(
+            roundedRect: rect,
+            cornerWidth: 8 * scale,
+            cornerHeight: 8 * scale,
+            transform: nil
+        )
+        ctx.addPath(path)
+        ctx.fillPath()
         ctx.restoreGState()
     }
 
