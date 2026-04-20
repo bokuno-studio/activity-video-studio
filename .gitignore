@@ -35,3 +35,6 @@ Package.resolved
 
 # Exported videos (large binaries)
 *.mp4
+
+# QA hook runtime logs
+docs/qa/qa-hook-*.log
