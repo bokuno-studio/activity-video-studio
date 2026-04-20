@@ -29,3 +29,9 @@ Package.resolved
 # Temporary files
 *.tmp
 *.temp
+
+# Claude Code working files
+.claude/
+
+# Exported videos (large binaries)
+*.mp4
