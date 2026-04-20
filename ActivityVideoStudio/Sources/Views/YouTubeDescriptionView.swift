@@ -6,6 +6,7 @@ struct YouTubeDescriptionView: View {
     let dataPoints: [FITDataPoint]
     let videoStartDate: Date?
     let chapterMarkers: [ChapterMarker]
+    let trimmedTime: (TimeInterval) -> TimeInterval
     @State private var description: String = ""
     @State private var copied = false
 
@@ -48,7 +49,7 @@ struct YouTubeDescriptionView: View {
 
         // Use chapter markers instead of auto-generated distance chapters
         let chapters = chapterMarkers.map { marker in
-            (time: marker.time, label: marker.label.isEmpty ? "チャプター" : marker.label)
+            (time: trimmedTime(marker.time), label: marker.label.isEmpty ? "チャプター" : marker.label)
         }
 
         description = YouTubeDescriptionGenerator.generate(

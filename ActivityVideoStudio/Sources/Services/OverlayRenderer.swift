@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import AppKit
+import CoreLocation
 
 /// Renders floating activity data overlay with circular HR gauge.
 /// Layout: right side dominant, no bottom bar, drop shadows on text.
@@ -10,6 +11,7 @@ final class OverlayRenderer {
     var settings: OverlaySettings
     var allDataPoints: [FITDataPoint] = []
     var textOverlays: [TextOverlay] = []
+    var trackCoordinates: [CLLocationCoordinate2D] = []
     var fitRecordingActive = true
 
     private var scale: CGFloat { videoSize.width / 1920.0 }
@@ -140,10 +142,10 @@ final class OverlayRenderer {
             drawLabelValue(ctx: ctx, label: "CORE TEMP", value: value, x: leftX, y: leftY, labelColor: accentColor, valueColor: c)
         }
 
-        // === RIGHT SIDE (top→bottom): GPS Track(SwiftUI) → Distance → TIME → ELEV GAIN → ALTITUDE → 標高グラフ ===
+        // === RIGHT SIDE (top→bottom): GPS track (drawn directly by OverlayRenderer) → Distance → TIME → ELEV GAIN → ALTITUDE → 標高グラフ ===
 
         // Distance - right, below GPS track area.
-        // GPS map (SwiftUI) occupies top 35% of the frame height; start below it.
+        // GPS track drawn directly by OverlayRenderer (see drawGPSTrack) in the top-right corner.
         // Formula keeps the text clear of the map across 720p / 1080p / 4K.
         let rightX = videoSize.width - 450 * scale
         var rightY = videoSize.height * 0.65 - 130 * scale
@@ -208,6 +210,9 @@ final class OverlayRenderer {
         if settings.showElevationProfile {
             drawElevationProfile(ctx: ctx, currentPoint: dataPoint)
         }
+
+        // GPS track (top-right) — matches SwiftUI GPSTrackView layout in PreviewView
+        drawGPSTrack(ctx: ctx, currentPoint: dataPoint)
 
         // Text overlays
         for textOverlay in textOverlays {
@@ -314,6 +319,126 @@ final class OverlayRenderer {
                 ctx.setFillColor(white)
                 ctx.fillEllipse(in: CGRect(x: mx - 4 * scale, y: CGFloat(dotY) - 4 * scale, width: 8 * scale, height: 8 * scale))
             }
+        }
+
+        ctx.restoreGState()
+    }
+
+    // MARK: - GPS Track (top-right mini-map)
+
+    private func drawGPSTrack(ctx: CGContext, currentPoint: FITDataPoint) {
+        guard trackCoordinates.count >= 2 else { return }
+
+        // Layout: match SwiftUI GPSTrackView (22% width, 28% height, top-right, 20pt margin).
+        let margin = 20 * scale
+        let mapWidth = videoSize.width * 0.22
+        let mapHeight = videoSize.height * 0.28
+        let mapRect = CGRect(
+            x: videoSize.width - mapWidth - margin,
+            y: videoSize.height - mapHeight - margin,
+            width: mapWidth,
+            height: mapHeight
+        )
+
+        // Background: semi-transparent black, 8pt corner radius
+        ctx.saveGState()
+        ctx.setShadow(offset: .zero, blur: 0)
+        ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.45))
+        let bgPath = CGPath(
+            roundedRect: mapRect,
+            cornerWidth: 8 * scale,
+            cornerHeight: 8 * scale,
+            transform: nil
+        )
+        ctx.addPath(bgPath)
+        ctx.fillPath()
+        ctx.restoreGState()
+
+        // Compute bounding box over the entire track.
+        var minLat = Double.greatestFiniteMagnitude
+        var maxLat = -Double.greatestFiniteMagnitude
+        var minLon = Double.greatestFiniteMagnitude
+        var maxLon = -Double.greatestFiniteMagnitude
+        for c in trackCoordinates {
+            if c.latitude < minLat { minLat = c.latitude }
+            if c.latitude > maxLat { maxLat = c.latitude }
+            if c.longitude < minLon { minLon = c.longitude }
+            if c.longitude > maxLon { maxLon = c.longitude }
+        }
+
+        let latRange = maxLat - minLat
+        let lonRange = maxLon - minLon
+        // Degenerate bbox (all points collinear / identical); bail out gracefully.
+        guard latRange > 0 || lonRange > 0 else { return }
+
+        // Preserve aspect ratio inside the map area with an inset.
+        let inset = 10 * scale
+        let drawRect = mapRect.insetBy(dx: inset, dy: inset)
+
+        // Guard against divide-by-zero when all points share a lat or lon.
+        let safeLatRange = latRange > 0 ? latRange : 1e-9
+        let safeLonRange = lonRange > 0 ? lonRange : 1e-9
+
+        // Fit: compute scale that fits both axes, keeping aspect ratio.
+        let sx = drawRect.width / CGFloat(safeLonRange)
+        let sy = drawRect.height / CGFloat(safeLatRange)
+        let fitScale = min(sx, sy)
+        let usedWidth = CGFloat(safeLonRange) * fitScale
+        let usedHeight = CGFloat(safeLatRange) * fitScale
+        let originX = drawRect.midX - usedWidth / 2
+        let originY = drawRect.midY - usedHeight / 2
+
+        // Lon → X (east = +X). Lat → Y with north = top.
+        // CGContext origin is bottom-left, so latitude maps directly (higher lat = higher Y).
+        func project(_ coord: CLLocationCoordinate2D) -> CGPoint {
+            let x = originX + CGFloat(coord.longitude - minLon) * fitScale
+            let y = originY + CGFloat(coord.latitude - minLat) * fitScale
+            return CGPoint(x: x, y: y)
+        }
+
+        // Build polyline path once.
+        let polyline = CGMutablePath()
+        polyline.move(to: project(trackCoordinates[0]))
+        for c in trackCoordinates.dropFirst() {
+            polyline.addLine(to: project(c))
+        }
+
+        ctx.saveGState()
+        ctx.setShadow(offset: .zero, blur: 0)
+        ctx.setLineJoin(.round)
+        ctx.setLineCap(.round)
+
+        // Clip to rounded map rect so the polyline never escapes the frame.
+        ctx.addPath(bgPath)
+        ctx.clip()
+
+        // Outline (black, alpha 0.5, 5pt)
+        ctx.addPath(polyline)
+        ctx.setStrokeColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.5))
+        ctx.setLineWidth(5 * scale)
+        ctx.strokePath()
+
+        // Foreground (cyan, 3pt)
+        ctx.addPath(polyline)
+        ctx.setStrokeColor(CGColor(red: 0.0, green: 0.88, blue: 0.98, alpha: 1.0))
+        ctx.setLineWidth(3 * scale)
+        ctx.strokePath()
+
+        // Current position dot (red with white stroke) — only when we have a coord.
+        if let current = currentPoint.coordinate {
+            let p = project(current)
+            let dotDiameter = 12 * scale
+            let dotRect = CGRect(
+                x: p.x - dotDiameter / 2,
+                y: p.y - dotDiameter / 2,
+                width: dotDiameter,
+                height: dotDiameter
+            )
+            ctx.setFillColor(CGColor(red: 1.0, green: 0.2, blue: 0.15, alpha: 1.0))
+            ctx.fillEllipse(in: dotRect)
+            ctx.setStrokeColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            ctx.setLineWidth(2.5 * scale)
+            ctx.strokeEllipse(in: dotRect)
         }
 
         ctx.restoreGState()

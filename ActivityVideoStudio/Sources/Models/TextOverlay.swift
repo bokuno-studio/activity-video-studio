@@ -11,7 +11,7 @@ struct TextOverlay: Identifiable {
     var position: Position = .center
     var color: CGColor = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
     var backgroundColor: CGColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0.3)
-    var fadeInDuration: TimeInterval = 0.5
+    var fadeInDuration: TimeInterval = 0
     var fadeOutDuration: TimeInterval = 0.5
 
     enum Position: String, CaseIterable {

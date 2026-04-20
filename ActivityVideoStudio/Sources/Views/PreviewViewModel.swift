@@ -4,6 +4,17 @@ import Combine
 import CoreGraphics
 import CoreLocation
 
+/// Append a line to /tmp/avs_export.log and stderr. Nonisolated so @Sendable closures can call it.
+func autoExportLog(_ msg: String) {
+    let line = msg + "\n"
+    guard let data = line.data(using: .utf8) else { return }
+    let logURL = URL(fileURLWithPath: "/tmp/avs_export.log")
+    if let fh = try? FileHandle(forWritingTo: logURL) {
+        fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
+    }
+    FileHandle.standardError.write(data)
+}
+
 /// ViewModel for the preview screen. Manages video playback, FIT sync, and overlay.
 @MainActor
 final class PreviewViewModel: ObservableObject {
@@ -52,10 +63,18 @@ final class PreviewViewModel: ObservableObject {
     #if DEBUG
     /// Auto-load files from command-line arguments or environment for faster debugging.
     /// Usage: --fit /path/to.fit --video /path/to.mp4 --video /path/to2.mp4
+    ///        --trim-start 0 --trim-end 0 --text "Overlay text"
+    ///        --export-to /path/output.mp4   (optional: auto-start export without save panel)
     private func autoLoadDebugFiles() async {
         let args = ProcessInfo.processInfo.arguments
         var fitPath: String?
         var videoPaths: [String] = []
+        var exportPath: String?
+        var trimStart: TimeInterval = 0
+        var trimEnd: TimeInterval = 0
+        var overlayText: String?
+        var overlayPos: TextOverlay.Position = .center
+        var overlayFontSize: CGFloat = 48
 
         var i = 1
         while i < args.count {
@@ -64,6 +83,35 @@ final class PreviewViewModel: ObservableObject {
                 if i + 1 < args.count { fitPath = args[i + 1]; i += 1 }
             case "--video":
                 if i + 1 < args.count { videoPaths.append(args[i + 1]); i += 1 }
+            case "--trim-start":
+                if i + 1 < args.count, let value = TimeInterval(args[i + 1]) {
+                    trimStart = value
+                    i += 1
+                }
+            case "--trim-end":
+                if i + 1 < args.count, let value = TimeInterval(args[i + 1]) {
+                    trimEnd = value
+                    i += 1
+                }
+            case "--text":
+                if i + 1 < args.count { overlayText = args[i + 1]; i += 1 }
+            case "--text-pos":
+                if i + 1 < args.count {
+                    switch args[i + 1] {
+                    case "topCenter": overlayPos = .topCenter
+                    case "center": overlayPos = .center
+                    case "bottomCenter": overlayPos = .bottomCenter
+                    default: break
+                    }
+                    i += 1
+                }
+            case "--text-size":
+                if i + 1 < args.count, let value = Double(args[i + 1]) {
+                    overlayFontSize = CGFloat(value)
+                    i += 1
+                }
+            case "--export-to":
+                if i + 1 < args.count { exportPath = args[i + 1]; i += 1 }
             default: break
             }
             i += 1
@@ -74,6 +122,73 @@ final class PreviewViewModel: ObservableObject {
         }
         for vp in videoPaths {
             await loadVideo(url: URL(fileURLWithPath: vp))
+        }
+
+        let cliTrimSettings = TrimSettings(startTrim: trimStart, endTrim: trimEnd)
+        if trimSettings.isEmpty {
+            trimSettings = [cliTrimSettings]
+        } else {
+            trimSettings = trimSettings.indices.map { _ in cliTrimSettings }
+        }
+
+        if let overlayText, !overlayText.isEmpty {
+            var overlay = TextOverlay(text: overlayText, startTime: 0, duration: 9999)
+            overlay.position = overlayPos
+            overlay.fontSize = overlayFontSize
+            textOverlays = [overlay]
+            overlayRenderer?.textOverlays = [overlay]
+        }
+
+        if let ep = exportPath {
+            await autoExport(to: URL(fileURLWithPath: ep))
+        }
+    }
+
+    /// Headless export for CLI testing — bypasses NSSavePanel.
+    private func autoExport(to outputURL: URL) async {
+        let logURL = URL(fileURLWithPath: "/tmp/avs_export.log")
+        // Truncate log on start
+        try? "".write(to: logURL, atomically: true, encoding: .utf8)
+
+        guard videoLoaded, fitLoaded,
+              let timeSync = timeSync,
+              let renderer = overlayRenderer else {
+            autoExportLog("[AutoExport] Not ready: videoLoaded=\(videoLoaded) fitLoaded=\(fitLoaded)")
+            return
+        }
+
+        autoExportLog("[AutoExport] Starting export to \(outputURL.path)")
+        let exporter = VideoExporter()
+        let config = VideoExporter.ExportConfig(outputURL: outputURL)
+        do {
+            if videoURLs.count > 1 {
+                try await exporter.exportConcatenated(
+                    videoURLs: videoURLs,
+                    trimSettings: trimSettings,
+                    timeSync: timeSync,
+                    overlayRenderer: renderer,
+                    config: config,
+                    onStatus: { autoExportLog("[AutoExport] \($0)") },
+                    progress: { fraction, _ in
+                        autoExportLog("[AutoExport] progress: \(Int(fraction * 100))%")
+                    }
+                )
+            } else {
+                try await exporter.exportSingleVideo(
+                    videoURL: videoURLs[0],
+                    timeSync: timeSync,
+                    segmentIndex: 0,
+                    trimSettings: trimSettings.first ?? TrimSettings(),
+                    overlayRenderer: renderer,
+                    config: config,
+                    progress: { fraction, _ in
+                        autoExportLog("[AutoExport] progress: \(Int(fraction * 100))%")
+                    }
+                )
+            }
+            autoExportLog("[AutoExport] DONE ✓ \(outputURL.path)")
+        } catch {
+            autoExportLog("[AutoExport] FAILED: \(error.localizedDescription)")
         }
     }
     #endif
@@ -110,6 +225,7 @@ final class PreviewViewModel: ObservableObject {
             // Update renderer if already exists
             if let renderer = overlayRenderer {
                 renderer.allDataPoints = fitDataPoints
+                renderer.trackCoordinates = trackCoordinates
                 renderer.buildElevationGainCache()
             }
 
@@ -198,6 +314,7 @@ final class PreviewViewModel: ObservableObject {
                     let size = try await videoTrack.load(.naturalSize)
                     overlayRenderer = OverlayRenderer(videoSize: size, settings: overlaySettings)
                     overlayRenderer?.allDataPoints = fitDataPoints
+                    overlayRenderer?.trackCoordinates = trackCoordinates
                     overlayRenderer?.buildElevationGainCache()
                 }
             } else {
@@ -238,6 +355,7 @@ final class PreviewViewModel: ObservableObject {
                 if let size = firstVideoSize {
                     overlayRenderer = OverlayRenderer(videoSize: size, settings: overlaySettings)
                     overlayRenderer?.allDataPoints = fitDataPoints
+                    overlayRenderer?.trackCoordinates = trackCoordinates
                     overlayRenderer?.buildElevationGainCache()
                 }
             }
@@ -266,6 +384,10 @@ final class PreviewViewModel: ObservableObject {
         player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
         isSeeking = false
         updateOverlay()
+    }
+
+    func seekToTrimmedTime(_ time: TimeInterval) {
+        seek(to: absoluteTime(forTrimmed: time))
     }
 
     func skipForward(_ seconds: TimeInterval = 5) {
@@ -309,11 +431,10 @@ final class PreviewViewModel: ObservableObject {
     // MARK: - Chapter markers
 
     func addChapterMarker() {
-        let trimmedTime = trimmedPlaybackTime()
-        let marker = ChapterMarker(time: trimmedTime)
+        let marker = ChapterMarker(time: currentTime)
         chapterMarkers.append(marker)
         chapterMarkers.sort { $0.time < $1.time }
-        statusMessage = "チャプターマーカー追加: \(formatDuration(trimmedTime))"
+        statusMessage = "チャプターマーカー追加: \(formatDuration(trimmedTime(for: marker.time)))"
     }
 
     func removeChapterMarker(id: UUID) {
@@ -321,20 +442,18 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func seekToMarker(_ marker: ChapterMarker) {
-        // Convert trimmed time back to global time
-        let globalTime = marker.time + (trimSettings.first?.startTrim ?? 0)
-        seek(to: globalTime)
+        seek(to: marker.time)
     }
 
     /// Generate chapter list text for YouTube description.
     func generateChapterList() -> String {
         var lines: [String] = []
         // Always start with 0:00
-        if chapterMarkers.isEmpty || chapterMarkers.first?.time ?? 1 > 0 {
+        if chapterMarkers.isEmpty || trimmedTime(for: chapterMarkers.first?.time ?? 1) > 0 {
             lines.append("0:00 スタート")
         }
         for marker in chapterMarkers {
-            let timeStr = formatChapterTime(marker.time)
+            let timeStr = formatChapterTime(trimmedTime(for: marker.time))
             let label = marker.label.isEmpty ? "チャプター" : marker.label
             lines.append("\(timeStr) \(label)")
         }
@@ -370,8 +489,10 @@ final class PreviewViewModel: ObservableObject {
     func makeExportViewModel() -> ExportViewModel {
         let vm = ExportViewModel()
         vm.videoURLs = videoURLs
+        vm.trimSettings = trimSettings
         vm.timeSync = timeSync
         overlayRenderer?.textOverlays = textOverlays
+        overlayRenderer?.trackCoordinates = trackCoordinates
         vm.overlayRenderer = overlayRenderer
         vm.onDismiss = { [weak self] in
             self?.showExport = false
@@ -501,9 +622,55 @@ final class PreviewViewModel: ObservableObject {
 
     /// Convert current playback time to trimmed time (time after trim start).
     func trimmedPlaybackTime() -> TimeInterval {
-        // For the first segment, subtract the start trim
-        guard !trimSettings.isEmpty else { return currentTime }
-        let startTrim = trimSettings[0].startTrim
-        return max(0, currentTime - startTrim)
+        trimmedTime(for: currentTime)
+    }
+
+    /// Convert a trimmed/exported timeline position back to the absolute combined timeline.
+    func absoluteTime(forTrimmed trimmedTime: TimeInterval) -> TimeInterval {
+        guard !segmentDurations.isEmpty else { return max(0, trimmedTime) }
+
+        let clampedTrimmedTime = min(max(trimmedTime, 0), trimmedTotalDuration())
+        var absoluteCursor: TimeInterval = 0
+        var trimmedCursor: TimeInterval = 0
+
+        for (index, duration) in segmentDurations.enumerated() {
+            let trim = index < trimSettings.count ? trimSettings[index] : TrimSettings()
+            let trimmedDuration = trim.trimmedDuration(original: duration)
+            let segmentAbsoluteStart = absoluteCursor
+
+            if clampedTrimmedTime <= trimmedCursor + trimmedDuration || index == segmentDurations.count - 1 {
+                let localTrimmedTime = min(max(clampedTrimmedTime - trimmedCursor, 0), trimmedDuration)
+                return segmentAbsoluteStart + trim.startTrim + localTrimmedTime
+            }
+
+            trimmedCursor += trimmedDuration
+            absoluteCursor += duration
+        }
+
+        return absoluteCursor
+    }
+
+    /// Convert an absolute combined-timeline position to the trimmed/exported timeline.
+    func trimmedTime(for absoluteTime: TimeInterval) -> TimeInterval {
+        guard !segmentDurations.isEmpty else { return max(0, absoluteTime) }
+
+        var absoluteCursor: TimeInterval = 0
+        var trimmedCursor: TimeInterval = 0
+
+        for (index, duration) in segmentDurations.enumerated() {
+            let trim = index < trimSettings.count ? trimSettings[index] : TrimSettings()
+            let segmentStart = absoluteCursor
+            let segmentEnd = segmentStart + duration
+
+            if absoluteTime <= segmentEnd || index == segmentDurations.count - 1 {
+                let clampedLocalTime = min(max(absoluteTime - segmentStart, 0), duration)
+                return trimmedCursor + min(max(clampedLocalTime - trim.startTrim, 0), trim.trimmedDuration(original: duration))
+            }
+
+            trimmedCursor += trim.trimmedDuration(original: duration)
+            absoluteCursor = segmentEnd
+        }
+
+        return trimmedCursor
     }
 }

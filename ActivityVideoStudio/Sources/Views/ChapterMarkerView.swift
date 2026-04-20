@@ -3,6 +3,7 @@ import SwiftUI
 /// Chapter marker list for YouTube chapters.
 struct ChapterMarkerView: View {
     @Binding var markers: [ChapterMarker]
+    let trimmedTime: (TimeInterval) -> TimeInterval
     let onSeek: (ChapterMarker) -> Void
     let onAdd: () -> Void
     var isTextFocused: FocusState<Bool>.Binding
@@ -37,7 +38,7 @@ struct ChapterMarkerView: View {
                     Button {
                         onSeek(marker)
                     } label: {
-                        Text(formatTime(marker.time))
+                        Text(formatTime(trimmedTime(marker.time)))
                             .font(.system(size: 12, design: .monospaced))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
@@ -101,12 +102,12 @@ struct ChapterMarkerView: View {
 
     private func generateChapterText() -> String {
         var lines: [String] = []
-        if markers.isEmpty || (markers.first?.time ?? 1) > 0 {
+        if markers.isEmpty || trimmedTime(markers.first?.time ?? 1) > 0 {
             lines.append("0:00 スタート")
         }
         for marker in markers {
             let label = marker.label.isEmpty ? "チャプター" : marker.label
-            lines.append("\(formatTime(marker.time)) \(label)")
+            lines.append("\(formatTime(trimmedTime(marker.time))) \(label)")
         }
         return lines.joined(separator: "\n")
     }

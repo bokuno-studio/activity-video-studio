@@ -49,6 +49,7 @@ final class ExportViewModel: ObservableObject {
     @Published var outputURL: URL?
 
     var videoURLs: [URL] = []
+    var trimSettings: [TrimSettings] = []
     var timeSync: TimeSync?
     var overlayRenderer: OverlayRenderer?
     var onDismiss: (() -> Void)?
@@ -61,7 +62,13 @@ final class ExportViewModel: ObservableObject {
     func startExport() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.mpeg4Movie]
-        panel.nameFieldStringValue = "activity_overlay.mp4"
+        let dateStr: String = {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyyMMdd"
+            return fmt.string(from: Date())
+        }()
+        let baseName = videoURLs.first?.deletingPathExtension().lastPathComponent ?? "activity_overlay"
+        panel.nameFieldStringValue = "\(dateStr)_\(baseName).mp4"
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
@@ -84,11 +91,16 @@ final class ExportViewModel: ObservableObject {
 
         guard let timeSync = timeSync, let renderer = overlayRenderer else { return }
 
-        Task {
+        let concatenateVideos = self.concatenateVideos
+        let videoURLs = self.videoURLs
+        let trimSettings = self.trimSettings
+
+        Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 if concatenateVideos && videoURLs.count > 1 {
                     try await exporter.exportConcatenated(
                         videoURLs: videoURLs,
+                        trimSettings: trimSettings,
                         timeSync: timeSync,
                         overlayRenderer: renderer,
                         config: config,
@@ -109,6 +121,7 @@ final class ExportViewModel: ObservableObject {
                         videoURL: videoURLs[0],
                         timeSync: timeSync,
                         segmentIndex: 0,
+                        trimSettings: trimSettings.first ?? TrimSettings(),
                         overlayRenderer: renderer,
                         config: config
                     ) { [weak self] fraction, remaining in
@@ -118,11 +131,15 @@ final class ExportViewModel: ObservableObject {
                         }
                     }
                 }
-                isExporting = false
-                exportComplete = true
+                await MainActor.run { [weak self] in
+                    self?.isExporting = false
+                    self?.exportComplete = true
+                }
             } catch {
-                isExporting = false
-                errorMessage = error.localizedDescription
+                await MainActor.run { [weak self] in
+                    self?.isExporting = false
+                    self?.errorMessage = error.localizedDescription
+                }
             }
         }
     }

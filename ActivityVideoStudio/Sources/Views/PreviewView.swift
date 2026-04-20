@@ -108,6 +108,7 @@ struct PreviewView: View {
                         case .chapters:
                             ChapterMarkerView(
                                 markers: $viewModel.chapterMarkers,
+                                trimmedTime: viewModel.trimmedTime(for:),
                                 onSeek: { viewModel.seekToMarker($0) },
                                 onAdd: { viewModel.addChapterMarker() },
                                 isTextFocused: $isTextFieldFocused
@@ -116,7 +117,8 @@ struct PreviewView: View {
                             YouTubeDescriptionView(
                                 dataPoints: viewModel.fitDataPoints,
                                 videoStartDate: viewModel.videoMetadatas.first?.creationDate,
-                                chapterMarkers: viewModel.chapterMarkers
+                                chapterMarkers: viewModel.chapterMarkers,
+                                trimmedTime: viewModel.trimmedTime(for:)
                             )
                         case .preview:
                             ExportPreviewView(
@@ -162,7 +164,8 @@ struct PreviewView: View {
                 } label: {
                     Image(systemName: "square.and.arrow.up")
                 }
-                .help("エクスポート")
+                .help("エクスポート (⌘E)")
+                .keyboardShortcut("e", modifiers: .command)
                 .disabled(!viewModel.videoLoaded || !viewModel.fitLoaded)
             }
         }
@@ -207,20 +210,25 @@ struct PreviewView: View {
     // MARK: - Controls bar (compact)
 
     private var controlsBar: some View {
-        VStack(spacing: 2) {
+        let trimmedDuration = max(viewModel.trimmedTotalDuration(), 1)
+
+        return VStack(spacing: 2) {
             // Seek bar with trim indicators
             HStack(spacing: 4) {
-                Text(formatTime(viewModel.currentTime))
+                Text(formatTime(viewModel.trimmedPlaybackTime()))
                     .font(.system(size: 10).monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(width: 50, alignment: .trailing)
 
                 ZStack {
-                    Slider(value: $viewModel.currentTime, in: 0...max(viewModel.duration, 1)) { editing in
+                    Slider(value: Binding(
+                        get: { viewModel.trimmedPlaybackTime() },
+                        set: { viewModel.currentTime = viewModel.absoluteTime(forTrimmed: $0) }
+                    ), in: 0...trimmedDuration) { editing in
                         if editing {
                             viewModel.beginSeeking()
                         } else {
-                            viewModel.seek(to: viewModel.currentTime)
+                            viewModel.seekToTrimmedTime(viewModel.trimmedPlaybackTime())
                         }
                     }
                     .controlSize(.small)
@@ -247,11 +255,9 @@ struct PreviewView: View {
 
                     // Chapter markers on seekbar
                     GeometryReader { geo in
-                        let totalDur = max(viewModel.duration, 1)
-                        let startTrim = viewModel.trimSettings.first?.startTrim ?? 0
                         ForEach(viewModel.chapterMarkers) { marker in
-                            let globalTime = marker.time + startTrim
-                            let frac = globalTime / totalDur
+                            let trimmedMarkerTime = viewModel.trimmedTime(for: marker.time)
+                            let frac = min(max(trimmedMarkerTime / trimmedDuration, 0), 1)
                             Rectangle()
                                 .fill(Color.orange)
                                 .frame(width: 2, height: geo.size.height)
