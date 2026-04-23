@@ -210,25 +210,25 @@ struct PreviewView: View {
     // MARK: - Controls bar (compact)
 
     private var controlsBar: some View {
-        let trimmedDuration = max(viewModel.trimmedTotalDuration(), 1)
+        let totalDuration = max(viewModel.duration, 1)
 
         return VStack(spacing: 2) {
-            // Seek bar with trim indicators
+            // Seek bar with trim indicators (absolute time axis)
             HStack(spacing: 4) {
-                Text(formatTime(viewModel.trimmedPlaybackTime()))
+                Text(formatTime(viewModel.currentTime))
                     .font(.system(size: 10).monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(width: 50, alignment: .trailing)
 
                 ZStack {
                     Slider(value: Binding(
-                        get: { viewModel.trimmedPlaybackTime() },
-                        set: { viewModel.currentTime = viewModel.absoluteTime(forTrimmed: $0) }
-                    ), in: 0...trimmedDuration) { editing in
+                        get: { viewModel.currentTime },
+                        set: { viewModel.currentTime = $0 }
+                    ), in: 0...totalDuration) { editing in
                         if editing {
                             viewModel.beginSeeking()
                         } else {
-                            viewModel.seekToTrimmedTime(viewModel.trimmedPlaybackTime())
+                            viewModel.seek(to: viewModel.currentTime)
                         }
                     }
                     .controlSize(.small)
@@ -253,11 +253,10 @@ struct PreviewView: View {
                     }
                     .allowsHitTesting(false)
 
-                    // Chapter markers on seekbar
+                    // Chapter markers on seekbar (absolute time)
                     GeometryReader { geo in
                         ForEach(viewModel.chapterMarkers) { marker in
-                            let trimmedMarkerTime = viewModel.trimmedTime(for: marker.time)
-                            let frac = min(max(trimmedMarkerTime / trimmedDuration, 0), 1)
+                            let frac = min(max(marker.time / totalDuration, 0), 1)
                             Rectangle()
                                 .fill(Color.orange)
                                 .frame(width: 2, height: geo.size.height)
@@ -267,7 +266,7 @@ struct PreviewView: View {
                     .allowsHitTesting(false)
                 }
 
-                Text(formatTime(viewModel.trimmedTotalDuration()))
+                Text(formatTime(totalDuration))
                     .font(.system(size: 10).monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(width: 50, alignment: .leading)

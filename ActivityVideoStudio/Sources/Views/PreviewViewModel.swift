@@ -131,6 +131,18 @@ final class PreviewViewModel: ObservableObject {
             trimSettings = trimSettings.indices.map { _ in cliTrimSettings }
         }
 
+        // Per-segment trim override: --trim-start-N <sec> / --trim-end-N <sec>
+        for segIdx in 0..<trimSettings.count {
+            if let idx = args.firstIndex(of: "--trim-start-\(segIdx)"),
+               idx + 1 < args.count, let v = TimeInterval(args[idx + 1]) {
+                trimSettings[segIdx].startTrim = v
+            }
+            if let idx = args.firstIndex(of: "--trim-end-\(segIdx)"),
+               idx + 1 < args.count, let v = TimeInterval(args[idx + 1]) {
+                trimSettings[segIdx].endTrim = v
+            }
+        }
+
         if let overlayText, !overlayText.isEmpty {
             var overlay = TextOverlay(text: overlayText, startTime: 0, duration: 9999)
             overlay.position = overlayPos
@@ -159,7 +171,11 @@ final class PreviewViewModel: ObservableObject {
 
         autoExportLog("[AutoExport] Starting export to \(outputURL.path)")
         let exporter = VideoExporter()
-        let config = VideoExporter.ExportConfig(outputURL: outputURL)
+        var config = VideoExporter.ExportConfig(outputURL: outputURL)
+        // Honor CLI --width/--height overrides (read from ProcessInfo; default preserved)
+        let args = ProcessInfo.processInfo.arguments
+        if let idx = args.firstIndex(of: "--width"), idx + 1 < args.count, let w = Int(args[idx + 1]) { config.width = w }
+        if let idx = args.firstIndex(of: "--height"), idx + 1 < args.count, let h = Int(args[idx + 1]) { config.height = h }
         do {
             if videoURLs.count > 1 {
                 try await exporter.exportConcatenated(

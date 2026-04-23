@@ -75,6 +75,7 @@ final class VideoExporter {
         trimSettings: TrimSettings = TrimSettings(),
         overlayRenderer: OverlayRenderer,
         config: ExportConfig,
+        outputTimeOffset: TimeInterval = 0,
         progress: @escaping ProgressCallback
     ) async throws {
         exportLog("START seg=\(segmentIndex) url=\(videoURL.lastPathComponent)")
@@ -115,13 +116,17 @@ final class VideoExporter {
         let capturedRenderer = overlayRenderer
         let capturedSegIdx   = segmentIndex
         let capturedTrimSettings = trimSettings
+        let capturedOutputOffset = outputTimeOffset
 
         let videoComposition = AVVideoComposition(asset: composition) { [weak capturedRenderer] request in
             let t = CMTimeGetSeconds(request.compositionTime)
+            // TimeSync expects source-video playback time (== `t + startTrim`),
+            // because segment.fitStartTime maps to the untrimmed video start.
+            let sourceVideoTime = t + capturedTrimSettings.startTrim
 
             guard let renderer = capturedRenderer,
-                  let dp       = capturedTimeSync.dataPoint(segmentIndex: capturedSegIdx, playbackTime: t),
-                  let elapsed  = capturedTimeSync.elapsedTime(segmentIndex: capturedSegIdx, playbackTime: t) else {
+                  let dp       = capturedTimeSync.dataPoint(segmentIndex: capturedSegIdx, playbackTime: sourceVideoTime),
+                  let elapsed  = capturedTimeSync.elapsedTime(segmentIndex: capturedSegIdx, playbackTime: sourceVideoTime) else {
                 request.finish(with: request.sourceImage, context: nil)
                 return
             }
@@ -130,7 +135,7 @@ final class VideoExporter {
                 if let overlayImage = renderer.render(
                     dataPoint: dp,
                     elapsedTime: elapsed,
-                    globalPlaybackTime: t + capturedTrimSettings.startTrim
+                    globalPlaybackTime: capturedOutputOffset + t
                 ) {
                     let overlayCI  = CIImage(cgImage: overlayImage)
                     let composited = overlayCI.composited(over: request.sourceImage)
@@ -173,7 +178,11 @@ final class VideoExporter {
         await exportSession.export()
         progressTask.cancel()
 
-        exportLog("export finished: status=\(exportSession.status.rawValue) error=\(exportSession.error?.localizedDescription ?? "none")")
+        if let err = exportSession.error as NSError? {
+            exportLog("export finished: status=\(exportSession.status.rawValue) error domain=\(err.domain) code=\(err.code) desc=\(err.localizedDescription) userInfo=\(err.userInfo)")
+        } else {
+            exportLog("export finished: status=\(exportSession.status.rawValue) error=none")
+        }
 
         if isCancelled || exportSession.status == .cancelled {
             throw ExportError.cancelled
@@ -219,7 +228,11 @@ final class VideoExporter {
         }
         let totalDuration = segmentDurations.reduce(0, +)
 
-        // Phase 2: export each segment to temp file
+        // Phase 2: export each segment to temp file.
+        // Place temp files next to the final output so we stay on the same volume —
+        // the default system temp is on the boot drive, which is easily too small for
+        // multi-GB 4K intermediates even when the user's output drive has ample space.
+        let tempDir = config.outputURL.deletingLastPathComponent()
         var tempURLs: [URL] = []
         defer { tempURLs.forEach { try? FileManager.default.removeItem(at: $0) } }
 
@@ -228,8 +241,9 @@ final class VideoExporter {
             if isCancelled { throw ExportError.cancelled }
             onStatus("動画 \(segIdx + 1) / \(videoURLs.count) を処理中...")
 
-            let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString).appendingPathExtension("mp4")
+            let tempURL = tempDir
+                .appendingPathComponent(".avs_tmp_" + UUID().uuidString)
+                .appendingPathExtension("mp4")
             var segConfig = config
             segConfig.outputURL = tempURL
 
@@ -239,7 +253,8 @@ final class VideoExporter {
             try await exportSingleVideo(
                 videoURL: url, timeSync: timeSync, segmentIndex: segIdx,
                 trimSettings: segIdx < trimSettings.count ? trimSettings[segIdx] : TrimSettings(),
-                overlayRenderer: overlayRenderer, config: segConfig
+                overlayRenderer: overlayRenderer, config: segConfig,
+                outputTimeOffset: completedDuration
             ) { fraction, remaining in
                 progress(min(baseFraction + fraction * segWeight, 0.99), remaining)
             }
