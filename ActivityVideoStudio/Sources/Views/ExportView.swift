@@ -26,9 +26,14 @@ struct ExportView: View {
                 .font(.headline)
 
             Picker("解像度", selection: $viewModel.resolution) {
-                Text("1080p (1920x1080)").tag(ExportViewModel.Resolution.r1080p)
-                Text("720p (1280x720)").tag(ExportViewModel.Resolution.r720p)
-                Text("4K (3840x2160)").tag(ExportViewModel.Resolution.r4k)
+                ForEach(viewModel.availableResolutions, id: \.self) { resolution in
+                    Text(resolution.title).tag(resolution)
+                }
+            }
+            if let sourceResolutionText = viewModel.sourceResolutionText {
+                Text(sourceResolutionText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Picker("品質", selection: $viewModel.quality) {
@@ -36,6 +41,9 @@ struct ExportView: View {
                 Text("標準").tag(ExportViewModel.Quality.medium)
                 Text("低容量").tag(ExportViewModel.Quality.low)
             }
+
+            TextField("ファイル名", text: $viewModel.outputFileName)
+                .textFieldStyle(.roundedBorder)
 
             if viewModel.videoCount > 1 {
                 Toggle("複数動画を結合", isOn: $viewModel.concatenateVideos)
