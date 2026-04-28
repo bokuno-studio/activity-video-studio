@@ -136,10 +136,8 @@ final class ExportViewModel: ObservableObject {
         let videoURLs = self.videoURLs
         let trimSettings = self.trimSettings
         Task.detached(priority: .userInitiated) { [weak self] in
-            let accessedVideoURLs = videoURLs.filter { $0.startAccessingSecurityScopedResource() }
             defer {
                 if directoryAccess { directoryURL.stopAccessingSecurityScopedResource() }
-                accessedVideoURLs.forEach { $0.stopAccessingSecurityScopedResource() }
             }
 
             do {
@@ -219,8 +217,7 @@ final class ExportViewModel: ObservableObject {
         let sanitized = fallback
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
-        let url = URL(fileURLWithPath: sanitized)
-        return url.pathExtension.lowercased() == "mp4" ? sanitized : sanitized + ".mp4"
+        return sanitized.lowercased().hasSuffix(".mp4") ? sanitized : sanitized + ".mp4"
     }
 
     private func uniqueOutputURL(in directoryURL: URL, fileName: String) -> URL {
