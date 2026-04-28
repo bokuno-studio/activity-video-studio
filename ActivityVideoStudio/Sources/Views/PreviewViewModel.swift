@@ -4,6 +4,7 @@ import Combine
 import CoreGraphics
 import CoreLocation
 
+#if DEBUG
 /// Append a line to /tmp/avs_export.log and stderr. Nonisolated so @Sendable closures can call it.
 func autoExportLog(_ msg: String) {
     let line = msg + "\n"
@@ -14,6 +15,7 @@ func autoExportLog(_ msg: String) {
     }
     FileHandle.standardError.write(data)
 }
+#endif
 
 /// ViewModel for the preview screen. Manages video playback, FIT sync, and overlay.
 @MainActor
@@ -38,6 +40,7 @@ final class PreviewViewModel: ObservableObject {
     @Published var playbackRate: Float = 1.0
     @Published var chapterMarkers: [ChapterMarker] = []
     @Published var exportPreviewImage: CGImage?
+    @Published private(set) var videoNativeWidth: Int = 0
 
     let player = AVPlayer()
     let overlaySettings = OverlaySettings()
@@ -300,6 +303,7 @@ final class PreviewViewModel: ObservableObject {
         videoMetadatas = indices.map { videoMetadatas[$0] }
         trimSettings = indices.map { trimSettings[$0] }
         segmentDurations = videoMetadatas.map { $0.duration }
+        updateNativeVideoWidth()
     }
 
     /// Remove a video at the given index.
@@ -309,6 +313,7 @@ final class PreviewViewModel: ObservableObject {
         videoMetadatas.remove(at: index)
         trimSettings.remove(at: index)
         segmentDurations = videoMetadatas.map { $0.duration }
+        updateNativeVideoWidth()
         setupTimeSync()
         Task { await rebuildComposition() }
     }
@@ -506,6 +511,8 @@ final class PreviewViewModel: ObservableObject {
         let vm = ExportViewModel()
         vm.videoURLs = videoURLs
         vm.trimSettings = trimSettings
+        vm.nativeVideoWidth = videoNativeWidth
+        vm.resetOutputFileName()
         vm.timeSync = timeSync
         overlayRenderer?.textOverlays = textOverlays
         overlayRenderer?.trackCoordinates = trackCoordinates
@@ -531,7 +538,8 @@ final class PreviewViewModel: ObservableObject {
             let adjustedMetadata = VideoMetadata(
                 url: metadata.url,
                 creationDate: metadata.creationDate?.addingTimeInterval(cumulativeOffset),
-                duration: metadata.duration
+                duration: metadata.duration,
+                naturalSize: metadata.naturalSize
             )
             timeSync?.addVideo(adjustedMetadata, offsetSeconds: i == 0 ? syncOffset : 0)
             cumulativeOffset += metadata.duration
@@ -583,6 +591,11 @@ final class PreviewViewModel: ObservableObject {
         return (0, globalTime)
     }
 
+    private func updateNativeVideoWidth() {
+        let widths = videoMetadatas.compactMap { $0.nativeWidth }.filter { $0 > 0 }
+        videoNativeWidth = widths.min() ?? 0
+    }
+
     private func formatDuration(_ seconds: TimeInterval) -> String {
         let total = max(0, Int(seconds))
         let h = total / 3600
@@ -605,14 +618,11 @@ final class PreviewViewModel: ObservableObject {
     func trimRangesForSeekbar() -> [TrimRange] {
         guard duration > 0 else { return [] }
 
-        var cumulativeStart: TimeInterval = 0
-        var ranges: [TrimRange] = []
-
         // Combine all segments into one range for the full timeline
         var totalStartTrim: TimeInterval = 0
         var totalEndTrim: TimeInterval = 0
 
-        for (i, dur) in segmentDurations.enumerated() {
+        for i in segmentDurations.indices {
             if i < trimSettings.count {
                 if i == 0 {
                     totalStartTrim = trimSettings[i].startTrim

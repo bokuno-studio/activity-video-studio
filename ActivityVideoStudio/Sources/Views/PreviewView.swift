@@ -136,7 +136,7 @@ struct PreviewView: View {
             return true
         }
         .overlay {
-            if !viewModel.videoLoaded {
+            if !viewModel.videoLoaded || !viewModel.fitLoaded {
                 dropPrompt
             }
         }
@@ -361,7 +361,7 @@ struct PreviewView: View {
     // MARK: - Drop prompt
 
     private var dropPrompt: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 16) {
             Image(systemName: "arrow.down.doc")
                 .font(.system(size: 40))
                 .foregroundStyle(Color.white.opacity(0.7))
@@ -371,6 +371,23 @@ struct PreviewView: View {
             Text(".fit + .mp4 / .mov")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Image(systemName: viewModel.fitLoaded ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(viewModel.fitLoaded ? .green : .secondary)
+                    Text(".FIT (アクティビティデータ)")
+                        .foregroundStyle(viewModel.fitLoaded ? .primary : .secondary)
+                }
+                HStack(spacing: 10) {
+                    Image(systemName: viewModel.videoLoaded ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(viewModel.videoLoaded ? .green : .secondary)
+                    Text(".MP4 (動画ファイル)")
+                        .foregroundStyle(viewModel.videoLoaded ? .primary : .secondary)
+                }
+            }
+            .font(.callout)
+            .padding(.top, 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(white: 0.12).opacity(0.95))

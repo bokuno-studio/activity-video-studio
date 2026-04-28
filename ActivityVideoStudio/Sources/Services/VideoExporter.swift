@@ -7,8 +7,9 @@ import OSLog
 
 private let exportLogger = Logger(subsystem: "com.avs", category: "Export")
 
-/// Write to /tmp/avs_export.log (append) + stderr for live tail.
+/// Log export progress; DEBUG builds also mirror to /tmp/avs_export.log for CLI runs.
 private func exportLog(_ msg: String) {
+    #if DEBUG
     let line = "[Export] \(msg)\n"
     if let data = line.data(using: .utf8) {
         let logURL = URL(fileURLWithPath: "/tmp/avs_export.log")
@@ -17,6 +18,7 @@ private func exportLog(_ msg: String) {
         }
         FileHandle.standardError.write(data)
     }
+    #endif
     exportLogger.info("\(msg)")
 }
 
@@ -229,9 +231,8 @@ final class VideoExporter {
         let totalDuration = segmentDurations.reduce(0, +)
 
         // Phase 2: export each segment to temp file.
-        // Place temp files next to the final output so we stay on the same volume —
-        // the default system temp is on the boot drive, which is easily too small for
-        // multi-GB 4K intermediates even when the user's output drive has ample space.
+        // Keep intermediates next to the final output so large exports stay on
+        // the user-selected volume instead of filling the system drive.
         let tempDir = config.outputURL.deletingLastPathComponent()
         var tempURLs: [URL] = []
         defer { tempURLs.forEach { try? FileManager.default.removeItem(at: $0) } }

@@ -8,6 +8,14 @@ final class ExportViewModel: ObservableObject {
     enum Resolution: String, CaseIterable {
         case r720p, r1080p, r4k
 
+        var title: String {
+            switch self {
+            case .r720p: return "720p (1280x720)"
+            case .r1080p: return "1080p (1920x1080)"
+            case .r4k: return "4K (3840x2160)"
+            }
+        }
+
         var width: Int {
             switch self {
             case .r720p: return 1280
@@ -47,6 +55,10 @@ final class ExportViewModel: ObservableObject {
     @Published var statusMessage: String?
     @Published var errorMessage: String?
     @Published var outputURL: URL?
+    @Published var outputFileName: String = ""
+    @Published var nativeVideoWidth: Int = 0 {
+        didSet { clampResolutionToSource() }
+    }
 
     var videoURLs: [URL] = []
     var trimSettings: [TrimSettings] = []
@@ -56,22 +68,53 @@ final class ExportViewModel: ObservableObject {
 
     var videoCount: Int { videoURLs.count }
     var canExport: Bool { !videoURLs.isEmpty && timeSync != nil }
+    var availableResolutions: [Resolution] {
+        let maxWidth = nativeVideoWidth > 0 ? nativeVideoWidth : Resolution.r1080p.width
+        let resolutions = Resolution.allCases.filter { $0.width <= maxWidth }
+        return resolutions.isEmpty ? [.r720p] : resolutions
+    }
+    var sourceResolutionText: String? {
+        nativeVideoWidth > 0 ? "元動画幅: \(nativeVideoWidth)px" : nil
+    }
 
     private var exporter: VideoExporter?
 
     func startExport() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.mpeg4Movie]
-        let dateStr: String = {
-            let fmt = DateFormatter()
-            fmt.dateFormat = "yyyyMMdd"
-            return fmt.string(from: Date())
-        }()
-        let baseName = videoURLs.first?.deletingPathExtension().lastPathComponent ?? "activity_overlay"
-        panel.nameFieldStringValue = "\(dateStr)_\(baseName).mp4"
+        clampResolutionToSource()
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if outputFileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            outputFileName = defaultOutputFileName()
+        }
 
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.message = "保存先フォルダを選択"
+        panel.prompt = "エクスポート"
+
+        panel.begin { [weak self] response in
+            Task { @MainActor in
+                guard response == .OK, let directoryURL = panel.url else { return }
+                self?.startExport(in: directoryURL)
+            }
+        }
+    }
+
+    func resetOutputFileName() {
+        outputFileName = defaultOutputFileName()
+    }
+
+    private func startExport(in directoryURL: URL) {
+        guard let timeSync = timeSync, let renderer = overlayRenderer else {
+            isExporting = false
+            errorMessage = "エクスポートの準備ができていません"
+            return
+        }
+
+        let directoryAccess = directoryURL.startAccessingSecurityScopedResource()
+        let url = uniqueOutputURL(in: directoryURL, fileName: normalizedOutputFileName())
         outputURL = url
         isExporting = true
         exportComplete = false
@@ -89,13 +132,14 @@ final class ExportViewModel: ObservableObject {
             bitRate: quality.bitRate
         )
 
-        guard let timeSync = timeSync, let renderer = overlayRenderer else { return }
-
         let concatenateVideos = self.concatenateVideos
         let videoURLs = self.videoURLs
         let trimSettings = self.trimSettings
-
         Task.detached(priority: .userInitiated) { [weak self] in
+            defer {
+                if directoryAccess { directoryURL.stopAccessingSecurityScopedResource() }
+            }
+
             do {
                 if concatenateVideos && videoURLs.count > 1 {
                     try await exporter.exportConcatenated(
@@ -131,6 +175,7 @@ final class ExportViewModel: ObservableObject {
                         }
                     }
                 }
+
                 await MainActor.run { [weak self] in
                     self?.isExporting = false
                     self?.exportComplete = true
@@ -150,5 +195,48 @@ final class ExportViewModel: ObservableObject {
 
     func dismiss() {
         onDismiss?()
+    }
+
+    private func clampResolutionToSource() {
+        let available = availableResolutions
+        guard !available.contains(resolution), let fallback = available.last else { return }
+        resolution = fallback
+    }
+
+    private func defaultOutputFileName() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd"
+        let dateString = formatter.string(from: Date())
+        let baseName = videoURLs.first?.deletingPathExtension().lastPathComponent ?? "activity_overlay"
+        return "\(dateString)_\(baseName).mp4"
+    }
+
+    private func normalizedOutputFileName() -> String {
+        let trimmed = outputFileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = trimmed.isEmpty ? defaultOutputFileName() : trimmed
+        let sanitized = fallback
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        return sanitized.lowercased().hasSuffix(".mp4") ? sanitized : sanitized + ".mp4"
+    }
+
+    private func uniqueOutputURL(in directoryURL: URL, fileName: String) -> URL {
+        let fileManager = FileManager.default
+        let originalURL = directoryURL.appendingPathComponent(fileName)
+        guard fileManager.fileExists(atPath: originalURL.path) else { return originalURL }
+
+        let base = originalURL.deletingPathExtension().lastPathComponent
+        let ext = originalURL.pathExtension
+        for index in 2...999 {
+            let candidate = directoryURL
+                .appendingPathComponent("\(base)-\(index)")
+                .appendingPathExtension(ext)
+            if !fileManager.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return directoryURL
+            .appendingPathComponent("\(base)-\(UUID().uuidString)")
+            .appendingPathExtension(ext)
     }
 }

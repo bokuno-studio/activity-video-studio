@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import CoreGraphics
 
 /// Reads metadata from GoPro MP4 files.
 final class VideoMetadataReader {
@@ -27,6 +28,15 @@ final class VideoMetadataReader {
             throw ReadError.cannotLoadDuration
         }
 
+        let tracks = try await asset.load(.tracks)
+        let videoTrack = tracks.first(where: { $0.mediaType == .video })
+        let naturalSize = try await videoTrack?.load(.naturalSize)
+        let preferredTransform = try await videoTrack?.load(.preferredTransform)
+        let displaySize = Self.displaySize(
+            naturalSize: naturalSize,
+            preferredTransform: preferredTransform
+        )
+
         // Load creation date
         let creationDate = try? await asset.load(.creationDate)
         let date = try? await creationDate?.load(.dateValue)
@@ -34,7 +44,8 @@ final class VideoMetadataReader {
         return VideoMetadata(
             url: url,
             creationDate: date,
-            duration: durationSeconds
+            duration: durationSeconds,
+            naturalSize: displaySize
         )
     }
 
@@ -57,5 +68,22 @@ final class VideoMetadataReader {
                 return dateA < dateB
             }
         }
+    }
+
+    private static func displaySize(
+        naturalSize: CGSize?,
+        preferredTransform: CGAffineTransform?
+    ) -> CGSize? {
+        guard let naturalSize else { return nil }
+        guard let preferredTransform else { return naturalSize }
+
+        let transformed = CGRect(origin: .zero, size: naturalSize)
+            .applying(preferredTransform)
+            .standardized
+
+        return CGSize(
+            width: abs(transformed.width),
+            height: abs(transformed.height)
+        )
     }
 }
