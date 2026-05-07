@@ -101,6 +101,11 @@ ActivityVideoStudio/Sources/
 
 MIT License — 詳細は [LICENSE](./LICENSE) を参照。
 
+## リンク
+
+- [プライバシーポリシー](https://bokuno-studio.github.io/activity-video-studio/privacy.html)
+- [Releases](https://github.com/bokuno-studio/activity-video-studio/releases)
+
 ## 謝辞
 
 - 地図タイル: [Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9)

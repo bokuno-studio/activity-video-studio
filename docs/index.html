@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ActivityVideoStudio — Garmin × GoPro Overlay for macOS</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #3b82f6;
+      --accent-light: #60a5fa;
+      --border: #334155;
+      --green: #22c55e;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+    }
+
+    /* ---- NAV ---- */
+    nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 2rem;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      z-index: 10;
+    }
+    nav .logo { font-weight: 700; font-size: 1.05rem; }
+    nav a { color: var(--muted); text-decoration: none; font-size: 0.9rem; margin-left: 1.5rem; }
+    nav a:hover { color: var(--text); }
+
+    /* ---- HERO ---- */
+    .hero {
+      text-align: center;
+      padding: 5rem 1.5rem 4rem;
+      max-width: 760px;
+      margin: 0 auto;
+    }
+    .badge {
+      display: inline-block;
+      background: rgba(59, 130, 246, 0.15);
+      border: 1px solid rgba(59, 130, 246, 0.4);
+      color: var(--accent-light);
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.25rem 0.75rem;
+      border-radius: 99px;
+      margin-bottom: 1.5rem;
+    }
+    .hero h1 {
+      font-size: clamp(2rem, 5vw, 3rem);
+      font-weight: 800;
+      line-height: 1.2;
+      margin-bottom: 1.25rem;
+    }
+    .hero h1 span { color: var(--accent-light); }
+    .hero p {
+      color: var(--muted);
+      font-size: 1.1rem;
+      margin-bottom: 2rem;
+      max-width: 580px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .cta-group { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+    .btn {
+      display: inline-block;
+      padding: 0.7rem 1.6rem;
+      border-radius: 8px;
+      font-weight: 600;
+      text-decoration: none;
+      font-size: 0.95rem;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-outline { border: 1px solid var(--border); color: var(--text); background: transparent; }
+
+    /* ---- FEATURES ---- */
+    .features {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1.25rem;
+    }
+    .feature-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.5rem;
+    }
+    .feature-card .icon {
+      font-size: 1.8rem;
+      margin-bottom: 0.75rem;
+    }
+    .feature-card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 0.4rem; }
+    .feature-card p { color: var(--muted); font-size: 0.88rem; }
+
+    /* ---- PRIVACY STRIP ---- */
+    .privacy-strip {
+      background: var(--card);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      padding: 2rem 1.5rem;
+      text-align: center;
+    }
+    .privacy-strip h2 { font-size: 1.2rem; margin-bottom: 0.5rem; }
+    .privacy-strip p { color: var(--muted); max-width: 580px; margin: 0 auto 1rem; font-size: 0.9rem; }
+    .privacy-pillars {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 0.75rem;
+      margin-bottom: 1.25rem;
+    }
+    .pillar {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: rgba(34, 197, 94, 0.1);
+      border: 1px solid rgba(34, 197, 94, 0.3);
+      border-radius: 99px;
+      padding: 0.3rem 0.9rem;
+      font-size: 0.82rem;
+      color: var(--green);
+      font-weight: 500;
+    }
+
+    /* ---- FOOTER ---- */
+    footer {
+      text-align: center;
+      padding: 2rem 1.5rem;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    footer a { color: var(--muted); text-decoration: none; margin: 0 0.5rem; }
+    footer a:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+
+<nav>
+  <span class="logo">ActivityVideoStudio</span>
+  <div>
+    <a href="https://github.com/bokuno-studio/activity-video-studio" target="_blank" rel="noopener">GitHub</a>
+    <a href="privacy.html">Privacy Policy</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="badge">macOS Native App</div>
+  <h1>Garmin × GoPro<br><span>Overlay Studio</span></h1>
+  <p>
+    .FIT アクティビティデータと GoPro 動画を自動同期し、心拍・ペース・GPS トラックをオーバーレイ合成する macOS アプリ。<br>
+    <em style="color: var(--muted); font-style: normal; font-size: 0.95rem;">
+      Sync your Garmin .FIT data with GoPro footage and render heart rate, pace, GPS track overlays — natively on macOS.
+    </em>
+  </p>
+  <div class="cta-group">
+    <a class="btn btn-primary" href="https://github.com/bokuno-studio/activity-video-studio/releases" target="_blank" rel="noopener">Download</a>
+    <a class="btn btn-outline" href="https://github.com/bokuno-studio/activity-video-studio" target="_blank" rel="noopener">View on GitHub</a>
+  </div>
+</section>
+
+<section class="features">
+  <div class="feature-card">
+    <div class="icon">🗺️</div>
+    <h3>GPS ミニマップ / GPS Minimap</h3>
+    <p>GPS トラックと現在位置を動画右上にリアルタイム表示。Esri 衛星画像タイル対応。</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">❤️</div>
+    <h3>心拍ゾーンカラー / HR Zone Colors</h3>
+    <p>FIT の HR Zone 設定を自動読み取り。ゾーン別にカラーコーディング。</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">📈</div>
+    <h3>標高プロファイル / Elevation Profile</h3>
+    <p>ルート全体の標高グラフに進行インジケーターをリアルタイム描画。</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">🎬</div>
+    <h3>大容量 4K 対応 / Large File Support</h3>
+    <p>AVFoundation ストリーミング処理により 10 GB 超の 4K 動画も安定してエクスポート。</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">🔗</div>
+    <h3>複数動画の自動結合 / Multi-Clip Join</h3>
+    <p>GoPro が分割した連番 MP4 を 1 本のオーバーレイ付き動画として書き出し。</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon">✏️</div>
+    <h3>テキストオーバーレイ / Text Overlays</h3>
+    <p>任意のテキストを複数追加し、フェードイン/アウト付きで合成。</p>
+  </div>
+</section>
+
+<section class="privacy-strip">
+  <h2>Privacy First / プライバシー最優先</h2>
+  <p>ActivityVideoStudio はデータを一切収集しません。すべての処理は Mac 上でローカルに完結します。</p>
+  <div class="privacy-pillars">
+    <span class="pillar">✓ No data collected</span>
+    <span class="pillar">✓ No server uploads</span>
+    <span class="pillar">✓ App Sandbox enabled</span>
+    <span class="pillar">✓ No analytics SDKs</span>
+  </div>
+  <a class="btn btn-outline" href="privacy.html" style="font-size: 0.88rem; padding: 0.5rem 1.2rem;">Read Privacy Policy</a>
+</section>
+
+<section style="max-width: 760px; margin: 0 auto; padding: 3rem 1.5rem;">
+  <h2 style="font-size: 1.15rem; margin-bottom: 1rem; text-align: center;">動作環境 / Requirements</h2>
+  <ul style="color: var(--muted); font-size: 0.9rem; padding-left: 1.5rem; list-style: disc;">
+    <li>macOS 14 (Sonoma) 以上 / macOS 14 (Sonoma) or later</li>
+    <li>Apple Silicon または Intel Mac / Apple Silicon or Intel Mac</li>
+    <li>Garmin .FIT ファイル（Fenix, Forerunner 等） / Garmin .FIT file (Fenix, Forerunner, etc.)</li>
+    <li>GoPro MP4 動画 / GoPro MP4 footage</li>
+  </ul>
+</section>
+
+<footer>
+  <p>
+    <a href="https://github.com/bokuno-studio/activity-video-studio" target="_blank" rel="noopener">GitHub</a>
+    <a href="privacy.html">Privacy Policy</a>
+    <a href="mailto:bokunon.0724@gmail.com">Contact</a>
+  </p>
+  <p style="margin-top: 0.5rem;">&copy; 2026 ActivityVideoStudio — MIT License</p>
+</footer>
+
+</body>
+</html>
