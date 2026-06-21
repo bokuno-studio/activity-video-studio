@@ -78,6 +78,8 @@ final class PreviewViewModel: ObservableObject {
         var overlayText: String?
         var overlayPos: TextOverlay.Position = .center
         var overlayFontSize: CGFloat = 48
+        var cliOffset: Double?
+        var alignFitStart = false
 
         var i = 1
         while i < args.count {
@@ -115,6 +117,13 @@ final class PreviewViewModel: ObservableObject {
                 }
             case "--export-to":
                 if i + 1 < args.count { exportPath = args[i + 1]; i += 1 }
+            case "--offset":
+                if i + 1 < args.count, let value = Double(args[i + 1]) {
+                    cliOffset = value
+                    i += 1
+                }
+            case "--align-fit-start":
+                alignFitStart = true
             default: break
             }
             i += 1
@@ -126,6 +135,10 @@ final class PreviewViewModel: ObservableObject {
         for vp in videoPaths {
             await loadVideo(url: URL(fileURLWithPath: vp))
         }
+
+        // Apply a manual sync offset before export (GoPro clock-skew correction).
+        if let cliOffset { updateSyncOffset(cliOffset) }
+        if alignFitStart { alignVideoStartToFitStart() }
 
         let cliTrimSettings = TrimSettings(startTrim: trimStart, endTrim: trimEnd)
         if trimSettings.isEmpty {
@@ -443,11 +456,47 @@ final class PreviewViewModel: ObservableObject {
 
     func updateSyncOffset(_ offset: Double) {
         syncOffset = offset
-        if let timeSync = timeSync, !timeSync.segments.isEmpty {
-            timeSync.updateOffset(segmentIndex: 0, offsetSeconds: offset)
-        }
+        // Rebuild every segment so the offset applies uniformly across all
+        // chapters (not just segment 0). Cheap: only a handful of segments.
+        if timeSync != nil { setupTimeSync() }
         updateOverlay()
     }
+
+    /// Align the first video frame with the FIT activity start.
+    /// Handles a large clock offset in one step — e.g. a GoPro whose date was
+    /// never set records a 2016 timestamp while the activity is years later.
+    /// After this, fine-tune with the ± nudge controls while watching the video.
+    func alignVideoStartToFitStart() {
+        guard let creationDate = videoMetadatas.first?.creationDate else {
+            statusMessage = "同期できません（動画の撮影時刻が読めません）"
+            return
+        }
+        guard let fitStart = fitDataPoints.first?.timestamp else {
+            statusMessage = "同期できません（FITの開始時刻がありません）"
+            return
+        }
+        updateSyncOffset(fitStart.timeIntervalSince(creationDate))
+        if let desc = videoStartDescription() {
+            statusMessage = "動画先頭をFIT開始に合わせました（動画先頭 = \(desc)）"
+        }
+    }
+
+    /// Wall-clock time mapped to the first frame of the first video, given the
+    /// current sync offset. nil until both a video and FIT are loaded.
+    var videoStartDate: Date? { timeSync?.segments.first?.fitStartTime }
+
+    /// Localized (device timezone) description of the current video-start time.
+    func videoStartDescription() -> String? {
+        guard let date = videoStartDate else { return nil }
+        return Self.videoStartFormatter.string(from: date)
+    }
+
+    private static let videoStartFormatter: DateFormatter = {
+        let f = DateFormatter()
+        // Tenths so a ±0.5s fine nudge is visible in the readout.
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss.S"
+        return f
+    }()
 
     // MARK: - Chapter markers
 
@@ -541,7 +590,10 @@ final class PreviewViewModel: ObservableObject {
                 duration: metadata.duration,
                 naturalSize: metadata.naturalSize
             )
-            timeSync?.addVideo(adjustedMetadata, offsetSeconds: i == 0 ? syncOffset : 0)
+            // Apply the manual sync offset to every segment so the whole video
+            // timeline shifts uniformly against the FIT timeline. Applying it to
+            // segment 0 only would leave later GoPro chapters mis-aligned.
+            timeSync?.addVideo(adjustedMetadata, offsetSeconds: syncOffset)
             cumulativeOffset += metadata.duration
         }
     }

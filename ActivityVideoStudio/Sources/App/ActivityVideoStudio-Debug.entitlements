@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Debug-only: sandbox disabled so headless/CLI runs can read files passed
+	     by absolute path (--fit/--video/--export-to). The Release build keeps the
+	     App Store sandbox (ActivityVideoStudio.entitlements). -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>

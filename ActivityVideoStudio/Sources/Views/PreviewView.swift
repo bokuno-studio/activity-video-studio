@@ -315,34 +315,38 @@ struct PreviewView: View {
 
                 Spacer()
 
-                // Sync offset
+                // Sync offset: one-click clock-skew correction + fine nudge.
                 if viewModel.fitLoaded {
                     HStack(spacing: 4) {
-                        Text("同期:")
+                        Button {
+                            viewModel.alignVideoStartToFitStart()
+                        } label: {
+                            Text("FIT開始に合わせる")
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("動画の先頭をFITの記録開始に合わせます（GoProの時計ズレを一発で粗合わせ）")
+
+                        Divider().frame(height: 12)
+
+                        Text("同期")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
 
-                        Button {
-                            viewModel.updateSyncOffset(viewModel.syncOffset - 0.5)
-                        } label: {
-                            Text("−")
-                                .font(.system(size: 11, weight: .semibold))
-                                .frame(width: 18)
-                        }
-                        .buttonStyle(.borderless)
+                        syncNudgeButton("−1m", delta: -60)
+                        syncNudgeButton("−10s", delta: -10)
+                        syncNudgeButton("−", delta: -0.5)
 
-                        Text(String(format: "%+.1fs", viewModel.syncOffset))
+                        Text(viewModel.videoStartDescription() ?? "—")
                             .font(.system(size: 10).monospacedDigit())
-                            .frame(width: 42)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 138)
+                            .help("オフセット適用後の動画先頭の時刻。ここがFITの活動中の時刻と一致すれば同期OK")
 
-                        Button {
-                            viewModel.updateSyncOffset(viewModel.syncOffset + 0.5)
-                        } label: {
-                            Text("＋")
-                                .font(.system(size: 11, weight: .semibold))
-                                .frame(width: 18)
-                        }
-                        .buttonStyle(.borderless)
+                        syncNudgeButton("＋", delta: 0.5)
+                        syncNudgeButton("+10s", delta: 10)
+                        syncNudgeButton("+1m", delta: 60)
                     }
                 }
 
@@ -420,6 +424,18 @@ struct PreviewView: View {
         let s = total % 60
         if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
         return String(format: "%02d:%02d", m, s)
+    }
+
+    @ViewBuilder
+    private func syncNudgeButton(_ label: String, delta: Double) -> some View {
+        Button {
+            viewModel.updateSyncOffset(viewModel.syncOffset + delta)
+        } label: {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+                .frame(minWidth: label.count > 1 ? 28 : 16)
+        }
+        .buttonStyle(.borderless)
     }
 }
 
