@@ -44,7 +44,9 @@ struct PreviewView: View {
             // Main content
             VStack(spacing: 0) {
                 // Video with overlays
-                VideoPlayerView(player: viewModel.player)
+                VideoPlayerView(player: viewModel.player) { delta in
+                    viewModel.seekBy(delta)
+                }
                     .aspectRatio(16/9, contentMode: .fit)
                     // Single source of truth for the overlay: OverlayView shows the
                     // exact image OverlayRenderer burns into the export (mini-map,
@@ -68,6 +70,13 @@ struct PreviewView: View {
                     Text(status)
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
+                        .padding(.bottom, 1)
+                }
+                if let warning = viewModel.projectWarningMessage {
+                    Text(warning)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
                         .padding(.bottom, 1)
                 }
             }
@@ -138,6 +147,25 @@ struct PreviewView: View {
         }
         .toolbar {
             ToolbarItemGroup {
+                Button {
+                    viewModel.presentOpenProjectPanel()
+                } label: {
+                    Image(systemName: "folder")
+                }
+                .help("プロジェクトを開く (⌘O)")
+                .keyboardShortcut("o", modifiers: .command)
+
+                Button {
+                    viewModel.presentSaveProjectPanel()
+                } label: {
+                    Image(systemName: "square.and.arrow.down")
+                }
+                .help("プロジェクトを保存 (⌘S)")
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(!viewModel.canSaveProject)
+
+                Divider()
+
                 Button {
                     viewModel.showFileList.toggle()
                 } label: {
@@ -294,8 +322,18 @@ struct PreviewView: View {
                 .buttonStyle(.borderless)
 
                 // Speed
-                Button {
-                    viewModel.cyclePlaybackRate()
+                Menu {
+                    ForEach(viewModel.playbackRateOptions, id: \.self) { rate in
+                        Button {
+                            viewModel.setPlaybackRate(rate)
+                        } label: {
+                            if rate == viewModel.playbackRate {
+                                Label("\(formatPlaybackRate(rate))x", systemImage: "checkmark")
+                            } else {
+                                Text("\(formatPlaybackRate(rate))x")
+                            }
+                        }
+                    }
                 } label: {
                     Text("\(String(format: viewModel.playbackRate == Float(Int(viewModel.playbackRate)) ? "%.0f" : "%.1f", viewModel.playbackRate))x")
                         .font(.system(size: 10).monospacedDigit())
@@ -304,7 +342,9 @@ struct PreviewView: View {
                         .background(.quaternary)
                         .clipShape(Capsule())
                 }
-                .buttonStyle(.borderless)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("再生速度")
 
                 Spacer()
 
@@ -417,6 +457,10 @@ struct PreviewView: View {
         let s = total % 60
         if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
         return String(format: "%02d:%02d", m, s)
+    }
+
+    private func formatPlaybackRate(_ rate: Float) -> String {
+        String(format: rate == Float(Int(rate)) ? "%.0f" : "%.1f", rate)
     }
 
     @ViewBuilder

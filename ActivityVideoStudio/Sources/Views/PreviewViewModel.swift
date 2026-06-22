@@ -1,8 +1,10 @@
 import Foundation
+import AppKit
 import AVFoundation
 import Combine
 import CoreGraphics
 import CoreLocation
+import UniformTypeIdentifiers
 
 #if DEBUG
 /// Append a line to /tmp/avs_export.log and stderr. Nonisolated so @Sendable closures can call it.
@@ -35,6 +37,7 @@ final class PreviewViewModel: ObservableObject {
     @Published var currentCoordinate: CLLocationCoordinate2D?
     @Published var trackCoordinates: [CLLocationCoordinate2D] = []
     @Published var statusMessage: String?
+    @Published var projectWarningMessage: String?
     @Published var textOverlays: [TextOverlay] = []
     @Published var trimSettings: [TrimSettings] = []
     @Published var playbackRate: Float = 1.0
@@ -42,12 +45,19 @@ final class PreviewViewModel: ObservableObject {
     @Published var exportPreviewImage: CGImage?
     @Published private(set) var videoNativeWidth: Int = 0
 
+    let playbackRateOptions: [Float] = [0.5, 1.0, 2.0, 4.0, 8.0, 10.0]
+
     let player = AVPlayer()
     let overlaySettings = OverlaySettings()
+
+    var canSaveProject: Bool {
+        fitURL != nil || !videoURLs.isEmpty || !textOverlays.isEmpty || !chapterMarkers.isEmpty
+    }
 
     private(set) var timeSync: TimeSync?
     private var overlayRenderer: OverlayRenderer?
     private var timeObserver: Any?
+    private var projectSecurityScopedURLs: [URL] = []
     private(set) var fitDataPoints: [FITDataPoint] = []
     private(set) var fitURL: URL?
     private(set) var videoURLs: [URL] = []
@@ -226,10 +236,220 @@ final class PreviewViewModel: ObservableObject {
     #endif
 
     deinit {
+        for url in projectSecurityScopedURLs {
+            url.stopAccessingSecurityScopedResource()
+        }
         if let observer = timeObserver {
             player.removeTimeObserver(observer)
         }
     }
+
+    // MARK: - Project save/load
+
+    func presentSaveProjectPanel() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [Self.projectFileType]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = defaultProjectFileName()
+        panel.message = "編集状態をプロジェクトとして保存"
+        panel.prompt = "保存"
+
+        panel.begin { [weak self] response in
+            Task { @MainActor in
+                guard response == .OK, let url = panel.url else { return }
+                self?.saveProject(to: url)
+            }
+        }
+    }
+
+    func presentOpenProjectPanel() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [Self.projectFileType]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "保存したプロジェクトを開く"
+        panel.prompt = "開く"
+
+        panel.begin { [weak self] response in
+            Task { @MainActor in
+                guard response == .OK, let url = panel.url else { return }
+                await self?.loadProject(from: url)
+            }
+        }
+    }
+
+    func saveProject(to url: URL) {
+        let access = url.startAccessingSecurityScopedResource()
+        defer {
+            if access { url.stopAccessingSecurityScopedResource() }
+        }
+
+        do {
+            let document = ProjectDocument(
+                version: ProjectDocument.currentVersion,
+                fitFile: fitURL.map(ProjectFileReference.init(url:)),
+                videoFiles: videoURLs.map(ProjectFileReference.init(url:)),
+                syncOffset: syncOffset,
+                trimSettings: trimSettings,
+                overlaySettings: OverlaySettingsSnapshot(settings: overlaySettings),
+                textOverlays: textOverlays,
+                chapterMarkers: chapterMarkers
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(document)
+            try data.write(to: url, options: .atomic)
+            projectWarningMessage = nil
+            statusMessage = "プロジェクト保存完了: \(url.lastPathComponent)"
+        } catch {
+            statusMessage = "プロジェクト保存エラー: \(error.localizedDescription)"
+        }
+    }
+
+    func loadProject(from url: URL) async {
+        let access = url.startAccessingSecurityScopedResource()
+        defer {
+            if access { url.stopAccessingSecurityScopedResource() }
+        }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let document = try JSONDecoder().decode(ProjectDocument.self, from: data)
+            await restoreProject(document, sourceName: url.lastPathComponent)
+        } catch {
+            statusMessage = "プロジェクト読み込みエラー: \(error.localizedDescription)"
+        }
+    }
+
+    private func restoreProject(_ document: ProjectDocument, sourceName: String) async {
+        resetProjectState()
+
+        var warnings: [String] = []
+        if document.version > ProjectDocument.currentVersion {
+            warnings.append("新しいプロジェクト形式です")
+        }
+
+        if let fitFile = document.fitFile {
+            if let url = resolveProjectFile(fitFile, warnings: &warnings) {
+                loadFITFile(url: url)
+                if !fitLoaded {
+                    warnings.append("FITを読み込めません: \(url.lastPathComponent)")
+                }
+            }
+        }
+
+        document.overlaySettings.apply(to: overlaySettings)
+        syncOffset = document.syncOffset
+
+        let reader = VideoMetadataReader()
+        for (index, file) in document.videoFiles.enumerated() {
+            guard let url = resolveProjectFile(file, warnings: &warnings) else { continue }
+
+            do {
+                let metadata = try await reader.read(url: url)
+                videoURLs.append(url)
+                videoMetadatas.append(metadata)
+                if index < document.trimSettings.count {
+                    trimSettings.append(document.trimSettings[index])
+                } else {
+                    trimSettings.append(TrimSettings())
+                }
+            } catch {
+                warnings.append("動画を読み込めません: \(url.lastPathComponent)")
+            }
+        }
+
+        segmentDurations = videoMetadatas.map { $0.duration }
+        videoLoaded = !videoURLs.isEmpty
+        updateNativeVideoWidth()
+        setupTimeSync()
+
+        textOverlays = document.textOverlays
+        chapterMarkers = document.chapterMarkers.sorted { $0.time < $1.time }
+
+        if videoLoaded {
+            await rebuildComposition()
+            overlayRenderer?.textOverlays = textOverlays
+            overlayRenderer?.trackCoordinates = trackCoordinates
+            overlayRenderer?.allDataPoints = fitDataPoints
+            overlayRenderer?.buildElevationGainCache()
+        }
+
+        seek(to: 0)
+        projectWarningMessage = warningMessage(from: warnings)
+        statusMessage = "プロジェクト読み込み完了: \(sourceName)"
+    }
+
+    private func resetProjectState() {
+        stopAccessingProjectResources()
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        isPlaying = false
+        currentTime = 0
+        isSeeking = false
+        duration = 0
+        overlayImage = nil
+        exportPreviewImage = nil
+        currentCoordinate = nil
+        trackCoordinates = []
+        fitDataPoints = []
+        fitLoaded = false
+        videoLoaded = false
+        fitURL = nil
+        videoURLs = []
+        videoMetadatas = []
+        trimSettings = []
+        textOverlays = []
+        chapterMarkers = []
+        syncOffset = 0
+        timeSync = nil
+        overlayRenderer = nil
+        segmentDurations = []
+        videoNativeWidth = 0
+        projectWarningMessage = nil
+    }
+
+    private func resolveProjectFile(_ reference: ProjectFileReference, warnings: inout [String]) -> URL? {
+        let resolved = reference.resolve()
+        if resolved.isStale {
+            warnings.append("参照情報が古くなっています: \(resolved.url.lastPathComponent)")
+        }
+        if resolved.usesSecurityScope,
+           resolved.url.startAccessingSecurityScopedResource() {
+            projectSecurityScopedURLs.append(resolved.url)
+        }
+
+        guard FileManager.default.fileExists(atPath: resolved.url.path) else {
+            warnings.append("見つかりません: \(reference.displayName)")
+            return nil
+        }
+        return resolved.url
+    }
+
+    private func stopAccessingProjectResources() {
+        for url in projectSecurityScopedURLs {
+            url.stopAccessingSecurityScopedResource()
+        }
+        projectSecurityScopedURLs.removeAll()
+    }
+
+    private func warningMessage(from warnings: [String]) -> String? {
+        guard !warnings.isEmpty else { return nil }
+        let visible = warnings.prefix(3).joined(separator: " / ")
+        let hiddenCount = warnings.count - 3
+        if hiddenCount > 0 {
+            return "警告: \(visible) ほか\(hiddenCount)件"
+        }
+        return "警告: \(visible)"
+    }
+
+    private func defaultProjectFileName() -> String {
+        let baseName = videoURLs.first?.deletingPathExtension().lastPathComponent ?? "ActivityVideoStudio"
+        return baseName + ".avsproj"
+    }
+
+    private static let projectFileType = UTType(filenameExtension: "avsproj") ?? .json
 
     // MARK: - File loading
 
@@ -414,7 +634,9 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func seek(to time: TimeInterval) {
-        let cmTime = CMTime(seconds: time, preferredTimescale: 600)
+        let target = clampedSeekTime(time)
+        currentTime = target
+        let cmTime = CMTime(seconds: target, preferredTimescale: 600)
         player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
         isSeeking = false
         updateOverlay()
@@ -424,14 +646,16 @@ final class PreviewViewModel: ObservableObject {
         seek(to: absoluteTime(forTrimmed: time))
     }
 
+    func seekBy(_ seconds: TimeInterval) {
+        seek(to: currentTime + seconds)
+    }
+
     func skipForward(_ seconds: TimeInterval = 5) {
-        let target = min(currentTime + seconds, duration)
-        seek(to: target)
+        seekBy(seconds)
     }
 
     func skipBackward(_ seconds: TimeInterval = 5) {
-        let target = max(currentTime - seconds, 0)
-        seek(to: target)
+        seekBy(-seconds)
     }
 
     func setPlaybackRate(_ rate: Float) {
@@ -440,9 +664,8 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func cyclePlaybackRate() {
-        let rates: [Float] = [0.5, 1.0, 2.0, 4.0, 8.0, 10.0]
-        if let idx = rates.firstIndex(of: playbackRate) {
-            setPlaybackRate(rates[(idx + 1) % rates.count])
+        if let idx = playbackRateOptions.firstIndex(of: playbackRate) {
+            setPlaybackRate(playbackRateOptions[(idx + 1) % playbackRateOptions.count])
         } else {
             setPlaybackRate(1.0)
         }
@@ -452,6 +675,11 @@ final class PreviewViewModel: ObservableObject {
     func seekToTrimStart() {
         let startTrim = trimSettings.first?.startTrim ?? 0
         seek(to: startTrim)
+    }
+
+    private func clampedSeekTime(_ time: TimeInterval) -> TimeInterval {
+        guard duration > 0 else { return max(0, time) }
+        return min(max(time, 0), duration)
     }
 
     func updateSyncOffset(_ offset: Double) {
@@ -754,5 +982,122 @@ final class PreviewViewModel: ObservableObject {
         }
 
         return trimmedCursor
+    }
+}
+
+private struct ProjectDocument: Codable {
+    static let currentVersion = 1
+
+    var version: Int
+    var fitFile: ProjectFileReference?
+    var videoFiles: [ProjectFileReference]
+    var syncOffset: Double
+    var trimSettings: [TrimSettings]
+    var overlaySettings: OverlaySettingsSnapshot
+    var textOverlays: [TextOverlay]
+    var chapterMarkers: [ChapterMarker]
+}
+
+private struct ProjectFileReference: Codable {
+    var path: String
+    var bookmarkData: String?
+
+    init(url: URL) {
+        path = url.path
+        if let data = try? url.bookmarkData(
+            options: [.withSecurityScope],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        ) {
+            bookmarkData = data.base64EncodedString()
+        }
+    }
+
+    var displayName: String {
+        URL(fileURLWithPath: path).lastPathComponent
+    }
+
+    func resolve() -> ResolvedProjectFile {
+        if let bookmarkData,
+           let data = Data(base64Encoded: bookmarkData) {
+            var isStale = false
+            if let url = try? URL(
+                resolvingBookmarkData: data,
+                options: [.withSecurityScope],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ) {
+                return ResolvedProjectFile(url: url, isStale: isStale, usesSecurityScope: true)
+            }
+        }
+
+        return ResolvedProjectFile(
+            url: URL(fileURLWithPath: path),
+            isStale: false,
+            usesSecurityScope: false
+        )
+    }
+}
+
+private struct ResolvedProjectFile {
+    var url: URL
+    var isStale: Bool
+    var usesSecurityScope: Bool
+}
+
+private struct OverlaySettingsSnapshot: Codable {
+    var showTime: Bool
+    var showDistance: Bool
+    var showHeartRate: Bool
+    var showPace: Bool
+    var showGrade: Bool
+    var showAltitude: Bool
+    var showCadence: Bool
+    var showElevationGain: Bool
+    var showCoreTemp: Bool
+    var showMiniMap: Bool
+    var showElevationProfile: Bool
+    var overlayOpacity: Double
+    var z1Max: UInt8
+    var z2Max: UInt8
+    var z3Max: UInt8
+    var z4Max: UInt8
+
+    init(settings: OverlaySettings) {
+        showTime = settings.showTime
+        showDistance = settings.showDistance
+        showHeartRate = settings.showHeartRate
+        showPace = settings.showPace
+        showGrade = settings.showGrade
+        showAltitude = settings.showAltitude
+        showCadence = settings.showCadence
+        showElevationGain = settings.showElevationGain
+        showCoreTemp = settings.showCoreTemp
+        showMiniMap = settings.showMiniMap
+        showElevationProfile = settings.showElevationProfile
+        overlayOpacity = settings.overlayOpacity
+        z1Max = settings.z1Max
+        z2Max = settings.z2Max
+        z3Max = settings.z3Max
+        z4Max = settings.z4Max
+    }
+
+    func apply(to settings: OverlaySettings) {
+        settings.showTime = showTime
+        settings.showDistance = showDistance
+        settings.showHeartRate = showHeartRate
+        settings.showPace = showPace
+        settings.showGrade = showGrade
+        settings.showAltitude = showAltitude
+        settings.showCadence = showCadence
+        settings.showElevationGain = showElevationGain
+        settings.showCoreTemp = showCoreTemp
+        settings.showMiniMap = showMiniMap
+        settings.showElevationProfile = showElevationProfile
+        settings.overlayOpacity = overlayOpacity
+        settings.z1Max = z1Max
+        settings.z2Max = z2Max
+        settings.z3Max = z3Max
+        settings.z4Max = z4Max
     }
 }
