@@ -48,6 +48,8 @@ final class ExportViewModel: ObservableObject {
     @Published var resolution: Resolution = .r1080p
     @Published var quality: Quality = .high
     @Published var concatenateVideos = true
+    @Published var quitWhenDone = false
+    @Published var preventSleepDuringExport = true
     @Published var isExporting = false
     @Published var exportComplete = false
     @Published var progress: Double = 0
@@ -78,6 +80,7 @@ final class ExportViewModel: ObservableObject {
     }
 
     private var exporter: VideoExporter?
+    private var sleepPreventionActivity: NSObjectProtocol?
 
     func startExport() {
         clampResolutionToSource()
@@ -121,6 +124,7 @@ final class ExportViewModel: ObservableObject {
         errorMessage = nil
         statusMessage = nil
         progress = 0
+        beginSleepPreventionIfNeeded()
 
         let exporter = VideoExporter()
         self.exporter = exporter
@@ -136,8 +140,9 @@ final class ExportViewModel: ObservableObject {
         let videoURLs = self.videoURLs
         let trimSettings = self.trimSettings
         Task.detached(priority: .userInitiated) { [weak self] in
+            var isAccessingDirectory = directoryAccess
             defer {
-                if directoryAccess { directoryURL.stopAccessingSecurityScopedResource() }
+                if isAccessingDirectory { directoryURL.stopAccessingSecurityScopedResource() }
             }
 
             do {
@@ -176,14 +181,20 @@ final class ExportViewModel: ObservableObject {
                     }
                 }
 
+                if isAccessingDirectory {
+                    directoryURL.stopAccessingSecurityScopedResource()
+                    isAccessingDirectory = false
+                }
                 await MainActor.run { [weak self] in
-                    self?.isExporting = false
-                    self?.exportComplete = true
+                    self?.finishExportSuccessfully()
                 }
             } catch {
+                if isAccessingDirectory {
+                    directoryURL.stopAccessingSecurityScopedResource()
+                    isAccessingDirectory = false
+                }
                 await MainActor.run { [weak self] in
-                    self?.isExporting = false
-                    self?.errorMessage = error.localizedDescription
+                    self?.finishExportWithError(error)
                 }
             }
         }
@@ -201,6 +212,37 @@ final class ExportViewModel: ObservableObject {
         let available = availableResolutions
         guard !available.contains(resolution), let fallback = available.last else { return }
         resolution = fallback
+    }
+
+    private func beginSleepPreventionIfNeeded() {
+        endSleepPreventionIfNeeded()
+        guard preventSleepDuringExport else { return }
+        sleepPreventionActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.idleSystemSleepDisabled],
+            reason: "Video export"
+        )
+    }
+
+    private func endSleepPreventionIfNeeded() {
+        guard let activity = sleepPreventionActivity else { return }
+        ProcessInfo.processInfo.endActivity(activity)
+        sleepPreventionActivity = nil
+    }
+
+    private func finishExportSuccessfully() {
+        isExporting = false
+        exportComplete = true
+        endSleepPreventionIfNeeded()
+
+        if quitWhenDone {
+            NSApplication.shared.terminate(nil)
+        }
+    }
+
+    private func finishExportWithError(_ error: Error) {
+        isExporting = false
+        errorMessage = error.localizedDescription
+        endSleepPreventionIfNeeded()
     }
 
     private func defaultOutputFileName() -> String {

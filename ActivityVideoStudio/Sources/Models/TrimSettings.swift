@@ -1,7 +1,7 @@
 import Foundation
 
 /// Trim settings for a single video segment.
-struct TrimSettings {
+struct TrimSettings: Codable {
     var startTrim: TimeInterval = 0    // seconds to cut from start
     var endTrim: TimeInterval = 0      // seconds to cut from end
 
