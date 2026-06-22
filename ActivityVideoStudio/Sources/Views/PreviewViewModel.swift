@@ -138,7 +138,7 @@ final class PreviewViewModel: ObservableObject {
 
         // Apply a manual sync offset before export (GoPro clock-skew correction).
         if let cliOffset { updateSyncOffset(cliOffset) }
-        if alignFitStart { alignVideoStartToFitStart() }
+        if alignFitStart { alignFitStartToCurrentFrame() }
 
         let cliTrimSettings = TrimSettings(startTrim: trimStart, endTrim: trimEnd)
         if trimSettings.isEmpty {
@@ -462,11 +462,14 @@ final class PreviewViewModel: ObservableObject {
         updateOverlay()
     }
 
-    /// Align the first video frame with the FIT activity start.
-    /// Handles a large clock offset in one step — e.g. a GoPro whose date was
+    /// Map the FIT activity start (0:00 / 0 km) onto the frame currently shown in
+    /// the preview. Scrub to the moment the activity actually begins (e.g. crossing
+    /// the start line), press this, then fine-tune with the ± nudge controls.
+    /// Also handles a large clock offset in one step — e.g. a GoPro whose date was
     /// never set records a 2016 timestamp while the activity is years later.
-    /// After this, fine-tune with the ± nudge controls while watching the video.
-    func alignVideoStartToFitStart() {
+    /// At playback position 0 this is equivalent to aligning the video start to the
+    /// FIT start (the behavior used by the headless --align-fit-start path).
+    func alignFitStartToCurrentFrame() {
         guard let creationDate = videoMetadatas.first?.creationDate else {
             statusMessage = "同期できません（動画の撮影時刻が読めません）"
             return
@@ -475,10 +478,11 @@ final class PreviewViewModel: ObservableObject {
             statusMessage = "同期できません（FITの開始時刻がありません）"
             return
         }
-        updateSyncOffset(fitStart.timeIntervalSince(creationDate))
-        if let desc = videoStartDescription() {
-            statusMessage = "動画先頭をFIT開始に合わせました（動画先頭 = \(desc)）"
-        }
+        // Offset so the FIT start lands on the current playback position: at global
+        // time `currentTime` the mapped FIT time = creationDate + syncOffset + currentTime,
+        // and we want that to equal fitStart.
+        updateSyncOffset(fitStart.timeIntervalSince(creationDate) - currentTime)
+        statusMessage = "再生位置を活動開始（0:00 / 0km）に合わせました"
     }
 
     /// Wall-clock time mapped to the first frame of the first video, given the

@@ -308,18 +308,18 @@ struct PreviewView: View {
 
                 Spacer()
 
-                // Sync offset: one-click clock-skew correction + fine nudge.
+                // Sync offset: anchor the activity start to the current frame + fine nudge.
                 if viewModel.fitLoaded {
                     HStack(spacing: 4) {
                         Button {
-                            viewModel.alignVideoStartToFitStart()
+                            viewModel.alignFitStartToCurrentFrame()
                         } label: {
-                            Text("FIT開始に合わせる")
+                            Text("ここをFIT開始に")
                                 .font(.system(size: 10, weight: .medium))
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                        .help("動画の先頭をFITの記録開始に合わせます（GoProの時計ズレを一発で粗合わせ）")
+                        .help("いま表示しているフレームを活動の開始（0:00 / 0km）に合わせます。スタート地点までスクラブして押し、±で微調整してください")
 
                         Divider().frame(height: 12)
 
