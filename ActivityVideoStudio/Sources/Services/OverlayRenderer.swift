@@ -55,6 +55,16 @@ final class OverlayRenderer {
         self.settings = settings
     }
 
+    func makeExportCopy() -> OverlayRenderer {
+        let copy = OverlayRenderer(videoSize: videoSize, settings: settings.snapshot())
+        copy.allDataPoints = allDataPoints
+        copy.textOverlays = textOverlays
+        copy.trackCoordinates = trackCoordinates
+        copy.fitRecordingActive = fitRecordingActive
+        copy.elevationGainCache = elevationGainCache
+        return copy
+    }
+
     // MARK: - Render
 
     func render(dataPoint: FITDataPoint, elapsedTime: TimeInterval, globalPlaybackTime: TimeInterval = 0) -> CGImage? {
