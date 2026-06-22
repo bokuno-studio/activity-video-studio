@@ -26,4 +26,26 @@ final class OverlaySettings: ObservableObject {
         [showTime, showDistance, showHeartRate, showPace, showGrade, showAltitude, showCadence]
             .filter { $0 }.count
     }
+
+    /// Immutable export workers should not share the live SwiftUI settings object.
+    func snapshot() -> OverlaySettings {
+        let copy = OverlaySettings()
+        copy.showTime = showTime
+        copy.showDistance = showDistance
+        copy.showHeartRate = showHeartRate
+        copy.showPace = showPace
+        copy.showGrade = showGrade
+        copy.showAltitude = showAltitude
+        copy.showCadence = showCadence
+        copy.showElevationGain = showElevationGain
+        copy.showCoreTemp = showCoreTemp
+        copy.showMiniMap = showMiniMap
+        copy.showElevationProfile = showElevationProfile
+        copy.overlayOpacity = overlayOpacity
+        copy.z1Max = z1Max
+        copy.z2Max = z2Max
+        copy.z3Max = z3Max
+        copy.z4Max = z4Max
+        return copy
+    }
 }
