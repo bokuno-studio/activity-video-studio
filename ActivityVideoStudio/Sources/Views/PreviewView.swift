@@ -46,18 +46,11 @@ struct PreviewView: View {
                 // Video with overlays
                 VideoPlayerView(player: viewModel.player)
                     .aspectRatio(16/9, contentMode: .fit)
-                    .overlay(alignment: .topTrailing) {
-                        if viewModel.overlaySettings.showMiniMap && !viewModel.trackCoordinates.isEmpty {
-                            GeometryReader { geo in
-                                GPSTrackView(
-                                    trackCoordinates: viewModel.trackCoordinates,
-                                    currentCoordinate: viewModel.currentCoordinate
-                                )
-                                .frame(width: geo.size.width * 0.22, height: geo.size.height * 0.28)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                            }
-                        }
-                    }
+                    // Single source of truth for the overlay: OverlayView shows the
+                    // exact image OverlayRenderer burns into the export (mini-map,
+                    // metrics, elevation profile included). The old SwiftUI
+                    // GPSTrackView drew a second map on top, so the preview showed
+                    // two overlapping maps that didn't match the export.
                     .overlay {
                         OverlayView(overlayImage: viewModel.overlayImage)
                             .allowsHitTesting(false)

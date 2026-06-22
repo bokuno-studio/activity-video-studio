@@ -49,9 +49,6 @@ final class OverlayRenderer {
     private let shadowColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0.7)
     private let metricsBackgroundColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0.45)
 
-    // Elevation profile
-    private var elevationProfileHeight: CGFloat { 120 * scale }
-    private var elevationProfileWidth: CGFloat { 420 * scale }
 
     init(videoSize: CGSize, settings: OverlaySettings = OverlaySettings()) {
         self.videoSize = videoSize
@@ -170,7 +167,8 @@ final class OverlayRenderer {
             rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: 80 * scale))
         }
 
-        if let rightBackgroundRect = unionRect(for: rightMetricRects) {
+        let rightBackgroundRect = unionRect(for: rightMetricRects)
+        if let rightBackgroundRect {
             drawMetricsBackground(ctx: ctx, rect: rightBackgroundRect)
         }
 
@@ -206,13 +204,15 @@ final class OverlayRenderer {
             drawLabelValue(ctx: ctx, label: "ALTITUDE", value: value, x: rightX, y: rightY, labelColor: accentColor)
         }
 
-        // Elevation profile - right bottom
+        // Elevation profile - directly under the top-right mini-map
         if settings.showElevationProfile {
-            drawElevationProfile(ctx: ctx, currentPoint: dataPoint)
+            drawElevationProfile(ctx: ctx, currentPoint: dataPoint, metricsTopY: rightBackgroundRect?.maxY)
         }
 
-        // GPS track (top-right) — matches SwiftUI GPSTrackView layout in PreviewView
-        drawGPSTrack(ctx: ctx, currentPoint: dataPoint)
+        // GPS track (top-right mini-map)
+        if settings.showMiniMap {
+            drawGPSTrack(ctx: ctx, currentPoint: dataPoint)
+        }
 
         // Text overlays
         for textOverlay in textOverlays {
@@ -245,17 +245,34 @@ final class OverlayRenderer {
 
     // MARK: - Elevation Profile
 
-    private func drawElevationProfile(ctx: CGContext, currentPoint: FITDataPoint) {
+    /// Draws the elevation profile directly under the top-right mini-map, sharing
+    /// its width and right edge. The height is fit into the gap between the map's
+    /// bottom and the top of the right metrics block (`metricsTopY`), so the graph
+    /// never overlaps the map above it or the metrics below it.
+    private func drawElevationProfile(ctx: CGContext, currentPoint: FITDataPoint, metricsTopY: CGFloat?) {
         guard !allDataPoints.isEmpty else { return }
         let altitudes = allDataPoints.compactMap { $0.altitude }
         guard let minAlt = altitudes.min(), let maxAlt = altitudes.max(), maxAlt > minAlt else { return }
 
-        // Position: center bottom (avoids overlap with right metrics column)
+        // Match the mini-map geometry (top-right, 22% × 28%, 20pt margin).
+        let margin = 20 * scale
+        let mapWidth = videoSize.width * 0.22
+        let mapHeight = videoSize.height * 0.28
+        let mapBottom = videoSize.height - mapHeight - margin   // CG y of map's bottom edge
+
+        let topY = mapBottom - 12 * scale                       // just below the map
+        // Clear the right metrics block. Its top edge is the union rect's maxY;
+        // fall back to a safe default if no metrics are shown.
+        let bottomY = (metricsTopY ?? videoSize.height * 0.45) + 14 * scale
+        let availableHeight = topY - bottomY
+        // Too little room (very short overlay) → skip rather than overlap.
+        guard availableHeight >= 36 * scale else { return }
+
         let profileRect = CGRect(
-            x: (videoSize.width - elevationProfileWidth) / 2,
-            y: 30 * scale,
-            width: elevationProfileWidth,
-            height: elevationProfileHeight
+            x: videoSize.width - mapWidth - margin,
+            y: bottomY,
+            width: mapWidth,
+            height: availableHeight
         )
 
         // Semi-transparent background
