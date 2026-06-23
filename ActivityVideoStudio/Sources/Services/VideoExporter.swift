@@ -180,6 +180,20 @@ final class VideoExporter: @unchecked Sendable {
         }
     }
 
+    private struct SourceExportRange: Sendable {
+        let sourceStartTime: TimeInterval
+        let outputStartTime: TimeInterval
+        let duration: TimeInterval
+    }
+
+    private struct TimeRangeExportJob: Sendable {
+        let videoURL: URL
+        let segmentIndex: Int
+        let range: SourceExportRange
+        let tempURL: URL
+        let statusMessage: String
+    }
+
     private var isCancelled = false
     private var activeExportSessions: [ObjectIdentifier: AVAssetExportSession] = [:]
     private let stateLock = NSLock()
@@ -207,7 +221,7 @@ final class VideoExporter: @unchecked Sendable {
     }
 
     private func unregisterExportSession(_ session: AVAssetExportSession) {
-        locked(stateLock) {
+        _ = locked(stateLock) {
             activeExportSessions.removeValue(forKey: ObjectIdentifier(session))
         }
     }
@@ -217,10 +231,69 @@ final class VideoExporter: @unchecked Sendable {
         sessions.forEach { $0.cancelExport() }
     }
 
-    private static func maxConcurrentSegmentExports(segmentCount: Int) -> Int {
+    private static let minimumInternalChunkDuration: TimeInterval = 120
+
+    private static func adaptiveExportConcurrencyLimit() -> Int {
         let cores = Swift.max(ProcessInfo.processInfo.activeProcessorCount, 1)
-        let processorLimit = cores >= 8 ? 4 : Swift.max(1, cores / 2)
-        return Swift.max(1, Swift.min(segmentCount, processorLimit))
+
+        // Each export job still uses the hardware media encoder, so throughput does not scale
+        // linearly with CPU cores. Keep low-core machines conservative and cap high-core
+        // machines at a value that can be tuned upward after device-specific measurements.
+        if cores <= 4 {
+            return Swift.max(1, cores / 2)
+        }
+        return Swift.min(8, Swift.max(4, cores / 3))
+    }
+
+    private static func maxConcurrentSegmentExports(segmentCount: Int) -> Int {
+        Swift.max(1, Swift.min(segmentCount, adaptiveExportConcurrencyLimit()))
+    }
+
+    private static func sourceExportRanges(
+        sourceStartTime: TimeInterval,
+        trimmedDuration: TimeInterval,
+        outputTimeOffset: TimeInterval,
+        maxChunkCount: Int
+    ) -> [SourceExportRange] {
+        let duration = Swift.max(trimmedDuration, 0)
+        guard duration > 0 else {
+            return [SourceExportRange(
+                sourceStartTime: sourceStartTime,
+                outputStartTime: outputTimeOffset,
+                duration: 0
+            )]
+        }
+
+        let chunkLimit = Swift.max(maxChunkCount, 1)
+        let chunksAllowedByDuration = Swift.max(1, Int(duration / minimumInternalChunkDuration))
+        let chunkCount = Swift.min(chunkLimit, chunksAllowedByDuration)
+
+        guard chunkCount > 1 else {
+            return [SourceExportRange(
+                sourceStartTime: sourceStartTime,
+                outputStartTime: outputTimeOffset,
+                duration: duration
+            )]
+        }
+
+        let nominalChunkDuration = duration / Double(chunkCount)
+        var consumed: TimeInterval = 0
+        var ranges: [SourceExportRange] = []
+        ranges.reserveCapacity(chunkCount)
+
+        for chunkIndex in 0..<chunkCount {
+            let chunkDuration = chunkIndex == chunkCount - 1
+                ? duration - consumed
+                : nominalChunkDuration
+            ranges.append(SourceExportRange(
+                sourceStartTime: sourceStartTime + consumed,
+                outputStartTime: outputTimeOffset + consumed,
+                duration: chunkDuration
+            ))
+            consumed += chunkDuration
+        }
+
+        return ranges
     }
 
     // MARK: - Single Video Export
@@ -236,18 +309,77 @@ final class VideoExporter: @unchecked Sendable {
         progress: @escaping ProgressCallback
     ) async throws {
         if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
-        exportLog("START seg=\(segmentIndex) url=\(videoURL.lastPathComponent)")
+
+        let assetDuration = try await AVURLAsset(url: videoURL).load(.duration)
+        let totalSeconds = CMTimeGetSeconds(assetDuration)
+        let trimmedDuration = trimSettings.trimmedDuration(original: totalSeconds)
+        let ranges = Self.sourceExportRanges(
+            sourceStartTime: trimSettings.startTrim,
+            trimmedDuration: trimmedDuration,
+            outputTimeOffset: outputTimeOffset,
+            maxChunkCount: Self.adaptiveExportConcurrencyLimit()
+        )
+
+        if ranges.count > 1 {
+            try await exportSingleVideoInRanges(
+                videoURL: videoURL,
+                timeSync: timeSync,
+                segmentIndex: segmentIndex,
+                ranges: ranges,
+                overlayRenderer: overlayRenderer,
+                config: config,
+                progress: progress
+            )
+        } else if let range = ranges.first {
+            try await exportSingleVideoRange(
+                videoURL: videoURL,
+                timeSync: timeSync,
+                segmentIndex: segmentIndex,
+                sourceStartTime: range.sourceStartTime,
+                duration: range.duration,
+                overlayRenderer: overlayRenderer,
+                config: config,
+                outputTimeOffset: range.outputStartTime,
+                progress: progress
+            )
+        }
+    }
+
+    private func exportSingleVideoRange(
+        videoURL: URL,
+        timeSync: TimeSync,
+        segmentIndex: Int,
+        sourceStartTime: TimeInterval,
+        duration: TimeInterval,
+        overlayRenderer: OverlayRenderer,
+        config: ExportConfig,
+        outputTimeOffset: TimeInterval,
+        progress: @escaping ProgressCallback
+    ) async throws {
+        if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
+        exportLog(
+            "START seg=\(segmentIndex) url=\(videoURL.lastPathComponent) " +
+            "sourceStart=\(String(format: "%.1f", sourceStartTime))s " +
+            "duration=\(String(format: "%.1f", duration))s"
+        )
 
         let asset    = AVURLAsset(url: videoURL)
-        let duration = try await asset.load(.duration)
+        let assetDuration = try await asset.load(.duration)
         let tracks   = try await asset.load(.tracks)
 
         guard let videoTrack = tracks.first(where: { $0.mediaType == .video }) else {
             throw ExportError.noVideos
         }
         let audioTrack   = tracks.first(where: { $0.mediaType == .audio })
-        let totalSeconds = CMTimeGetSeconds(duration)
+        let totalSeconds = CMTimeGetSeconds(assetDuration)
         exportLog("asset loaded: \(String(format: "%.1f", totalSeconds))s hasAudio=\(audioTrack != nil)")
+
+        let clampedSourceStart = Swift.max(sourceStartTime, 0)
+        let availableDuration = Swift.max(totalSeconds - clampedSourceStart, 0)
+        let exportDuration = Swift.min(duration, availableDuration)
+        guard exportDuration > 0 else {
+            throw ExportError.exportFailed("書き出す時間範囲が空です")
+        }
 
         // Build a mutable composition to attach a videoComposition
         let composition = AVMutableComposition()
@@ -255,10 +387,9 @@ final class VideoExporter: @unchecked Sendable {
             withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid
         ) else { throw ExportError.cannotCreateWriter }
 
-        let startTime = CMTime(seconds: trimSettings.startTrim, preferredTimescale: 600)
-        let endTrim = CMTime(seconds: trimSettings.endTrim, preferredTimescale: 600)
-        let trimmedDuration = CMTimeSubtract(duration, CMTimeAdd(startTime, endTrim))
-        let timeRange = CMTimeRange(start: startTime, duration: trimmedDuration)
+        let startTime = CMTime(seconds: clampedSourceStart, preferredTimescale: 600)
+        let rangeDuration = CMTime(seconds: exportDuration, preferredTimescale: 600)
+        let timeRange = CMTimeRange(start: startTime, duration: rangeDuration)
         try compVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
 
         if let audioTrack,
@@ -273,7 +404,7 @@ final class VideoExporter: @unchecked Sendable {
         let capturedTimeSync = timeSync
         let capturedRenderer = overlayRenderer
         let capturedSegIdx   = segmentIndex
-        let capturedTrimSettings = trimSettings
+        let capturedSourceStart = clampedSourceStart
         let capturedOutputOffset = outputTimeOffset
         let overlayCache = OverlayFrameCache(
             quantum: config.overlayCacheQuantum,
@@ -283,9 +414,9 @@ final class VideoExporter: @unchecked Sendable {
 
         let videoComposition = AVVideoComposition(asset: composition) { [weak capturedRenderer] request in
             let t = CMTimeGetSeconds(request.compositionTime)
-            // TimeSync expects source-video playback time (== `t + startTrim`),
-            // because segment.fitStartTime maps to the untrimmed video start.
-            let sourceVideoTime = t + capturedTrimSettings.startTrim
+            // TimeSync expects playback time within the source segment. For split ranges,
+            // that is the subrange source start plus the local composition time.
+            let sourceVideoTime = capturedSourceStart + t
             let globalPlaybackTime = capturedOutputOffset + t
 
             guard let renderer = capturedRenderer,
@@ -366,9 +497,98 @@ final class VideoExporter: @unchecked Sendable {
         exportLog("DONE seg=\(segmentIndex)")
     }
 
+    private func exportSingleVideoInRanges(
+        videoURL: URL,
+        timeSync: TimeSync,
+        segmentIndex: Int,
+        ranges: [SourceExportRange],
+        overlayRenderer: OverlayRenderer,
+        config: ExportConfig,
+        progress: @escaping ProgressCallback
+    ) async throws {
+        let tempDir = config.outputURL.deletingLastPathComponent()
+        let tempURLs = ranges.map { _ in
+            tempDir
+                .appendingPathComponent(".avs_tmp_" + UUID().uuidString)
+                .appendingPathExtension("mp4")
+        }
+        defer { tempURLs.forEach { try? FileManager.default.removeItem(at: $0) } }
+
+        let rangeDurations = ranges.map { $0.duration }
+        let totalDuration = rangeDurations.reduce(0, +)
+        let progressAggregator = ConcatenatedProgress(
+            segmentDurations: rangeDurations,
+            totalDuration: totalDuration
+        )
+        let maxConcurrentExports = Self.maxConcurrentSegmentExports(segmentCount: ranges.count)
+        exportLog(
+            "splitting seg=\(segmentIndex) into \(ranges.count) ranges " +
+            "with concurrency=\(maxConcurrentExports)"
+        )
+
+        try await withThrowingTaskGroup(of: Int.self) { group in
+            var nextRangeIndex = 0
+
+            func enqueueNextRange() throws {
+                if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
+                guard nextRangeIndex < ranges.count else { return }
+
+                let rangeIndex = nextRangeIndex
+                nextRangeIndex += 1
+
+                let range = ranges[rangeIndex]
+                let tempURL = tempURLs[rangeIndex]
+                let rangeRenderer = overlayRenderer.makeExportCopy()
+                var rangeConfig = config
+                rangeConfig.outputURL = tempURL
+
+                group.addTask {
+                    if self.cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
+
+                    try await self.exportSingleVideoRange(
+                        videoURL: videoURL,
+                        timeSync: timeSync,
+                        segmentIndex: segmentIndex,
+                        sourceStartTime: range.sourceStartTime,
+                        duration: range.duration,
+                        overlayRenderer: rangeRenderer,
+                        config: rangeConfig,
+                        outputTimeOffset: range.outputStartTime
+                    ) { fraction, _ in
+                        progressAggregator.update(
+                            segmentIndex: rangeIndex,
+                            fraction: fraction,
+                            progress: progress
+                        )
+                    }
+
+                    return rangeIndex
+                }
+            }
+
+            for _ in 0..<maxConcurrentExports {
+                try enqueueNextRange()
+            }
+
+            do {
+                while let _ = try await group.next() {
+                    try enqueueNextRange()
+                }
+            } catch {
+                group.cancelAll()
+                cancelActiveExportSessions()
+                throw error
+            }
+        }
+
+        if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
+        try await concatenateExportedFiles(tempURLs, outputURL: config.outputURL)
+        progress(1.0, 0)
+    }
+
     // MARK: - Concatenated Export
 
-    /// Export each segment individually (with correct overlay), then passthrough-concat.
+    /// Export each segment or internal time range with correct overlay, then passthrough-concat.
     func exportConcatenated(
         videoURLs: [URL],
         trimSettings: [TrimSettings] = [],
@@ -397,17 +617,10 @@ final class VideoExporter: @unchecked Sendable {
         }
         let totalDuration = segmentDurations.reduce(0, +)
 
-        // Phase 2: export each segment to temp file.
+        // Phase 2: export each segment/range to temp file.
         // Keep intermediates next to the final output so large exports stay on
         // the user-selected volume instead of filling the system drive.
         let tempDir = config.outputURL.deletingLastPathComponent()
-        let tempURLs = videoURLs.map { _ in
-            tempDir
-                .appendingPathComponent(".avs_tmp_" + UUID().uuidString)
-                .appendingPathExtension("mp4")
-        }
-        defer { tempURLs.forEach { try? FileManager.default.removeItem(at: $0) } }
-
         var outputOffsets = Array(repeating: 0.0, count: videoURLs.count)
         var runningOffset = 0.0
         for idx in videoURLs.indices {
@@ -415,63 +628,98 @@ final class VideoExporter: @unchecked Sendable {
             runningOffset += segmentDurations[idx]
         }
 
+        let concurrencyLimit = Self.adaptiveExportConcurrencyLimit()
+        let chunkBudgetPerSegment = videoURLs.count < concurrencyLimit
+            ? Swift.max(1, Int(ceil(Double(concurrencyLimit) / Double(videoURLs.count))))
+            : 1
+        var jobs: [TimeRangeExportJob] = []
+        for (segIdx, url) in videoURLs.enumerated() {
+            let trim = segIdx < trimSettings.count ? trimSettings[segIdx] : TrimSettings()
+            let ranges = Self.sourceExportRanges(
+                sourceStartTime: trim.startTrim,
+                trimmedDuration: segmentDurations[segIdx],
+                outputTimeOffset: outputOffsets[segIdx],
+                maxChunkCount: chunkBudgetPerSegment
+            )
+
+            for (rangeIdx, range) in ranges.enumerated() {
+                let statusMessage = ranges.count == 1
+                    ? "動画 \(segIdx + 1) / \(videoURLs.count) を書き出し中..."
+                    : "動画 \(segIdx + 1) / \(videoURLs.count) 範囲 \(rangeIdx + 1) / \(ranges.count) を書き出し中..."
+                let tempURL = tempDir
+                    .appendingPathComponent(".avs_tmp_" + UUID().uuidString)
+                    .appendingPathExtension("mp4")
+                jobs.append(TimeRangeExportJob(
+                    videoURL: url,
+                    segmentIndex: segIdx,
+                    range: range,
+                    tempURL: tempURL,
+                    statusMessage: statusMessage
+                ))
+            }
+        }
+        let tempURLs = jobs.map { $0.tempURL }
+        defer { tempURLs.forEach { try? FileManager.default.removeItem(at: $0) } }
+
+        let jobDurations = jobs.map { $0.range.duration }
         let progressAggregator = ConcatenatedProgress(
-            segmentDurations: segmentDurations,
+            segmentDurations: jobDurations,
             totalDuration: totalDuration
         )
-        let maxConcurrentExports = Self.maxConcurrentSegmentExports(segmentCount: videoURLs.count)
-        exportLog("exporting \(videoURLs.count) segments with concurrency=\(maxConcurrentExports)")
+        let maxConcurrentExports = Self.maxConcurrentSegmentExports(segmentCount: jobs.count)
+        exportLog(
+            "exporting \(videoURLs.count) segments as \(jobs.count) jobs " +
+            "with concurrency=\(maxConcurrentExports)"
+        )
 
         try await withThrowingTaskGroup(of: Int.self) { group in
-            var nextSegmentIndex = 0
+            var nextJobIndex = 0
 
-            func enqueueNextSegment() throws {
+            func enqueueNextJob() throws {
                 if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
-                guard nextSegmentIndex < videoURLs.count else { return }
+                guard nextJobIndex < jobs.count else { return }
 
-                let segIdx = nextSegmentIndex
-                nextSegmentIndex += 1
+                let jobIndex = nextJobIndex
+                nextJobIndex += 1
 
-                onStatus("動画 \(segIdx + 1) / \(videoURLs.count) を書き出し中...")
+                let job = jobs[jobIndex]
+                onStatus(job.statusMessage)
 
-                let url = videoURLs[segIdx]
-                let trim = segIdx < trimSettings.count ? trimSettings[segIdx] : TrimSettings()
-                let tempURL = tempURLs[segIdx]
-                let outputOffset = outputOffsets[segIdx]
-                let segmentRenderer = overlayRenderer.makeExportCopy()
-                var segConfig = config
-                segConfig.outputURL = tempURL
+                let jobRenderer = overlayRenderer.makeExportCopy()
+                var jobConfig = config
+                jobConfig.outputURL = job.tempURL
 
                 group.addTask {
                     if self.cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
 
-                    try await self.exportSingleVideo(
-                        videoURL: url,
+                    try await self.exportSingleVideoRange(
+                        videoURL: job.videoURL,
                         timeSync: timeSync,
-                        segmentIndex: segIdx,
-                        trimSettings: trim,
-                        overlayRenderer: segmentRenderer,
-                        config: segConfig,
-                        outputTimeOffset: outputOffset
+                        segmentIndex: job.segmentIndex,
+                        sourceStartTime: job.range.sourceStartTime,
+                        duration: job.range.duration,
+                        overlayRenderer: jobRenderer,
+                        config: jobConfig,
+                        outputTimeOffset: job.range.outputStartTime
                     ) { fraction, _ in
                         progressAggregator.update(
-                            segmentIndex: segIdx,
+                            segmentIndex: jobIndex,
                             fraction: fraction,
                             progress: progress
                         )
                     }
 
-                    return segIdx
+                    return jobIndex
                 }
             }
 
             for _ in 0..<maxConcurrentExports {
-                try enqueueNextSegment()
+                try enqueueNextJob()
             }
 
             do {
                 while let _ = try await group.next() {
-                    try enqueueNextSegment()
+                    try enqueueNextJob()
                 }
             } catch {
                 group.cancelAll()
@@ -484,6 +732,13 @@ final class VideoExporter: @unchecked Sendable {
         if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
         onStatus("動画を結合中...")
 
+        try await concatenateExportedFiles(tempURLs, outputURL: config.outputURL)
+        progress(1.0, 0)
+    }
+
+    // MARK: - Helpers
+
+    private func concatenateExportedFiles(_ tempURLs: [URL], outputURL: URL) async throws {
         let concatComp = AVMutableComposition()
         guard let vcTrack = concatComp.addMutableTrack(
             withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid
@@ -502,14 +757,14 @@ final class VideoExporter: @unchecked Sendable {
             insertTime = CMTimeAdd(insertTime, d)
         }
 
-        if FileManager.default.fileExists(atPath: config.outputURL.path) {
-            try FileManager.default.removeItem(at: config.outputURL)
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            try FileManager.default.removeItem(at: outputURL)
         }
 
         guard let concatSession = AVAssetExportSession(
             asset: concatComp, presetName: AVAssetExportPresetPassthrough
         ) else { throw ExportError.cannotCreateWriter }
-        concatSession.outputURL      = config.outputURL
+        concatSession.outputURL      = outputURL
         concatSession.outputFileType = .mp4
         registerExportSession(concatSession)
         defer { unregisterExportSession(concatSession) }
@@ -526,10 +781,7 @@ final class VideoExporter: @unchecked Sendable {
             throw ExportError.exportFailed(
                 concatSession.error?.localizedDescription ?? "結合に失敗しました")
         }
-        progress(1.0, 0)
     }
-
-    // MARK: - Helpers
 
     private static func exportPreset(for config: ExportConfig) -> String {
         if config.width >= 3840 { return AVAssetExportPreset3840x2160 }
