@@ -3,7 +3,6 @@ import SwiftUI
 /// Settings panel for overlay configuration.
 struct OverlaySettingsView: View {
     @ObservedObject var settings: OverlaySettings
-    var isTextFocused: FocusState<Bool>.Binding
 
     var body: some View {
         Form {
@@ -25,9 +24,10 @@ struct OverlaySettingsView: View {
             }
 
             Section("外観") {
-                HStack {
-                    Text("透明度")
+                LabeledContent("透明度") {
                     Slider(value: $settings.overlayOpacity, in: 0.3...1.0, step: 0.05)
+                        .accessibilityLabel("透明度")
+                        .accessibilityValue(String(format: "%.0f%%", settings.overlayOpacity * 100))
                     Text(String(format: "%.0f%%", settings.overlayOpacity * 100))
                         .frame(width: 40)
                         .monospacedDigit()
@@ -35,40 +35,51 @@ struct OverlaySettingsView: View {
             }
 
             Section("心拍ゾーン (bpm)") {
-                HStack {
-                    Text("Z1 上限")
-                    Spacer()
-                    TextField("", value: $settings.z1Max, format: .number)
-                        .frame(width: 60)
-                        .multilineTextAlignment(.trailing)
-                        .focused(isTextFocused)
-                }
-                HStack {
-                    Text("Z2 上限")
-                    Spacer()
-                    TextField("", value: $settings.z2Max, format: .number)
-                        .frame(width: 60)
-                        .multilineTextAlignment(.trailing)
-                        .focused(isTextFocused)
-                }
-                HStack {
-                    Text("Z3 上限")
-                    Spacer()
-                    TextField("", value: $settings.z3Max, format: .number)
-                        .frame(width: 60)
-                        .multilineTextAlignment(.trailing)
-                        .focused(isTextFocused)
-                }
-                HStack {
-                    Text("Z4 上限")
-                    Spacer()
-                    TextField("", value: $settings.z4Max, format: .number)
-                        .frame(width: 60)
-                        .multilineTextAlignment(.trailing)
-                        .focused(isTextFocused)
+                zoneStepper("Z1 上限", value: zoneBinding(\.z1Max))
+                zoneStepper("Z2 上限", value: zoneBinding(\.z2Max))
+                zoneStepper("Z3 上限", value: zoneBinding(\.z3Max))
+                zoneStepper("Z4 上限", value: zoneBinding(\.z4Max))
+
+                if let zoneValidationMessage {
+                    Label(zoneValidationMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("心拍ゾーン設定エラー: \(zoneValidationMessage)")
                 }
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func zoneStepper(_ title: String, value: Binding<Int>) -> some View {
+        Stepper(value: value, in: 60...230, step: 1) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text("\(value.wrappedValue) bpm")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityLabel("\(title) bpm")
+        .accessibilityValue("\(value.wrappedValue)")
+    }
+
+    private func zoneBinding(_ keyPath: ReferenceWritableKeyPath<OverlaySettings, UInt8>) -> Binding<Int> {
+        Binding(
+            get: { Int(settings[keyPath: keyPath]) },
+            set: { newValue in
+                settings[keyPath: keyPath] = UInt8(min(max(newValue, 60), 230))
+            }
+        )
+    }
+
+    private var zoneValidationMessage: String? {
+        guard settings.z1Max < settings.z2Max,
+              settings.z2Max < settings.z3Max,
+              settings.z3Max < settings.z4Max else {
+            return "Z1 < Z2 < Z3 < Z4 になるように設定してください"
+        }
+        return nil
     }
 }

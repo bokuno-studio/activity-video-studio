@@ -17,6 +17,16 @@ struct ExportView: View {
         }
         .padding()
         .frame(width: 400)
+        .alert(item: $viewModel.alert) { alert in
+            Alert(
+                title: Text(alert.title),
+                message: Text(alert.message),
+                primaryButton: .default(Text("再試行")) {
+                    viewModel.startExport()
+                },
+                secondaryButton: .cancel(Text("閉じる"))
+            )
+        }
     }
 
     // MARK: - Config
@@ -101,6 +111,7 @@ struct ExportView: View {
             Button("キャンセル") {
                 viewModel.cancelExport()
             }
+            .disabled(viewModel.isCancelling)
         }
     }
 

@@ -6,6 +6,12 @@ import CoreGraphics
 import CoreLocation
 import UniformTypeIdentifiers
 
+struct UserFacingAlert: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
 #if DEBUG
 /// Append a line to /tmp/avs_export.log and stderr. Nonisolated so @Sendable closures can call it.
 func autoExportLog(_ msg: String) {
@@ -37,6 +43,9 @@ final class PreviewViewModel: ObservableObject {
     @Published var currentCoordinate: CLLocationCoordinate2D?
     @Published var trackCoordinates: [CLLocationCoordinate2D] = []
     @Published var statusMessage: String?
+    @Published var alert: UserFacingAlert?
+    @Published var isLoading = false
+    @Published var loadingMessage: String?
     @Published var projectWarningMessage: String?
     @Published var textOverlays: [TextOverlay] = []
     @Published var trimSettings: [TrimSettings] = []
@@ -51,6 +60,37 @@ final class PreviewViewModel: ObservableObject {
 
     var canSaveProject: Bool {
         fitURL != nil || !videoURLs.isEmpty || !textOverlays.isEmpty || !chapterMarkers.isEmpty
+    }
+
+    func showError(title: String, message: String) {
+        alert = UserFacingAlert(title: title, message: message)
+    }
+
+    private func showError(title: String, error: Error, recovery: String? = nil) {
+        var details: [String] = []
+        details.append(error.localizedDescription)
+        if let localizedError = error as? LocalizedError {
+            if let failureReason = localizedError.failureReason {
+                details.append(failureReason)
+            }
+            if let recoverySuggestion = localizedError.recoverySuggestion {
+                details.append(recoverySuggestion)
+            }
+        }
+        if let recovery {
+            details.append(recovery)
+        }
+        alert = UserFacingAlert(title: title, message: details.joined(separator: "\n\n"))
+    }
+
+    private func beginLoading(_ message: String) {
+        loadingMessage = message
+        isLoading = true
+    }
+
+    private func endLoading() {
+        isLoading = false
+        loadingMessage = nil
     }
 
     private(set) var timeSync: TimeSync?
@@ -263,6 +303,10 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func presentOpenProjectPanel() {
+        if canSaveProject, !confirmDiscardCurrentProject() {
+            return
+        }
+
         let panel = NSOpenPanel()
         panel.title = "プロジェクトを開く"
         panel.allowedContentTypes = [Self.projectFileType]
@@ -304,11 +348,18 @@ final class PreviewViewModel: ObservableObject {
             projectWarningMessage = nil
             statusMessage = "プロジェクト保存完了: \(url.lastPathComponent)"
         } catch {
-            statusMessage = "プロジェクト保存エラー: \(error.localizedDescription)"
+            showError(
+                title: "プロジェクトを保存できませんでした",
+                error: error,
+                recovery: "保存先の空き容量とアクセス権を確認して、もう一度保存してください。"
+            )
         }
     }
 
     func loadProject(from url: URL) async {
+        beginLoading("プロジェクトを読み込み中...")
+        defer { endLoading() }
+
         let access = url.startAccessingSecurityScopedResource()
         defer {
             if access { url.stopAccessingSecurityScopedResource() }
@@ -319,7 +370,11 @@ final class PreviewViewModel: ObservableObject {
             let document = try JSONDecoder().decode(ProjectDocument.self, from: data)
             await restoreProject(document, sourceName: url.lastPathComponent)
         } catch {
-            statusMessage = "プロジェクト読み込みエラー: \(error.localizedDescription)"
+            showError(
+                title: "プロジェクトを読み込めませんでした",
+                error: error,
+                recovery: ".avsprojファイルが壊れていないか、参照先にアクセスできるか確認してください。"
+            )
         }
     }
 
@@ -346,6 +401,7 @@ final class PreviewViewModel: ObservableObject {
         let reader = VideoMetadataReader()
         for (index, file) in document.videoFiles.enumerated() {
             guard let url = resolveProjectFile(file, warnings: &warnings) else { continue }
+            loadingMessage = "動画を読み込み中... \(index + 1) / \(document.videoFiles.count)"
 
             do {
                 let metadata = try await reader.read(url: url)
@@ -370,11 +426,14 @@ final class PreviewViewModel: ObservableObject {
         chapterMarkers = document.chapterMarkers.sorted { $0.time < $1.time }
 
         if videoLoaded {
-            await rebuildComposition()
-            overlayRenderer?.textOverlays = textOverlays
-            overlayRenderer?.trackCoordinates = trackCoordinates
-            overlayRenderer?.allDataPoints = fitDataPoints
-            overlayRenderer?.buildElevationGainCache()
+            if await rebuildComposition() {
+                overlayRenderer?.textOverlays = textOverlays
+                overlayRenderer?.trackCoordinates = trackCoordinates
+                overlayRenderer?.allDataPoints = fitDataPoints
+                overlayRenderer?.buildElevationGainCache()
+            } else {
+                warnings.append("動画タイムラインを復元できませんでした")
+            }
         }
 
         seek(to: 0)
@@ -408,6 +467,16 @@ final class PreviewViewModel: ObservableObject {
         segmentDurations = []
         videoNativeWidth = 0
         projectWarningMessage = nil
+    }
+
+    private func confirmDiscardCurrentProject() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "現在の編集内容を破棄して開きますか？"
+        alert.informativeText = "プロジェクトを開くと、読み込み済みファイル、同期、トリム、テキスト、チャプターの現在の編集状態が置き換わります。必要なら先に保存してください。"
+        alert.addButton(withTitle: "開く")
+        alert.addButton(withTitle: "キャンセル")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func resolveProjectFile(_ reference: ProjectFileReference, warnings: inout [String]) -> URL? {
@@ -457,6 +526,17 @@ final class PreviewViewModel: ObservableObject {
         do {
             let parser = FITParser()
             let result = try parser.parse(url: url)
+            guard !result.dataPoints.isEmpty else {
+                fitDataPoints = []
+                fitLoaded = false
+                fitURL = nil
+                showError(
+                    title: "FITを読み込めませんでした",
+                    message: "\(url.lastPathComponent) にデータポイントがありません。別のFITファイルを選択してください。"
+                )
+                return
+            }
+
             fitDataPoints = result.dataPoints
             fitLoaded = !fitDataPoints.isEmpty
             fitURL = url
@@ -483,11 +563,18 @@ final class PreviewViewModel: ObservableObject {
 
             statusMessage = "FIT: \(fitDataPoints.count) データポイント読み込み完了"
         } catch {
-            statusMessage = "FIT 読み込みエラー: \(error.localizedDescription)"
+            showError(
+                title: "FITを読み込めませんでした",
+                error: error,
+                recovery: "対応している.fitファイルか確認してください。"
+            )
         }
     }
 
     func loadVideo(url: URL) async {
+        beginLoading("動画を読み込み中...")
+        defer { endLoading() }
+
         let reader = VideoMetadataReader()
         do {
             let metadata = try await reader.read(url: url)
@@ -505,7 +592,7 @@ final class PreviewViewModel: ObservableObject {
             setupTimeSync()
 
             // Build combined player item
-            await rebuildComposition()
+            guard await rebuildComposition() else { return }
 
             var msg = "動画読み込み完了 (\(videoURLs.count)本, 合計 \(formatDuration(duration)))"
             // Show FIT offset info
@@ -518,7 +605,11 @@ final class PreviewViewModel: ObservableObject {
             }
             statusMessage = msg
         } catch {
-            statusMessage = "動画読み込みエラー: \(error.localizedDescription)"
+            showError(
+                title: "動画を読み込めませんでした",
+                error: error,
+                recovery: "対応形式は .mp4 / .mov / .m4v です。ファイルが破損していないか確認してください。"
+            )
         }
     }
 
@@ -540,12 +631,40 @@ final class PreviewViewModel: ObservableObject {
     }
 
     /// Remove a video at the given index.
-    func removeVideo(at index: Int) {
+    func removeVideo(at index: Int, undoManager: UndoManager? = nil) {
         guard index < videoURLs.count else { return }
-        videoURLs.remove(at: index)
-        videoMetadatas.remove(at: index)
-        trimSettings.remove(at: index)
+        let removedURL = videoURLs.remove(at: index)
+        let removedMetadata = videoMetadatas.remove(at: index)
+        let removedTrim = trimSettings.remove(at: index)
+        undoManager?.registerUndo(withTarget: self) { target in
+            Task { @MainActor in
+                target.insertVideo(removedURL, metadata: removedMetadata, trim: removedTrim, at: index)
+            }
+        }
+        undoManager?.setActionName("動画削除")
+
         segmentDurations = videoMetadatas.map { $0.duration }
+        videoLoaded = !videoURLs.isEmpty
+        updateNativeVideoWidth()
+        setupTimeSync()
+        if videoLoaded {
+            Task { await rebuildComposition() }
+        } else {
+            player.replaceCurrentItem(with: nil)
+            duration = 0
+            currentTime = 0
+            overlayImage = nil
+            overlayRenderer = nil
+        }
+    }
+
+    private func insertVideo(_ url: URL, metadata: VideoMetadata, trim: TrimSettings, at index: Int) {
+        let insertionIndex = min(max(index, 0), videoURLs.count)
+        videoURLs.insert(url, at: insertionIndex)
+        videoMetadatas.insert(metadata, at: insertionIndex)
+        trimSettings.insert(trim, at: insertionIndex)
+        segmentDurations = videoMetadatas.map { $0.duration }
+        videoLoaded = true
         updateNativeVideoWidth()
         setupTimeSync()
         Task { await rebuildComposition() }
@@ -554,7 +673,8 @@ final class PreviewViewModel: ObservableObject {
     // MARK: - Composition
 
     /// Build or rebuild AVMutableComposition from all loaded videos.
-    private func rebuildComposition() async {
+    @discardableResult
+    private func rebuildComposition() async -> Bool {
         do {
             if videoURLs.count == 1 {
                 // Single video: play directly
@@ -613,8 +733,14 @@ final class PreviewViewModel: ObservableObject {
                     overlayRenderer?.buildElevationGainCache()
                 }
             }
+            return true
         } catch {
-            statusMessage = "動画結合エラー: \(error.localizedDescription)"
+            showError(
+                title: "動画タイムラインを作成できませんでした",
+                error: error,
+                recovery: "動画ファイルの読み込み権限と空き容量を確認してください。"
+            )
+            return false
         }
     }
 
@@ -699,11 +825,17 @@ final class PreviewViewModel: ObservableObject {
     /// FIT start (the behavior used by the headless --align-fit-start path).
     func alignFitStartToCurrentFrame() {
         guard let creationDate = videoMetadatas.first?.creationDate else {
-            statusMessage = "同期できません（動画の撮影時刻が読めません）"
+            showError(
+                title: "同期できません",
+                message: "動画の撮影時刻を読み取れませんでした。別の動画を読み込むか、手動で同期オフセットを調整してください。"
+            )
             return
         }
         guard let fitStart = fitDataPoints.first?.timestamp else {
-            statusMessage = "同期できません（FITの開始時刻がありません）"
+            showError(
+                title: "同期できません",
+                message: "FITの開始時刻がありません。データポイントを含むFITファイルを読み込んでください。"
+            )
             return
         }
         // Offset so the FIT start lands on the current playback position: at global
@@ -732,15 +864,34 @@ final class PreviewViewModel: ObservableObject {
 
     // MARK: - Chapter markers
 
-    func addChapterMarker() {
+    func addChapterMarker(undoManager: UndoManager? = nil) {
         let marker = ChapterMarker(time: currentTime)
         chapterMarkers.append(marker)
         chapterMarkers.sort { $0.time < $1.time }
+        undoManager?.registerUndo(withTarget: self) { target in
+            Task { @MainActor in
+                target.removeChapterMarker(id: marker.id)
+            }
+        }
+        undoManager?.setActionName("チャプターマーカー追加")
         statusMessage = "チャプターマーカー追加: \(formatDuration(trimmedTime(for: marker.time)))"
     }
 
-    func removeChapterMarker(id: UUID) {
-        chapterMarkers.removeAll { $0.id == id }
+    func removeChapterMarker(id: UUID, undoManager: UndoManager? = nil) {
+        guard let index = chapterMarkers.firstIndex(where: { $0.id == id }) else { return }
+        let removedMarker = chapterMarkers.remove(at: index)
+        undoManager?.registerUndo(withTarget: self) { target in
+            Task { @MainActor in
+                target.insertChapterMarker(removedMarker, at: index)
+            }
+        }
+        undoManager?.setActionName("チャプターマーカー削除")
+    }
+
+    private func insertChapterMarker(_ marker: ChapterMarker, at index: Int) {
+        let insertionIndex = min(max(index, 0), chapterMarkers.count)
+        chapterMarkers.insert(marker, at: insertionIndex)
+        chapterMarkers.sort { $0.time < $1.time }
     }
 
     func seekToMarker(_ marker: ChapterMarker) {
@@ -797,7 +948,7 @@ final class PreviewViewModel: ObservableObject {
         // For GoPro chaptered files: all chapters share the same creationDate.
         // Each subsequent chapter's real start = creationDate + sum of preceding durations.
         var cumulativeOffset: TimeInterval = 0
-        for (i, metadata) in videoMetadatas.enumerated() {
+        for metadata in videoMetadatas {
             guard metadata.creationDate != nil else { continue }
 
             // Create a metadata with adjusted creationDate for chaptered files

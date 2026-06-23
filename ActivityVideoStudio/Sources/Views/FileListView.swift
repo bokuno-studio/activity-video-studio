@@ -24,6 +24,8 @@ struct FileListView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("FITファイル \(url.lastPathComponent)、\(fitPointCount) データポイント")
                 } else {
                     Text(".fit ファイルをドロップ")
                         .font(.caption)
@@ -56,6 +58,8 @@ struct FileListView: View {
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(videoAccessibilityLabel(index: index, url: url))
                     .contextMenu {
                         Button(role: .destructive) {
                             onRemoveVideo(index)
@@ -75,5 +79,12 @@ struct FileListView: View {
         let m = total / 60
         let s = total % 60
         return String(format: "%d:%02d", m, s)
+    }
+
+    private func videoAccessibilityLabel(index: Int, url: URL) -> String {
+        if index < videoDurations.count {
+            return "動画\(index + 1)、\(url.lastPathComponent)、\(formatDuration(videoDurations[index]))"
+        }
+        return "動画\(index + 1)、\(url.lastPathComponent)"
     }
 }
