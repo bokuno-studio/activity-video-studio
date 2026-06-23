@@ -7,7 +7,8 @@ import UniformTypeIdentifiers
 struct PreviewView: View {
     @StateObject private var viewModel = PreviewViewModel()
     @State private var rightPanelTab: RightPanelTab = .trim
-    @State private var showRightPanel = false
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var showRightPanel = true
     @FocusState private var isTextFieldFocused: Bool
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -21,125 +22,13 @@ struct PreviewView: View {
     }
 
     var body: some View {
-        HSplitView {
-            // Left sidebar: file list + settings
-            if viewModel.showFileList {
-                VStack(spacing: 0) {
-                    FileListView(
-                        fitURL: viewModel.fitURL,
-                        fitPointCount: viewModel.fitDataPoints.count,
-                        videoURLs: viewModel.videoURLs,
-                        videoDurations: viewModel.videoMetadatas.map { $0.duration },
-                        onRemoveVideo: { viewModel.removeVideo(at: $0, undoManager: undoManager) }
-                    )
-
-                    Divider()
-
-                    // Settings inline
-                    ScrollView {
-                        OverlaySettingsView(
-                            settings: viewModel.overlaySettings
-                        )
-                    }
-                    .frame(maxHeight: 300)
-                }
-                .frame(minWidth: 200, maxWidth: 260)
-            }
-
-            // Main content
-            VStack(spacing: 0) {
-                // Video with overlays
-                VideoPlayerView(player: viewModel.player) { delta in
-                    viewModel.seekBy(delta)
-                }
-                    .aspectRatio(16/9, contentMode: .fit)
-                    // Single source of truth for the overlay: OverlayView shows the
-                    // exact image OverlayRenderer burns into the export (mini-map,
-                    // metrics, elevation profile included). The old SwiftUI
-                    // GPSTrackView drew a second map on top, so the preview showed
-                    // two overlapping maps that didn't match the export.
-                    .overlay {
-                        OverlayView(overlayImage: viewModel.overlayImage)
-                            .allowsHitTesting(false)
-                    }
-                    .background(Color.black)
-                    .layoutPriority(1)
-
-                // Thin controls bar
-                controlsBar
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 8)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let status = viewModel.statusMessage {
-                    Text(status)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.bottom, 4)
-                        .accessibilityLabel("状態: \(status)")
-                }
-                if let warning = viewModel.projectWarningMessage {
-                    HStack(spacing: 4) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                        Text(warning)
-                            .lineLimit(2)
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .padding(.bottom, 4)
-                    .accessibilityLabel("警告: \(warning)")
-                }
-            }
-
-            // Right panel
-            if showRightPanel {
-                VStack(spacing: 0) {
-                    Picker("", selection: $rightPanelTab) {
-                        ForEach(RightPanelTab.allCases, id: \.self) { tab in
-                            Text(tab.rawValue).tag(tab)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(8)
-
-                    ScrollView {
-                        switch rightPanelTab {
-                        case .trim:
-                            TrimView(
-                                trimSettings: $viewModel.trimSettings,
-                                videoNames: viewModel.videoURLs.map { $0.lastPathComponent },
-                                videoDurations: viewModel.videoMetadatas.map { $0.duration },
-                                onSeek: { time in viewModel.seek(to: time) },
-                                isTextFocused: $isTextFieldFocused
-                            )
-                        case .textOverlay:
-                            TextOverlayEditView(
-                                overlays: $viewModel.textOverlays,
-                                videoDuration: viewModel.duration,
-                                isTextFocused: $isTextFieldFocused
-                            )
-                        case .chapters:
-                            ChapterMarkerView(
-                                markers: $viewModel.chapterMarkers,
-                                trimmedTime: viewModel.trimmedTime(for:),
-                                onSeek: { viewModel.seekToMarker($0) },
-                                onAdd: { viewModel.addChapterMarker(undoManager: undoManager) },
-                                onRemove: { viewModel.removeChapterMarker(id: $0.id, undoManager: undoManager) },
-                                isTextFocused: $isTextFieldFocused
-                            )
-                        case .youtube:
-                            YouTubeDescriptionView(
-                                dataPoints: viewModel.fitDataPoints,
-                                videoStartDate: viewModel.videoMetadatas.first?.creationDate,
-                                chapterMarkers: viewModel.chapterMarkers,
-                                trimmedTime: viewModel.trimmedTime(for:)
-                            )
-                        }
-                    }
-                }
-                .frame(minWidth: 320, idealWidth: 340, maxWidth: 380)
-                .background(.regularMaterial)
-            }
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            sidebar
+        } detail: {
+            mainContent
+        }
+        .inspector(isPresented: $showRightPanel) {
+            inspectorPanel
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers: providers)
@@ -175,17 +64,6 @@ struct PreviewView: View {
         }
         .focusedSceneValue(\.previewCommandContext, commandContext)
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    viewModel.showFileList.toggle()
-                } label: {
-                    Label("ファイル一覧と設定", systemImage: "sidebar.left")
-                }
-                .help("ファイル一覧・設定")
-                .accessibilityLabel("ファイル一覧と設定")
-                .accessibilityValue(viewModel.showFileList ? "表示中" : "非表示")
-            }
-
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     viewModel.presentOpenProjectPanel()
@@ -211,10 +89,10 @@ struct PreviewView: View {
                 Button {
                     showRightPanel.toggle()
                 } label: {
-                    Label("編集パネル", systemImage: "sidebar.right")
+                    Label("インスペクタ", systemImage: "sidebar.right")
                 }
-                .help("編集パネル")
-                .accessibilityLabel("編集パネル")
+                .help("インスペクタ")
+                .accessibilityLabel("インスペクタ")
                 .accessibilityValue(showRightPanel ? "表示中" : "非表示")
             }
 
@@ -240,6 +118,123 @@ struct PreviewView: View {
             viewModel.skipForward()
             return .handled
         }
+    }
+
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            FileListView(
+                fitURL: viewModel.fitURL,
+                fitPointCount: viewModel.fitDataPoints.count,
+                videoURLs: viewModel.videoURLs,
+                videoDurations: viewModel.videoMetadatas.map { $0.duration },
+                onRemoveVideo: { viewModel.removeVideo(at: $0, undoManager: undoManager) }
+            )
+
+            Divider()
+
+            ScrollView {
+                OverlaySettingsView(
+                    settings: viewModel.overlaySettings
+                )
+            }
+            .frame(maxHeight: 300)
+        }
+        .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 260)
+    }
+
+    private var mainContent: some View {
+        VStack(spacing: 0) {
+            // Video with overlays
+            VideoPlayerView(player: viewModel.player) { delta in
+                viewModel.seekBy(delta)
+            }
+                .aspectRatio(16/9, contentMode: .fit)
+                // Single source of truth for the overlay: OverlayView shows the
+                // exact image OverlayRenderer burns into the export (mini-map,
+                // metrics, elevation profile included). The old SwiftUI
+                // GPSTrackView drew a second map on top, so the preview showed
+                // two overlapping maps that didn't match the export.
+                .overlay {
+                    OverlayView(overlayImage: viewModel.overlayImage)
+                        .allowsHitTesting(false)
+                }
+                .background(Color.black)
+                .layoutPriority(1)
+
+            // Thin controls bar
+            controlsBar
+                .padding(.horizontal, 8)
+                .padding(.vertical, 8)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let status = viewModel.statusMessage {
+                Text(status)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 4)
+                    .accessibilityLabel("状態: \(status)")
+            }
+            if let warning = viewModel.projectWarningMessage {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text(warning)
+                        .lineLimit(2)
+                }
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .padding(.bottom, 4)
+                .accessibilityLabel("警告: \(warning)")
+            }
+        }
+    }
+
+    private var inspectorPanel: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $rightPanelTab) {
+                ForEach(RightPanelTab.allCases, id: \.self) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(8)
+
+            ScrollView {
+                switch rightPanelTab {
+                case .trim:
+                    TrimView(
+                        trimSettings: $viewModel.trimSettings,
+                        videoNames: viewModel.videoURLs.map { $0.lastPathComponent },
+                        videoDurations: viewModel.videoMetadatas.map { $0.duration },
+                        onSeek: { time in viewModel.seek(to: time) },
+                        isTextFocused: $isTextFieldFocused
+                    )
+                case .textOverlay:
+                    TextOverlayEditView(
+                        overlays: $viewModel.textOverlays,
+                        videoDuration: viewModel.duration,
+                        isTextFocused: $isTextFieldFocused
+                    )
+                case .chapters:
+                    ChapterMarkerView(
+                        markers: $viewModel.chapterMarkers,
+                        trimmedTime: viewModel.trimmedTime(for:),
+                        onSeek: { viewModel.seekToMarker($0) },
+                        onAdd: { viewModel.addChapterMarker(undoManager: undoManager) },
+                        onRemove: { viewModel.removeChapterMarker(id: $0.id, undoManager: undoManager) },
+                        isTextFocused: $isTextFieldFocused
+                    )
+                case .youtube:
+                    YouTubeDescriptionView(
+                        dataPoints: viewModel.fitDataPoints,
+                        videoStartDate: viewModel.videoMetadatas.first?.creationDate,
+                        chapterMarkers: viewModel.chapterMarkers,
+                        trimmedTime: viewModel.trimmedTime(for:)
+                    )
+                }
+            }
+        }
+        .background(.regularMaterial)
+        .inspectorColumnWidth(min: 320, ideal: 340, max: 380)
     }
 
     private var commandContext: PreviewCommandContext {
