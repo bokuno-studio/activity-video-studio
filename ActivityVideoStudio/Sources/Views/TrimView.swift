@@ -1,12 +1,16 @@
 import SwiftUI
+import Foundation
 
 /// Simplified trim: cut from start of first video and end of last video only.
 struct TrimView: View {
     @Binding var trimSettings: [TrimSettings]
     let videoNames: [String]
     let videoDurations: [TimeInterval]
-    var onSeek: ((TimeInterval) -> Void)?
+    var onPreviewSeek: ((TimeInterval) -> Void)?
+    var onCommitSeek: ((TimeInterval) -> Void)?
     var isTextFocused: FocusState<Bool>.Binding
+
+    private static let durationFormatter = TrimDurationFormatter()
 
     private var totalDuration: TimeInterval {
         videoDurations.reduce(0, +)
@@ -35,7 +39,8 @@ struct TrimView: View {
                         endTrim: .constant(0),
                         duration: videoDurations[0],
                         segmentOffset: 0,
-                        onSeek: onSeek
+                        onPreviewSeek: onPreviewSeek,
+                        onCommitSeek: onCommitSeek
                     )
                     .frame(height: 36)
 
@@ -43,7 +48,7 @@ struct TrimView: View {
                         title: "先頭",
                         value: $trimSettings[0].startTrim,
                         maxValue: max(0, videoDurations[0] - trimSettings[0].endTrim - 0.5),
-                        onValueChanged: { onSeek?($0) }
+                        seekTime: { $0 }
                     )
                 }
                 .padding(8)
@@ -64,7 +69,8 @@ struct TrimView: View {
                             endTrim: $trimSettings[lastIdx].endTrim,
                             duration: videoDurations[lastIdx],
                             segmentOffset: lastOffset,
-                            onSeek: onSeek
+                            onPreviewSeek: onPreviewSeek,
+                            onCommitSeek: onCommitSeek
                         )
                         .frame(height: 36)
 
@@ -72,7 +78,7 @@ struct TrimView: View {
                             title: "末尾",
                             value: $trimSettings[lastIdx].endTrim,
                             maxValue: max(0, videoDurations[lastIdx] - 0.5),
-                            onValueChanged: { onSeek?(lastOffset + videoDurations[lastIdx] - $0) }
+                            seekTime: { lastOffset + videoDurations[lastIdx] - $0 }
                         )
                     }
                     .padding(8)
@@ -89,7 +95,8 @@ struct TrimView: View {
                             endTrim: $trimSettings[0].endTrim,
                             duration: videoDurations[0],
                             segmentOffset: 0,
-                            onSeek: onSeek
+                            onPreviewSeek: onPreviewSeek,
+                            onCommitSeek: onCommitSeek
                         )
                         .frame(height: 36)
 
@@ -97,7 +104,7 @@ struct TrimView: View {
                             title: "末尾",
                             value: $trimSettings[0].endTrim,
                             maxValue: max(0, videoDurations[0] - trimSettings[0].startTrim - 0.5),
-                            onValueChanged: { onSeek?(videoDurations[0] - $0) }
+                            seekTime: { videoDurations[0] - $0 }
                         )
                     }
                     .padding(8)
@@ -117,19 +124,30 @@ struct TrimView: View {
     }
 
     private func formatTime(_ seconds: TimeInterval) -> String {
-        let total = max(0, Int(seconds))
-        let h = total / 3600; let m = (total % 3600) / 60; let s = total % 60
-        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
-        return String(format: "%d:%02d", m, s)
+        let tenths = Int((max(0, seconds) * 10).rounded())
+        let total = tenths / 10
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        let fraction = tenths % 10
+        let secondsText = fraction == 0 ? "\(s)秒" : "\(s).\(fraction)秒"
+        if h > 0 { return "\(h)時間\(m)分\(secondsText)" }
+        if m > 0 { return "\(m)分\(secondsText)" }
+        return secondsText
     }
 
     private func trimValueControl(
         title: String,
         value: Binding<TimeInterval>,
         maxValue: TimeInterval,
-        onValueChanged: @escaping (TimeInterval) -> Void
+        seekTime: @escaping (TimeInterval) -> TimeInterval
     ) -> some View {
-        let binding = clampedTrimBinding(value, maxValue: maxValue, onValueChanged: onValueChanged)
+        let binding = clampedTrimBinding(value, maxValue: maxValue) { newValue in
+            onPreviewSeek?(seekTime(newValue))
+        }
+        let commitValue: () -> Void = {
+            onCommitSeek?(seekTime(binding.wrappedValue))
+        }
 
         return HStack(spacing: 8) {
             Text(title)
@@ -139,24 +157,34 @@ struct TrimView: View {
             Text(formatTime(binding.wrappedValue))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
-                .frame(minWidth: 48, alignment: .trailing)
+                .frame(minWidth: 72, alignment: .trailing)
 
-            TextField("秒", value: binding, format: .number.precision(.fractionLength(1)))
+            TextField("分:秒", value: binding, formatter: Self.durationFormatter)
                 .textFieldStyle(.roundedBorder)
                 .font(.caption.monospacedDigit())
                 .frame(width: 68)
                 .multilineTextAlignment(.trailing)
                 .focused(isTextFocused)
-                .accessibilityLabel("\(title)カット秒")
+                .onSubmit(commitValue)
+                .accessibilityLabel("\(title)カット時間")
 
-            Stepper(title, value: binding, in: 0...max(0, maxValue), step: 0.5)
-                .labelsHidden()
-                .controlSize(.small)
+            Text("分:秒")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Stepper(value: binding, in: 0...max(0, maxValue), step: 0.5, onEditingChanged: { editing in
+                if !editing { commitValue() }
+            }) {
+                Text(title)
+            }
+            .labelsHidden()
+            .controlSize(.small)
 
             Spacer(minLength: 0)
 
             Button("リセット") {
                 binding.wrappedValue = 0
+                commitValue()
             }
             .font(.caption)
         }
@@ -184,7 +212,8 @@ struct TrimBarView: View {
     @Binding var endTrim: TimeInterval
     let duration: TimeInterval
     var segmentOffset: TimeInterval = 0
-    var onSeek: ((TimeInterval) -> Void)?
+    var onPreviewSeek: ((TimeInterval) -> Void)?
+    var onCommitSeek: ((TimeInterval) -> Void)?
 
     var body: some View {
         GeometryReader { geo in
@@ -217,22 +246,34 @@ struct TrimBarView: View {
                 if startTrim >= 0 {
                     TrimHandle(color: .accentColor)
                         .offset(x: activeStart - 6)
-                        .gesture(DragGesture().onChanged { value in
-                            let frac = max(0, min(value.location.x / w, 1 - endFrac - 0.02))
-                            startTrim = Double(frac) * duration
-                            onSeek?(segmentOffset + startTrim)
-                        })
+                        .gesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    let frac = max(0, min(value.location.x / w, 1 - endFrac - 0.02))
+                                    startTrim = Double(frac) * duration
+                                    onPreviewSeek?(segmentOffset + startTrim)
+                                }
+                                .onEnded { _ in
+                                    onCommitSeek?(segmentOffset + startTrim)
+                                }
+                        )
                 }
 
                 // End handle
                 if endTrim >= 0 {
                     TrimHandle(color: .accentColor)
                         .offset(x: activeEnd - 6)
-                        .gesture(DragGesture().onChanged { value in
-                            let frac = max(0, min((w - value.location.x) / w, 1 - startFrac - 0.02))
-                            endTrim = Double(frac) * duration
-                            onSeek?(segmentOffset + duration - endTrim)
-                        })
+                        .gesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    let frac = max(0, min((w - value.location.x) / w, 1 - startFrac - 0.02))
+                                    endTrim = Double(frac) * duration
+                                    onPreviewSeek?(segmentOffset + duration - endTrim)
+                                }
+                                .onEnded { _ in
+                                    onCommitSeek?(segmentOffset + duration - endTrim)
+                                }
+                        )
                 }
             }
         }
@@ -246,5 +287,75 @@ struct TrimHandle: View {
             .fill(color)
             .frame(width: 12, height: 36)
             .shadow(radius: 2)
+    }
+}
+
+private final class TrimDurationFormatter: Formatter {
+    override func string(for obj: Any?) -> String? {
+        let seconds: TimeInterval
+        if let number = obj as? NSNumber {
+            seconds = number.doubleValue
+        } else if let value = obj as? Double {
+            seconds = value
+        } else {
+            return nil
+        }
+        return Self.string(from: seconds)
+    }
+
+    override func getObjectValue(
+        _ obj: AutoreleasingUnsafeMutablePointer<AnyObject?>?,
+        for string: String,
+        errorDescription: AutoreleasingUnsafeMutablePointer<NSString?>?
+    ) -> Bool {
+        guard let seconds = Self.parse(string) else {
+            errorDescription?.pointee = "分:秒形式で入力してください" as NSString
+            return false
+        }
+
+        obj?.pointee = NSNumber(value: seconds)
+        return true
+    }
+
+    private static func string(from seconds: TimeInterval) -> String {
+        let tenths = Int((max(0, seconds) * 10).rounded())
+        let total = tenths / 10
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        let fraction = tenths % 10
+        let secondText = fraction == 0 ? String(format: "%02d", s) : String(format: "%02d.%d", s, fraction)
+
+        if h > 0 {
+            return String(format: "%d:%02d:%@", h, m, secondText)
+        }
+        return "\(m):\(secondText)"
+    }
+
+    private static func parse(_ string: String) -> TimeInterval? {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let normalized = trimmed
+            .replacingOccurrences(of: "時間", with: ":")
+            .replacingOccurrences(of: "分", with: ":")
+            .replacingOccurrences(of: "秒", with: "")
+
+        let parts = normalized.split(separator: ":", omittingEmptySubsequences: false)
+        if parts.count == 1 {
+            return Double(String(parts[0]))
+        }
+        if parts.count == 2,
+           let minutes = Double(String(parts[0])),
+           let seconds = Double(String(parts[1])) {
+            return minutes * 60 + seconds
+        }
+        if parts.count == 3,
+           let hours = Double(String(parts[0])),
+           let minutes = Double(String(parts[1])),
+           let seconds = Double(String(parts[2])) {
+            return hours * 3600 + minutes * 60 + seconds
+        }
+        return nil
     }
 }

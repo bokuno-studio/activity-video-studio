@@ -49,7 +49,13 @@ final class ExportViewModel: ObservableObject {
     @Published var quality: Quality = .high
     @Published var concatenateVideos = true
     @Published var quitWhenDone = false
-    @Published var preventSleepDuringExport = true
+    @Published var preventSleepDuringExport = true {
+        didSet {
+            if isExporting {
+                beginSleepPreventionIfNeeded()
+            }
+        }
+    }
     @Published var isExporting = false
     @Published var exportComplete = false
     @Published var progress: Double = 0

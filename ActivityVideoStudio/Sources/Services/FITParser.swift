@@ -1,5 +1,6 @@
 import Foundation
 import CoreLocation
+import Compression
 
 /// Parses Garmin .FIT files and extracts record data points.
 /// Supports the FIT binary protocol with Definition, Data, and Developer messages.
@@ -110,12 +111,25 @@ final class FITParser {
         case invalidHeader
         case invalidFile
         case unexpectedEndOfData
+        case invalidZipArchive
+        case fitNotFoundInZip
+        case encryptedZipEntry(String)
+        case unsupportedZip64(String)
+        case unsupportedZipCompression(String, UInt16)
+        case zipDecompressionFailed(String)
 
         var errorDescription: String? {
             switch self {
             case .invalidHeader: return "FIT ファイルのヘッダーが不正です"
             case .invalidFile: return "FIT ファイル形式が不正です"
             case .unexpectedEndOfData: return "FIT ファイルが途中で途切れています"
+            case .invalidZipArchive: return "ZIP ファイル形式が不正です"
+            case .fitNotFoundInZip: return "ZIP 内に .fit ファイルが見つかりません"
+            case .encryptedZipEntry(let name): return "\(name) は暗号化されているため読み込めません"
+            case .unsupportedZip64(let name): return "\(name) は Zip64 形式のため読み込めません"
+            case .unsupportedZipCompression(let name, let method):
+                return "\(name) のZIP圧縮方式（\(method)）には対応していません"
+            case .zipDecompressionFailed(let name): return "\(name) のZIP展開に失敗しました"
             }
         }
     }
@@ -140,7 +154,15 @@ final class FITParser {
 
     func parse(url: URL) throws -> ParseResult {
         let data = try Data(contentsOf: url)
+        if Self.isZipData(data) || url.pathExtension.lowercased() == "zip" {
+            let fitData = try Self.extractPreferredFITData(fromZip: data)
+            return try parseAll(data: fitData)
+        }
         return try parseAll(data: data)
+    }
+
+    func parse(data: Data) throws -> ParseResult {
+        try parseAll(data: data)
     }
 
     /// Parse and return only data points (backward compatible).
@@ -251,6 +273,201 @@ final class FITParser {
         }
 
         return ParseResult(dataPoints: dataPoints, hrZoneConfig: hrZoneConfig)
+    }
+
+    // MARK: - ZIP support
+
+    private struct ZipEntry {
+        let name: String
+        let flags: UInt16
+        let compressionMethod: UInt16
+        let compressedSize: UInt32
+        let uncompressedSize: UInt32
+        let localHeaderOffset: UInt32
+    }
+
+    private static func isZipData(_ data: Data) -> Bool {
+        data.count >= 4
+            && data[0] == 0x50
+            && data[1] == 0x4B
+            && data[2] == 0x03
+            && data[3] == 0x04
+    }
+
+    private static func extractPreferredFITData(fromZip data: Data) throws -> Data {
+        let entries = try zipCentralDirectoryEntries(in: data)
+            .filter { entry in
+                let lowercasedName = entry.name.lowercased()
+                return lowercasedName.hasSuffix(".fit") && !lowercasedName.hasSuffix("/")
+            }
+        guard !entries.isEmpty else { throw ParseError.fitNotFoundInZip }
+
+        let preferred = entries.first { entry in
+            entry.name.split(separator: "/").last?
+                .uppercased()
+                .hasSuffix("_ACTIVITY.FIT") == true
+        } ?? entries[0]
+
+        return try extract(entry: preferred, fromZip: data)
+    }
+
+    private static func zipCentralDirectoryEntries(in data: Data) throws -> [ZipEntry] {
+        let endOfCentralDirectorySignature: UInt32 = 0x06054B50
+        let centralDirectorySignature: UInt32 = 0x02014B50
+        guard let eocdOffset = lastOffset(ofLittleEndianSignature: endOfCentralDirectorySignature, in: data),
+              eocdOffset + 22 <= data.count else {
+            throw ParseError.invalidZipArchive
+        }
+
+        let entryCount = readUInt16LE(data, eocdOffset + 10)
+        let centralDirectorySize = readUInt32LE(data, eocdOffset + 12)
+        let centralDirectoryOffset = readUInt32LE(data, eocdOffset + 16)
+        guard entryCount != 0xFFFF,
+              centralDirectorySize != 0xFFFF_FFFF,
+              centralDirectoryOffset != 0xFFFF_FFFF else {
+            throw ParseError.unsupportedZip64("ZIP")
+        }
+
+        let start = Int(centralDirectoryOffset)
+        let size = Int(centralDirectorySize)
+        guard start >= 0, size >= 0, start + size <= data.count else {
+            throw ParseError.invalidZipArchive
+        }
+
+        var entries: [ZipEntry] = []
+        var offset = start
+        let end = start + size
+        while offset < end {
+            guard offset + 46 <= data.count,
+                  readUInt32LE(data, offset) == centralDirectorySignature else {
+                throw ParseError.invalidZipArchive
+            }
+
+            let flags = readUInt16LE(data, offset + 8)
+            let compressionMethod = readUInt16LE(data, offset + 10)
+            let compressedSize = readUInt32LE(data, offset + 20)
+            let uncompressedSize = readUInt32LE(data, offset + 24)
+            let fileNameLength = Int(readUInt16LE(data, offset + 28))
+            let extraLength = Int(readUInt16LE(data, offset + 30))
+            let commentLength = Int(readUInt16LE(data, offset + 32))
+            let localHeaderOffset = readUInt32LE(data, offset + 42)
+
+            guard compressedSize != 0xFFFF_FFFF,
+                  uncompressedSize != 0xFFFF_FFFF,
+                  localHeaderOffset != 0xFFFF_FFFF else {
+                let name = zipEntryName(data: data, offset: offset + 46, length: fileNameLength) ?? "ZIP"
+                throw ParseError.unsupportedZip64(name)
+            }
+
+            let nameOffset = offset + 46
+            let nextOffset = nameOffset + fileNameLength + extraLength + commentLength
+            guard nextOffset <= data.count,
+                  let name = zipEntryName(data: data, offset: nameOffset, length: fileNameLength) else {
+                throw ParseError.invalidZipArchive
+            }
+
+            entries.append(ZipEntry(
+                name: name,
+                flags: flags,
+                compressionMethod: compressionMethod,
+                compressedSize: compressedSize,
+                uncompressedSize: uncompressedSize,
+                localHeaderOffset: localHeaderOffset
+            ))
+            offset = nextOffset
+        }
+
+        return entries
+    }
+
+    private static func extract(entry: ZipEntry, fromZip data: Data) throws -> Data {
+        guard (entry.flags & 0x0001) == 0 else {
+            throw ParseError.encryptedZipEntry(entry.name)
+        }
+
+        let localHeaderSignature: UInt32 = 0x04034B50
+        let localOffset = Int(entry.localHeaderOffset)
+        guard localOffset + 30 <= data.count,
+              readUInt32LE(data, localOffset) == localHeaderSignature else {
+            throw ParseError.invalidZipArchive
+        }
+
+        let fileNameLength = Int(readUInt16LE(data, localOffset + 26))
+        let extraLength = Int(readUInt16LE(data, localOffset + 28))
+        let payloadOffset = localOffset + 30 + fileNameLength + extraLength
+        let compressedSize = Int(entry.compressedSize)
+        let uncompressedSize = Int(entry.uncompressedSize)
+        guard payloadOffset >= 0,
+              compressedSize >= 0,
+              uncompressedSize >= 0,
+              payloadOffset + compressedSize <= data.count else {
+            throw ParseError.invalidZipArchive
+        }
+
+        let compressedData = Data(data[payloadOffset..<(payloadOffset + compressedSize)])
+        switch entry.compressionMethod {
+        case 0:
+            guard compressedData.count == uncompressedSize else {
+                throw ParseError.zipDecompressionFailed(entry.name)
+            }
+            return compressedData
+        case 8:
+            return try inflateRawDeflate(compressedData, uncompressedSize: uncompressedSize, name: entry.name)
+        default:
+            throw ParseError.unsupportedZipCompression(entry.name, entry.compressionMethod)
+        }
+    }
+
+    private static func inflateRawDeflate(_ input: Data, uncompressedSize: Int, name: String) throws -> Data {
+        guard uncompressedSize > 0 else { return Data() }
+        var output = Data(count: uncompressedSize)
+        let decodedCount = output.withUnsafeMutableBytes { outputBuffer in
+            input.withUnsafeBytes { inputBuffer in
+                compression_decode_buffer(
+                    outputBuffer.bindMemory(to: UInt8.self).baseAddress!,
+                    outputBuffer.count,
+                    inputBuffer.bindMemory(to: UInt8.self).baseAddress!,
+                    inputBuffer.count,
+                    nil,
+                    COMPRESSION_ZLIB
+                )
+            }
+        }
+
+        guard decodedCount == uncompressedSize else {
+            throw ParseError.zipDecompressionFailed(name)
+        }
+        return output
+    }
+
+    private static func lastOffset(ofLittleEndianSignature signature: UInt32, in data: Data) -> Int? {
+        guard data.count >= 4 else { return nil }
+        var offset = data.count - 4
+        while offset >= 0 {
+            if readUInt32LE(data, offset) == signature {
+                return offset
+            }
+            if offset == 0 { break }
+            offset -= 1
+        }
+        return nil
+    }
+
+    private static func zipEntryName(data: Data, offset: Int, length: Int) -> String? {
+        guard offset >= 0, length >= 0, offset + length <= data.count else { return nil }
+        return String(data: data[offset..<(offset + length)], encoding: .utf8)
+            ?? String(data: data[offset..<(offset + length)], encoding: .shiftJIS)
+    }
+
+    private static func readUInt16LE(_ data: Data, _ offset: Int) -> UInt16 {
+        UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+    }
+
+    private static func readUInt32LE(_ data: Data, _ offset: Int) -> UInt32 {
+        UInt32(data[offset])
+            | (UInt32(data[offset + 1]) << 8)
+            | (UInt32(data[offset + 2]) << 16)
+            | (UInt32(data[offset + 3]) << 24)
     }
 
     // MARK: - zones_target parsing

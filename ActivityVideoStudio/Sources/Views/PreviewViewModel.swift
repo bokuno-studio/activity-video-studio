@@ -101,6 +101,8 @@ final class PreviewViewModel: ObservableObject {
     private(set) var timeSync: TimeSync?
     private var overlayRenderer: OverlayRenderer?
     private var timeObserver: Any?
+    private var trimPreviewSeekTask: Task<Void, Never>?
+    private var didApplyDefaultFITStartAlignment = false
     private var projectSecurityScopedURLs: [URL] = []
     private(set) var fitDataPoints: [FITDataPoint] = []
     private(set) var fitURL: URL?
@@ -281,6 +283,7 @@ final class PreviewViewModel: ObservableObject {
     #endif
 
     deinit {
+        trimPreviewSeekTask?.cancel()
         for url in projectSecurityScopedURLs {
             url.stopAccessingSecurityScopedResource()
         }
@@ -447,11 +450,14 @@ final class PreviewViewModel: ObservableObject {
         }
 
         seek(to: 0)
+        didApplyDefaultFITStartAlignment = true
         projectWarningMessage = warningMessage(from: warnings)
         statusMessage = "プロジェクト読み込み完了: \(sourceName)"
     }
 
     private func resetProjectState() {
+        trimPreviewSeekTask?.cancel()
+        trimPreviewSeekTask = nil
         stopAccessingProjectResources()
         player.pause()
         player.replaceCurrentItem(with: nil)
@@ -479,6 +485,7 @@ final class PreviewViewModel: ObservableObject {
         projectWarningMessage = nil
         projectURL = nil
         isProjectEdited = false
+        didApplyDefaultFITStartAlignment = false
     }
 
     private func confirmDiscardCurrentProject() -> Bool {
@@ -565,6 +572,7 @@ final class PreviewViewModel: ObservableObject {
             trackCoordinates = fitDataPoints.compactMap { $0.coordinate }
 
             setupTimeSync()
+            applyDefaultFITStartAlignmentIfPossible()
 
             // Update renderer if already exists
             if let renderer = overlayRenderer {
@@ -606,6 +614,7 @@ final class PreviewViewModel: ObservableObject {
 
             // Build combined player item
             guard await rebuildComposition() else { return }
+            applyDefaultFITStartAlignmentIfPossible()
 
             var msg = "動画読み込み完了 (\(videoURLs.count)本, 合計 \(formatDuration(duration)))"
             // Show FIT offset info
@@ -776,12 +785,41 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func seek(to time: TimeInterval) {
+        trimPreviewSeekTask?.cancel()
+        trimPreviewSeekTask = nil
+        performSeek(to: time, tolerance: .zero, finishSeeking: true)
+    }
+
+    func previewTrimSeek(to time: TimeInterval) {
         let target = clampedSeekTime(time)
         currentTime = target
-        let cmTime = CMTime(seconds: target, preferredTimescale: 600)
-        player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
-        isSeeking = false
-        updateOverlay()
+        isSeeking = true
+
+        trimPreviewSeekTask?.cancel()
+        trimPreviewSeekTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 90_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.performSeek(
+                    to: target,
+                    tolerance: CMTime(seconds: 0.25, preferredTimescale: 600),
+                    finishSeeking: false
+                )
+            }
+
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.performSeek(to: target, tolerance: .zero, finishSeeking: true)
+                self?.trimPreviewSeekTask = nil
+            }
+        }
+    }
+
+    func commitTrimSeek(to time: TimeInterval) {
+        trimPreviewSeekTask?.cancel()
+        trimPreviewSeekTask = nil
+        performSeek(to: time, tolerance: .zero, finishSeeking: true)
     }
 
     func seekToTrimmedTime(_ time: TimeInterval) {
@@ -824,6 +862,17 @@ final class PreviewViewModel: ObservableObject {
         return min(max(time, 0), duration)
     }
 
+    private func performSeek(to time: TimeInterval, tolerance: CMTime, finishSeeking: Bool) {
+        let target = clampedSeekTime(time)
+        currentTime = target
+        let cmTime = CMTime(seconds: target, preferredTimescale: 600)
+        player.seek(to: cmTime, toleranceBefore: tolerance, toleranceAfter: tolerance)
+        if finishSeeking {
+            isSeeking = false
+        }
+        updateOverlay()
+    }
+
     func updateSyncOffset(_ offset: Double) {
         syncOffset = offset
         // Rebuild every segment so the offset applies uniformly across all
@@ -859,6 +908,19 @@ final class PreviewViewModel: ObservableObject {
         // and we want that to equal fitStart.
         updateSyncOffset(fitStart.timeIntervalSince(creationDate) - currentTime)
         statusMessage = "再生位置を活動開始（0:00 / 0km）に合わせました"
+    }
+
+    private func applyDefaultFITStartAlignmentIfPossible() {
+        guard !didApplyDefaultFITStartAlignment,
+              videoLoaded,
+              fitLoaded,
+              let creationDate = videoMetadatas.first?.creationDate,
+              let fitStart = fitDataPoints.first?.timestamp else {
+            return
+        }
+
+        didApplyDefaultFITStartAlignment = true
+        updateSyncOffset(fitStart.timeIntervalSince(creationDate))
     }
 
     /// Wall-clock time mapped to the first frame of the first video, given the

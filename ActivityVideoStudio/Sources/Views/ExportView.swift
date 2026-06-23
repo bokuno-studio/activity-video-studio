@@ -102,11 +102,19 @@ struct ExportView: View {
                 Text(msg)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if let remaining = viewModel.estimatedRemaining {
+            }
+
+            if let remaining = viewModel.estimatedRemaining {
                 Text("残り約 \(formatTime(remaining))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("完了後アプリ終了", isOn: $viewModel.quitWhenDone)
+                Toggle("完了までスリープさせない", isOn: $viewModel.preventSleepDuringExport)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Button("キャンセル") {
                 viewModel.cancelExport()
