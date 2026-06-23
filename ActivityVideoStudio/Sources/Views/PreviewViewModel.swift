@@ -42,7 +42,6 @@ final class PreviewViewModel: ObservableObject {
     @Published var trimSettings: [TrimSettings] = []
     @Published var playbackRate: Float = 1.0
     @Published var chapterMarkers: [ChapterMarker] = []
-    @Published var exportPreviewImage: CGImage?
     @Published private(set) var videoNativeWidth: Int = 0
 
     let playbackRateOptions: [Float] = [0.5, 1.0, 2.0, 4.0, 8.0, 10.0]
@@ -392,7 +391,6 @@ final class PreviewViewModel: ObservableObject {
         isSeeking = false
         duration = 0
         overlayImage = nil
-        exportPreviewImage = nil
         currentCoordinate = nil
         trackCoordinates = []
         fitDataPoints = []
@@ -771,21 +769,6 @@ final class PreviewViewModel: ObservableObject {
         let s = total % 60
         if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
         return String(format: "%d:%02d", m, s)
-    }
-
-    // MARK: - Export preview
-
-    func generateExportPreview() {
-        guard let renderer = overlayRenderer,
-              let timeSync = timeSync,
-              !timeSync.segments.isEmpty else { return }
-
-        let (segmentIndex, segmentPlaybackTime) = resolveSegment(globalTime: currentTime)
-
-        if let dataPoint = timeSync.dataPoint(segmentIndex: segmentIndex, playbackTime: segmentPlaybackTime),
-           let elapsed = timeSync.elapsedTime(segmentIndex: segmentIndex, playbackTime: segmentPlaybackTime) {
-            exportPreviewImage = renderer.render(dataPoint: dataPoint, elapsedTime: elapsed, globalPlaybackTime: trimmedPlaybackTime())
-        }
     }
 
     // MARK: - Export

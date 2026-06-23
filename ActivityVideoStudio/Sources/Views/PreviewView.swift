@@ -14,7 +14,6 @@ struct PreviewView: View {
         case textOverlay = "テキスト"
         case chapters = "チャプター"
         case youtube = "YouTube"
-        case preview = "確認"
     }
 
     var body: some View {
@@ -124,11 +123,6 @@ struct PreviewView: View {
                                 videoStartDate: viewModel.videoMetadatas.first?.creationDate,
                                 chapterMarkers: viewModel.chapterMarkers,
                                 trimmedTime: viewModel.trimmedTime(for:)
-                            )
-                        case .preview:
-                            ExportPreviewView(
-                                previewImage: viewModel.exportPreviewImage,
-                                onGenerate: { viewModel.generateExportPreview() }
                             )
                         }
                     }
