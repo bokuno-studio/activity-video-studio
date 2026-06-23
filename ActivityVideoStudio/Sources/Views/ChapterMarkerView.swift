@@ -6,6 +6,7 @@ struct ChapterMarkerView: View {
     let trimmedTime: (TimeInterval) -> TimeInterval
     let onSeek: (ChapterMarker) -> Void
     let onAdd: () -> Void
+    let onRemove: (ChapterMarker) -> Void
     var isTextFocused: FocusState<Bool>.Binding
 
     var body: some View {
@@ -17,7 +18,6 @@ struct ChapterMarkerView: View {
                 Button(action: onAdd) {
                     Label("現在位置にマーク", systemImage: "flag")
                 }
-                .keyboardShortcut("m", modifiers: [])
             }
 
             Text("再生中に M キーでマーカーを追加")
@@ -39,14 +39,15 @@ struct ChapterMarkerView: View {
                         onSeek(marker)
                     } label: {
                         Text(formatTime(trimmedTime(marker.time)))
-                            .font(.system(size: 12, design: .monospaced))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
+                            .font(.caption.monospacedDigit())
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
                             .background(Color.orange.opacity(0.2))
                             .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                     .buttonStyle(.borderless)
                     .help("この位置にシーク")
+                    .accessibilityLabel("\(formatTime(trimmedTime(marker.time))) にシーク")
 
                     // Label (Enter/Esc to unfocus)
                     TextField("ラベルを入力", text: $marker.label)
@@ -54,15 +55,17 @@ struct ChapterMarkerView: View {
                         .font(.subheadline)
                         .focused(isTextFocused)
                         .onSubmit { isTextFocused.wrappedValue = false }
+                        .accessibilityLabel("チャプターラベル")
 
                     // Delete
                     Button(role: .destructive) {
-                        markers.removeAll { $0.id == marker.id }
+                        onRemove(marker)
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.borderless)
+                    .accessibilityLabel("チャプターマーカーを削除")
                 }
             }
 
@@ -77,7 +80,7 @@ struct ChapterMarkerView: View {
 
                     let chapterText = generateChapterText()
                     Text(chapterText)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.caption2.monospaced())
                         .textSelection(.enabled)
                         .padding(8)
                         .background(.quaternary.opacity(0.3))

@@ -6,6 +6,7 @@ struct TrimView: View {
     let videoNames: [String]
     let videoDurations: [TimeInterval]
     var onSeek: ((TimeInterval) -> Void)?
+    var isTextFocused: FocusState<Bool>.Binding
 
     private var totalDuration: TimeInterval {
         videoDurations.reduce(0, +)
@@ -38,16 +39,14 @@ struct TrimView: View {
                     )
                     .frame(height: 36)
 
-                    HStack {
-                        Text(formatTime(trimSettings[0].startTrim))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("リセット") { trimSettings[0].startTrim = 0 }
-                            .font(.caption)
-                    }
+                    trimValueControl(
+                        title: "先頭",
+                        value: $trimSettings[0].startTrim,
+                        maxValue: max(0, videoDurations[0] - trimSettings[0].endTrim - 0.5),
+                        onValueChanged: { onSeek?($0) }
+                    )
                 }
-                .padding(10)
+                .padding(8)
                 .background(.quaternary.opacity(0.5))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
@@ -69,16 +68,14 @@ struct TrimView: View {
                         )
                         .frame(height: 36)
 
-                        HStack {
-                            Text(formatTime(trimSettings[lastIdx].endTrim))
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("リセット") { trimSettings[lastIdx].endTrim = 0 }
-                                .font(.caption)
-                        }
+                        trimValueControl(
+                            title: "末尾",
+                            value: $trimSettings[lastIdx].endTrim,
+                            maxValue: max(0, videoDurations[lastIdx] - 0.5),
+                            onValueChanged: { onSeek?(lastOffset + videoDurations[lastIdx] - $0) }
+                        )
                     }
-                    .padding(10)
+                    .padding(8)
                     .background(.quaternary.opacity(0.5))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 } else {
@@ -96,16 +93,14 @@ struct TrimView: View {
                         )
                         .frame(height: 36)
 
-                        HStack {
-                            Text(formatTime(trimSettings[0].endTrim))
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("リセット") { trimSettings[0].endTrim = 0 }
-                                .font(.caption)
-                        }
+                        trimValueControl(
+                            title: "末尾",
+                            value: $trimSettings[0].endTrim,
+                            maxValue: max(0, videoDurations[0] - trimSettings[0].startTrim - 0.5),
+                            onValueChanged: { onSeek?(videoDurations[0] - $0) }
+                        )
                     }
-                    .padding(10)
+                    .padding(8)
                     .background(.quaternary.opacity(0.5))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
@@ -126,6 +121,60 @@ struct TrimView: View {
         let h = total / 3600; let m = (total % 3600) / 60; let s = total % 60
         if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
         return String(format: "%d:%02d", m, s)
+    }
+
+    private func trimValueControl(
+        title: String,
+        value: Binding<TimeInterval>,
+        maxValue: TimeInterval,
+        onValueChanged: @escaping (TimeInterval) -> Void
+    ) -> some View {
+        let binding = clampedTrimBinding(value, maxValue: maxValue, onValueChanged: onValueChanged)
+
+        return HStack(spacing: 8) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text(formatTime(binding.wrappedValue))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 48, alignment: .trailing)
+
+            TextField("秒", value: binding, format: .number.precision(.fractionLength(1)))
+                .textFieldStyle(.roundedBorder)
+                .font(.caption.monospacedDigit())
+                .frame(width: 68)
+                .multilineTextAlignment(.trailing)
+                .focused(isTextFocused)
+                .accessibilityLabel("\(title)カット秒")
+
+            Stepper(title, value: binding, in: 0...max(0, maxValue), step: 0.5)
+                .labelsHidden()
+                .controlSize(.small)
+
+            Spacer(minLength: 0)
+
+            Button("リセット") {
+                binding.wrappedValue = 0
+            }
+            .font(.caption)
+        }
+    }
+
+    private func clampedTrimBinding(
+        _ value: Binding<TimeInterval>,
+        maxValue: TimeInterval,
+        onValueChanged: @escaping (TimeInterval) -> Void
+    ) -> Binding<TimeInterval> {
+        Binding(
+            get: { min(max(value.wrappedValue, 0), max(0, maxValue)) },
+            set: { newValue in
+                let clamped = min(max(newValue, 0), max(0, maxValue))
+                value.wrappedValue = clamped
+                onValueChanged(clamped)
+            }
+        )
     }
 }
 
@@ -166,7 +215,7 @@ struct TrimBarView: View {
 
                 // Start handle
                 if startTrim >= 0 {
-                    TrimHandle(color: .orange)
+                    TrimHandle(color: .accentColor)
                         .offset(x: activeStart - 6)
                         .gesture(DragGesture().onChanged { value in
                             let frac = max(0, min(value.location.x / w, 1 - endFrac - 0.02))
@@ -177,7 +226,7 @@ struct TrimBarView: View {
 
                 // End handle
                 if endTrim >= 0 {
-                    TrimHandle(color: .orange)
+                    TrimHandle(color: .accentColor)
                         .offset(x: activeEnd - 6)
                         .gesture(DragGesture().onChanged { value in
                             let frac = max(0, min((w - value.location.x) / w, 1 - startFrac - 0.02))

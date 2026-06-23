@@ -8,6 +8,123 @@ struct ActivityVideoStudioApp: App {
         WindowGroup {
             ContentView()
         }
+        .commands {
+            ActivityVideoStudioCommands()
+        }
+    }
+}
+
+struct PreviewCommandContext {
+    var canSaveProject: Bool
+    var canExport: Bool
+    var isPlaying: Bool
+    var shortcutsSuspended: Bool
+    var openProject: () -> Void
+    var saveProject: () -> Void
+    var exportVideo: () -> Void
+    var seekToTrimStart: () -> Void
+    var skipBackward5: () -> Void
+    var skipForward5: () -> Void
+    var skipBackward10: () -> Void
+    var skipForward10: () -> Void
+    var togglePlayback: () -> Void
+    var cyclePlaybackRate: () -> Void
+    var addChapterMarker: () -> Void
+}
+
+struct PreviewCommandContextKey: FocusedValueKey {
+    typealias Value = PreviewCommandContext
+}
+
+extension FocusedValues {
+    var previewCommandContext: PreviewCommandContext? {
+        get { self[PreviewCommandContextKey.self] }
+        set { self[PreviewCommandContextKey.self] = newValue }
+    }
+}
+
+struct ActivityVideoStudioCommands: Commands {
+    @FocusedValue(\.previewCommandContext) private var context
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("プロジェクトを開く...") {
+                context?.openProject()
+            }
+            .keyboardShortcut("o", modifiers: .command)
+            .disabled(context == nil)
+        }
+
+        CommandGroup(replacing: .saveItem) {
+            Button("プロジェクトを保存") {
+                context?.saveProject()
+            }
+            .keyboardShortcut("s", modifiers: .command)
+            .disabled(!(context?.canSaveProject ?? false))
+        }
+
+        CommandGroup(after: .saveItem) {
+            Button("エクスポート...") {
+                context?.exportVideo()
+            }
+            .keyboardShortcut("e", modifiers: .command)
+            .disabled(!(context?.canExport ?? false))
+        }
+
+        CommandMenu("再生") {
+            Button(context?.isPlaying == true ? "一時停止" : "再生") {
+                context?.togglePlayback()
+            }
+            .keyboardShortcut("k", modifiers: [])
+            .disabled(playbackCommandsDisabled)
+
+            Button("トリム先頭に移動") {
+                context?.seekToTrimStart()
+            }
+            .disabled(playbackCommandsDisabled)
+
+            Divider()
+
+            Button("5秒戻る") {
+                context?.skipBackward5()
+            }
+            .disabled(playbackCommandsDisabled)
+
+            Button("5秒進む") {
+                context?.skipForward5()
+            }
+            .disabled(playbackCommandsDisabled)
+
+            Button("10秒戻る") {
+                context?.skipBackward10()
+            }
+            .keyboardShortcut("j", modifiers: [])
+            .disabled(playbackCommandsDisabled)
+
+            Button("10秒進む") {
+                context?.skipForward10()
+            }
+            .keyboardShortcut("l", modifiers: [])
+            .disabled(playbackCommandsDisabled)
+
+            Divider()
+
+            Button("再生速度を切り替え") {
+                context?.cyclePlaybackRate()
+            }
+            .keyboardShortcut(",", modifiers: [])
+            .disabled(playbackCommandsDisabled)
+
+            Button("チャプターマーカーを追加") {
+                context?.addChapterMarker()
+            }
+            .keyboardShortcut("m", modifiers: [])
+            .disabled(playbackCommandsDisabled)
+        }
+    }
+
+    private var playbackCommandsDisabled: Bool {
+        context == nil || (context?.shortcutsSuspended ?? true)
     }
 }
 

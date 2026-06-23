@@ -8,6 +8,9 @@ struct PreviewView: View {
     @State private var rightPanelTab: RightPanelTab = .trim
     @State private var showRightPanel = false
     @FocusState private var isTextFieldFocused: Bool
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.undoManager) private var undoManager
 
     enum RightPanelTab: String, CaseIterable {
         case trim = "トリム"
@@ -26,7 +29,7 @@ struct PreviewView: View {
                         fitPointCount: viewModel.fitDataPoints.count,
                         videoURLs: viewModel.videoURLs,
                         videoDurations: viewModel.videoMetadatas.map { $0.duration },
-                        onRemoveVideo: { viewModel.removeVideo(at: $0) }
+                        onRemoveVideo: { viewModel.removeVideo(at: $0, undoManager: undoManager) }
                     )
 
                     Divider()
@@ -34,8 +37,7 @@ struct PreviewView: View {
                     // Settings inline
                     ScrollView {
                         OverlaySettingsView(
-                            settings: viewModel.overlaySettings,
-                            isTextFocused: $isTextFieldFocused
+                            settings: viewModel.overlaySettings
                         )
                     }
                     .frame(maxHeight: 300)
@@ -64,22 +66,27 @@ struct PreviewView: View {
 
                 // Thin controls bar
                 controlsBar
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 8)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let status = viewModel.statusMessage {
                     Text(status)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
-                        .padding(.bottom, 1)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 4)
+                        .accessibilityLabel("状態: \(status)")
                 }
                 if let warning = viewModel.projectWarningMessage {
-                    Text(warning)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.orange)
-                        .lineLimit(2)
-                        .padding(.bottom, 1)
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                        Text(warning)
+                            .lineLimit(2)
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .padding(.bottom, 4)
+                    .accessibilityLabel("警告: \(warning)")
                 }
             }
 
@@ -101,7 +108,8 @@ struct PreviewView: View {
                                 trimSettings: $viewModel.trimSettings,
                                 videoNames: viewModel.videoURLs.map { $0.lastPathComponent },
                                 videoDurations: viewModel.videoMetadatas.map { $0.duration },
-                                onSeek: { time in viewModel.seek(to: time) }
+                                onSeek: { time in viewModel.seek(to: time) },
+                                isTextFocused: $isTextFieldFocused
                             )
                         case .textOverlay:
                             TextOverlayEditView(
@@ -114,7 +122,8 @@ struct PreviewView: View {
                                 markers: $viewModel.chapterMarkers,
                                 trimmedTime: viewModel.trimmedTime(for:),
                                 onSeek: { viewModel.seekToMarker($0) },
-                                onAdd: { viewModel.addChapterMarker() },
+                                onAdd: { viewModel.addChapterMarker(undoManager: undoManager) },
+                                onRemove: { viewModel.removeChapterMarker(id: $0.id, undoManager: undoManager) },
                                 isTextFocused: $isTextFieldFocused
                             )
                         case .youtube:
@@ -127,7 +136,8 @@ struct PreviewView: View {
                         }
                     }
                 }
-                .frame(width: 340)
+                .frame(minWidth: 320, idealWidth: 340, maxWidth: 380)
+                .background(.regularMaterial)
             }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -135,7 +145,9 @@ struct PreviewView: View {
             return true
         }
         .overlay {
-            if !viewModel.videoLoaded || !viewModel.fitLoaded {
+            if viewModel.isLoading {
+                loadingOverlay
+            } else if !viewModel.videoLoaded || !viewModel.fitLoaded {
                 dropPrompt
             }
         }
@@ -145,6 +157,14 @@ struct PreviewView: View {
                 isTextFocused: $isTextFieldFocused
             )
         }
+        .alert(item: $viewModel.alert) { alert in
+            Alert(
+                title: Text(alert.title),
+                message: Text(alert.message),
+                dismissButton: .default(Text("閉じる"))
+            )
+        }
+        .focusedSceneValue(\.previewCommandContext, commandContext)
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -153,7 +173,7 @@ struct PreviewView: View {
                     Image(systemName: "folder")
                 }
                 .help("プロジェクトを開く (⌘O)")
-                .keyboardShortcut("o", modifiers: .command)
+                .accessibilityLabel("プロジェクトを開く")
 
                 Button {
                     viewModel.presentSaveProjectPanel()
@@ -161,7 +181,7 @@ struct PreviewView: View {
                     Image(systemName: "square.and.arrow.down")
                 }
                 .help("プロジェクトを保存 (⌘S)")
-                .keyboardShortcut("s", modifiers: .command)
+                .accessibilityLabel("プロジェクトを保存")
                 .disabled(!viewModel.canSaveProject)
 
                 Divider()
@@ -172,6 +192,8 @@ struct PreviewView: View {
                     Image(systemName: "sidebar.left")
                 }
                 .help("ファイル一覧・設定")
+                .accessibilityLabel("ファイル一覧と設定")
+                .accessibilityValue(viewModel.showFileList ? "表示中" : "非表示")
 
                 Button {
                     showRightPanel.toggle()
@@ -179,6 +201,8 @@ struct PreviewView: View {
                     Image(systemName: "sidebar.right")
                 }
                 .help("編集パネル")
+                .accessibilityLabel("編集パネル")
+                .accessibilityValue(showRightPanel ? "表示中" : "非表示")
 
                 Button {
                     viewModel.showExport = true
@@ -186,7 +210,7 @@ struct PreviewView: View {
                     Image(systemName: "square.and.arrow.up")
                 }
                 .help("エクスポート (⌘E)")
-                .keyboardShortcut("e", modifiers: .command)
+                .accessibilityLabel("エクスポート")
                 .disabled(!viewModel.videoLoaded || !viewModel.fitLoaded)
             }
         }
@@ -201,31 +225,26 @@ struct PreviewView: View {
             viewModel.skipForward()
             return .handled
         }
-        .onKeyPress("j") {
-            guard !previewShortcutsSuspended else { return .ignored }
-            viewModel.skipBackward(10)
-            return .handled
-        }
-        .onKeyPress("l") {
-            guard !previewShortcutsSuspended else { return .ignored }
-            viewModel.skipForward(10)
-            return .handled
-        }
-        .onKeyPress("k") {
-            guard !previewShortcutsSuspended else { return .ignored }
-            viewModel.togglePlayback()
-            return .handled
-        }
-        .onKeyPress(",") {
-            guard !previewShortcutsSuspended else { return .ignored }
-            viewModel.cyclePlaybackRate()
-            return .handled
-        }
-        .onKeyPress("m") {
-            guard !previewShortcutsSuspended else { return .ignored }
-            viewModel.addChapterMarker()
-            return .handled
-        }
+    }
+
+    private var commandContext: PreviewCommandContext {
+        PreviewCommandContext(
+            canSaveProject: viewModel.canSaveProject,
+            canExport: viewModel.videoLoaded && viewModel.fitLoaded,
+            isPlaying: viewModel.isPlaying,
+            shortcutsSuspended: previewShortcutsSuspended,
+            openProject: { viewModel.presentOpenProjectPanel() },
+            saveProject: { viewModel.presentSaveProjectPanel() },
+            exportVideo: { viewModel.showExport = true },
+            seekToTrimStart: { viewModel.seekToTrimStart() },
+            skipBackward5: { viewModel.skipBackward() },
+            skipForward5: { viewModel.skipForward() },
+            skipBackward10: { viewModel.skipBackward(10) },
+            skipForward10: { viewModel.skipForward(10) },
+            togglePlayback: { viewModel.togglePlayback() },
+            cyclePlaybackRate: { viewModel.cyclePlaybackRate() },
+            addChapterMarker: { viewModel.addChapterMarker(undoManager: undoManager) }
+        )
     }
 
     private var frontModalPresented: Bool {
@@ -241,13 +260,13 @@ struct PreviewView: View {
     private var controlsBar: some View {
         let totalDuration = max(viewModel.duration, 1)
 
-        return VStack(spacing: 2) {
+        return VStack(spacing: 4) {
             // Seek bar with trim indicators (absolute time axis)
-            HStack(spacing: 4) {
+            HStack(spacing: 8) {
                 Text(formatTime(viewModel.currentTime))
-                    .font(.system(size: 10).monospacedDigit())
+                    .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
-                    .frame(width: 50, alignment: .trailing)
+                    .frame(minWidth: 48, alignment: .trailing)
 
                 ZStack {
                     Slider(value: Binding(
@@ -261,6 +280,8 @@ struct PreviewView: View {
                         }
                     }
                     .controlSize(.small)
+                    .accessibilityLabel("再生位置")
+                    .accessibilityValue("\(formatTime(viewModel.currentTime)) / \(formatTime(totalDuration))")
 
                     GeometryReader { geo in
                         let trimInfo = viewModel.trimRangesForSeekbar()
@@ -296,112 +317,161 @@ struct PreviewView: View {
                 }
 
                 Text(formatTime(totalDuration))
-                    .font(.system(size: 10).monospacedDigit())
+                    .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
-                    .frame(width: 50, alignment: .leading)
+                    .frame(minWidth: 48, alignment: .leading)
             }
 
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 // Trim start
                 Button { viewModel.seekToTrimStart() } label: {
-                    Image(systemName: "backward.end.fill").font(.system(size: 11))
+                    Image(systemName: "backward.end.fill")
+                        .imageScale(.small)
                 }
                 .buttonStyle(.borderless)
+                .frame(minWidth: 28, minHeight: 28)
+                .contentShape(Rectangle())
                 .help("トリム先頭に戻る")
+                .accessibilityLabel("トリム先頭に移動")
 
                 // Skip back 5s
                 Button { viewModel.skipBackward() } label: {
-                    Image(systemName: "gobackward.5").font(.system(size: 12))
+                    Image(systemName: "gobackward.5")
+                        .imageScale(.small)
                 }
                 .buttonStyle(.borderless)
+                .frame(minWidth: 28, minHeight: 28)
+                .contentShape(Rectangle())
+                .help("5秒戻る")
+                .accessibilityLabel("5秒戻る")
 
                 // Play/Pause
                 Button(action: viewModel.togglePlayback) {
                     Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 14))
+                        .imageScale(.medium)
                 }
                 .buttonStyle(.borderless)
+                .frame(minWidth: 32, minHeight: 28)
+                .contentShape(Rectangle())
                 .keyboardShortcut(.space, modifiers: [])
                 .disabled(frontModalPresented)
+                .help(viewModel.isPlaying ? "一時停止" : "再生")
+                .accessibilityLabel(viewModel.isPlaying ? "一時停止" : "再生")
+                .accessibilityValue(viewModel.isPlaying ? "再生中" : "停止中")
 
                 // Skip forward 5s
                 Button { viewModel.skipForward() } label: {
-                    Image(systemName: "goforward.5").font(.system(size: 12))
+                    Image(systemName: "goforward.5")
+                        .imageScale(.small)
                 }
                 .buttonStyle(.borderless)
+                .frame(minWidth: 28, minHeight: 28)
+                .contentShape(Rectangle())
+                .help("5秒進む")
+                .accessibilityLabel("5秒進む")
 
-                // Speed
-                Menu {
+                Picker("再生速度", selection: playbackRateBinding) {
                     ForEach(viewModel.playbackRateOptions, id: \.self) { rate in
-                        Button {
-                            viewModel.setPlaybackRate(rate)
-                        } label: {
-                            if rate == viewModel.playbackRate {
-                                Label("\(formatPlaybackRate(rate))x", systemImage: "checkmark")
-                            } else {
-                                Text("\(formatPlaybackRate(rate))x")
-                            }
-                        }
+                        Text("\(formatPlaybackRate(rate))x").tag(rate)
                     }
-                } label: {
-                    Text("\(String(format: viewModel.playbackRate == Float(Int(viewModel.playbackRate)) ? "%.0f" : "%.1f", viewModel.playbackRate))x")
-                        .font(.system(size: 10).monospacedDigit())
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(.quaternary)
-                        .clipShape(Capsule())
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .labelsHidden()
                 .help("再生速度")
+                .accessibilityLabel("再生速度")
+                .accessibilityValue("\(formatPlaybackRate(viewModel.playbackRate))倍")
 
                 Spacer()
 
-                // Sync offset: anchor the activity start to the current frame + fine nudge.
-                if viewModel.fitLoaded {
-                    HStack(spacing: 4) {
-                        Button {
-                            viewModel.alignFitStartToCurrentFrame()
-                        } label: {
-                            Text("ここをFIT開始に")
-                                .font(.system(size: 10, weight: .medium))
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .help("いま表示しているフレームを活動の開始（0:00 / 0km）に合わせます。スタート地点までスクラブして押し、±で微調整してください")
-
-                        Divider().frame(height: 12)
-
-                        Text("同期")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-
-                        syncNudgeButton("−1m", delta: -60)
-                        syncNudgeButton("−10s", delta: -10)
-                        syncNudgeButton("−", delta: -0.5)
-
-                        Text(viewModel.videoStartDescription() ?? "—")
-                            .font(.system(size: 10).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 138)
-                            .help("オフセット適用後の動画先頭の時刻。ここがFITの活動中の時刻と一致すれば同期OK")
-
-                        syncNudgeButton("＋", delta: 0.5)
-                        syncNudgeButton("+10s", delta: 10)
-                        syncNudgeButton("+1m", delta: 60)
-                    }
-                }
-
                 if viewModel.videoURLs.count > 1 {
                     Text("\(viewModel.videoURLs.count)本")
-                        .font(.system(size: 10))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
+                        .font(.caption2)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
                         .background(.quaternary)
                         .clipShape(Capsule())
                 }
             }
+
+            if viewModel.fitLoaded {
+                syncControlsRow
+            }
         }
+    }
+
+    private var syncControlsRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Button {
+                    viewModel.alignFitStartToCurrentFrame()
+                } label: {
+                    Text("ここをFIT開始に")
+                        .font(.caption2.weight(.medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("いま表示しているフレームを活動の開始（0:00 / 0km）に合わせます。スタート地点までスクラブして押し、±で微調整してください")
+                .accessibilityLabel("ここをFIT開始にする")
+                .accessibilityHint("現在の再生位置をFIT活動の開始時刻に合わせます")
+
+                Divider().frame(height: 16)
+
+                Text("同期")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Stepper("同期オフセット", value: syncOffsetBinding, step: 0.5)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .accessibilityLabel("同期オフセットを0.5秒単位で調整")
+
+                TextField("秒", value: syncOffsetBinding, format: .number.precision(.fractionLength(1)))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption2.monospacedDigit())
+                    .frame(width: 72)
+                    .multilineTextAlignment(.trailing)
+                    .focused($isTextFieldFocused)
+                    .accessibilityLabel("同期オフセット秒")
+                Text("秒")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                syncNudgeButton("−1m", delta: -60)
+                syncNudgeButton("−10s", delta: -10)
+                syncNudgeButton("−", delta: -0.5)
+
+                Text(viewModel.videoStartDescription() ?? "—")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 150, alignment: .center)
+                    .help("オフセット適用後の動画先頭の時刻。ここがFITの活動中の時刻と一致すれば同期OK")
+                    .accessibilityLabel("同期後の動画先頭時刻")
+                    .accessibilityValue(viewModel.videoStartDescription() ?? "未設定")
+
+                syncNudgeButton("＋", delta: 0.5)
+                syncNudgeButton("+10s", delta: 10)
+                syncNudgeButton("+1m", delta: 60)
+            }
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minHeight: 32)
+    }
+
+    private var playbackRateBinding: Binding<Float> {
+        Binding(
+            get: { viewModel.playbackRate },
+            set: { viewModel.setPlaybackRate($0) }
+        )
+    }
+
+    private var syncOffsetBinding: Binding<Double> {
+        Binding(
+            get: { viewModel.syncOffset },
+            set: { viewModel.updateSyncOffset($0) }
+        )
     }
 
     // MARK: - Drop prompt
@@ -410,7 +480,7 @@ struct PreviewView: View {
         VStack(spacing: 16) {
             Image(systemName: "arrow.down.doc")
                 .font(.system(size: 40))
-                .foregroundStyle(Color.white.opacity(0.7))
+                .foregroundStyle(.secondary)
             Text("FIT ファイルと動画をドラッグ&ドロップ")
                 .font(.title3)
                 .foregroundStyle(.primary)
@@ -422,12 +492,20 @@ struct PreviewView: View {
                 HStack(spacing: 10) {
                     Image(systemName: viewModel.fitLoaded ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(viewModel.fitLoaded ? .green : .secondary)
+                    if differentiateWithoutColor && viewModel.fitLoaded {
+                        Text("読み込み済み")
+                            .font(.caption2)
+                    }
                     Text(".FIT (アクティビティデータ)")
                         .foregroundStyle(viewModel.fitLoaded ? .primary : .secondary)
                 }
                 HStack(spacing: 10) {
                     Image(systemName: viewModel.videoLoaded ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(viewModel.videoLoaded ? .green : .secondary)
+                    if differentiateWithoutColor && viewModel.videoLoaded {
+                        Text("読み込み済み")
+                            .font(.caption2)
+                    }
                     Text(".MP4 (動画ファイル)")
                         .foregroundStyle(viewModel.videoLoaded ? .primary : .secondary)
                 }
@@ -436,7 +514,34 @@ struct PreviewView: View {
             .padding(.top, 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(white: 0.12).opacity(0.95))
+        .background {
+            if reduceTransparency {
+                Color(nsColor: .windowBackgroundColor)
+            } else {
+                Rectangle().fill(.regularMaterial)
+            }
+        }
+    }
+
+    private var loadingOverlay: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.large)
+            Text(viewModel.loadingMessage ?? "読み込み中...")
+                .font(.callout)
+                .foregroundStyle(.primary)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            if reduceTransparency {
+                Color(nsColor: .windowBackgroundColor)
+            } else {
+                Rectangle().fill(.regularMaterial)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(viewModel.loadingMessage ?? "読み込み中")
     }
 
     // MARK: - Drop handling
@@ -445,7 +550,15 @@ struct PreviewView: View {
         for provider in providers {
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
                 guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                      let url = URL(dataRepresentation: data, relativeTo: nil) else {
+                    Task { @MainActor in
+                        viewModel.showError(
+                            title: "ファイルを読み込めませんでした",
+                            message: "ドロップされた項目のファイルURLを取得できませんでした。"
+                        )
+                    }
+                    return
+                }
 
                 let ext = url.pathExtension.lowercased()
                 Task { @MainActor in
@@ -453,6 +566,11 @@ struct PreviewView: View {
                         viewModel.loadFITFile(url: url)
                     } else if ["mp4", "mov", "m4v"].contains(ext) {
                         await viewModel.loadVideo(url: url)
+                    } else {
+                        viewModel.showError(
+                            title: "対応していないファイル形式です",
+                            message: "\(url.lastPathComponent) は読み込めません。対応形式は .fit / .mp4 / .mov / .m4v です。"
+                        )
                     }
                 }
             }
@@ -478,10 +596,33 @@ struct PreviewView: View {
             viewModel.updateSyncOffset(viewModel.syncOffset + delta)
         } label: {
             Text(label)
-                .font(.system(size: 10, weight: .semibold))
-                .frame(minWidth: label.count > 1 ? 28 : 16)
+                .font(.caption2.weight(.semibold))
+                .frame(minWidth: 28, minHeight: 28)
         }
         .buttonStyle(.borderless)
+        .contentShape(Rectangle())
+        .help(syncNudgeHelp(delta: delta))
+        .accessibilityLabel(syncNudgeAccessibilityLabel(delta: delta))
+    }
+
+    private func syncNudgeAccessibilityLabel(delta: Double) -> String {
+        let direction = delta < 0 ? "戻す" : "進める"
+        return "同期を\(formatNudgeAmount(abs(delta)))\(direction)"
+    }
+
+    private func syncNudgeHelp(delta: Double) -> String {
+        let direction = delta < 0 ? "戻します" : "進めます"
+        return "同期を\(formatNudgeAmount(abs(delta)))\(direction)"
+    }
+
+    private func formatNudgeAmount(_ seconds: Double) -> String {
+        if seconds >= 60 {
+            return "\(Int(seconds / 60))分"
+        }
+        if seconds == floor(seconds) {
+            return "\(Int(seconds))秒"
+        }
+        return String(format: "%.1f秒", seconds)
     }
 }
 

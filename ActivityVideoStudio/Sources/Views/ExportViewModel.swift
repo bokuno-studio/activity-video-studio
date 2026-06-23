@@ -56,6 +56,8 @@ final class ExportViewModel: ObservableObject {
     @Published var estimatedRemaining: TimeInterval?
     @Published var statusMessage: String?
     @Published var errorMessage: String?
+    @Published var alert: UserFacingAlert?
+    @Published var isCancelling = false
     @Published var outputURL: URL?
     @Published var outputFileName: String = ""
     @Published var nativeVideoWidth: Int = 0 {
@@ -112,7 +114,9 @@ final class ExportViewModel: ObservableObject {
     private func startExport(in directoryURL: URL) {
         guard let timeSync = timeSync, let renderer = overlayRenderer else {
             isExporting = false
-            errorMessage = "エクスポートの準備ができていません"
+            let message = "動画とFITファイルを読み込んでから、もう一度エクスポートしてください。"
+            errorMessage = message
+            alert = UserFacingAlert(title: "エクスポートの準備ができていません", message: message)
             return
         }
 
@@ -122,6 +126,8 @@ final class ExportViewModel: ObservableObject {
         isExporting = true
         exportComplete = false
         errorMessage = nil
+        alert = nil
+        isCancelling = false
         statusMessage = nil
         progress = 0
         beginSleepPreventionIfNeeded()
@@ -201,6 +207,9 @@ final class ExportViewModel: ObservableObject {
     }
 
     func cancelExport() {
+        guard isExporting else { return }
+        isCancelling = true
+        statusMessage = "キャンセル中..."
         exporter?.cancel()
     }
 
@@ -231,6 +240,7 @@ final class ExportViewModel: ObservableObject {
 
     private func finishExportSuccessfully() {
         isExporting = false
+        isCancelling = false
         exportComplete = true
         endSleepPreventionIfNeeded()
 
@@ -241,8 +251,44 @@ final class ExportViewModel: ObservableObject {
 
     private func finishExportWithError(_ error: Error) {
         isExporting = false
-        errorMessage = error.localizedDescription
+        if isCancelling || isCancellation(error) {
+            isCancelling = false
+            statusMessage = "キャンセルしました"
+            errorMessage = nil
+            endSleepPreventionIfNeeded()
+            return
+        }
+
+        isCancelling = false
+        let message = exportErrorMessage(error)
+        errorMessage = message
+        alert = UserFacingAlert(
+            title: "エクスポートに失敗しました",
+            message: message
+        )
         endSleepPreventionIfNeeded()
+    }
+
+    private func isCancellation(_ error: Error) -> Bool {
+        if let exportError = error as? VideoExporter.ExportError,
+           case .cancelled = exportError {
+            return true
+        }
+        return false
+    }
+
+    private func exportErrorMessage(_ error: Error) -> String {
+        var details = [error.localizedDescription]
+        if let localizedError = error as? LocalizedError {
+            if let failureReason = localizedError.failureReason {
+                details.append(failureReason)
+            }
+            if let recoverySuggestion = localizedError.recoverySuggestion {
+                details.append(recoverySuggestion)
+            }
+        }
+        details.append("保存先の空き容量、アクセス権、動画コーデックを確認してから再試行してください。")
+        return details.joined(separator: "\n\n")
     }
 
     private func defaultOutputFileName() -> String {
