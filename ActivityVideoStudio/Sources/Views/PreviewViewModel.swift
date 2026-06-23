@@ -36,9 +36,7 @@ final class PreviewViewModel: ObservableObject {
     @Published var fitLoaded = false
     @Published var videoLoaded = false
     @Published var syncOffset: Double = 0
-    @Published var showSettings = false
     @Published var showExport = false
-    @Published var showYouTube = false
     @Published var showFileList = false
     @Published var currentCoordinate: CLLocationCoordinate2D?
     @Published var trackCoordinates: [CLLocationCoordinate2D] = []
@@ -51,6 +49,8 @@ final class PreviewViewModel: ObservableObject {
     @Published var trimSettings: [TrimSettings] = []
     @Published var playbackRate: Float = 1.0
     @Published var chapterMarkers: [ChapterMarker] = []
+    @Published private(set) var projectURL: URL?
+    @Published private(set) var isProjectEdited = false
     @Published private(set) var videoNativeWidth: Int = 0
 
     let playbackRateOptions: [Float] = [0.5, 1.0, 2.0, 4.0, 8.0, 10.0]
@@ -60,6 +60,10 @@ final class PreviewViewModel: ObservableObject {
 
     var canSaveProject: Bool {
         fitURL != nil || !videoURLs.isEmpty || !textOverlays.isEmpty || !chapterMarkers.isEmpty
+    }
+
+    var windowTitle: String {
+        projectURL?.deletingPathExtension().lastPathComponent ?? "無題"
     }
 
     func showError(title: String, message: String) {
@@ -93,6 +97,7 @@ final class PreviewViewModel: ObservableObject {
         loadingMessage = nil
     }
 
+    private var projectEditedCancellables: Set<AnyCancellable> = []
     private(set) var timeSync: TimeSync?
     private var overlayRenderer: OverlayRenderer?
     private var timeObserver: Any?
@@ -107,6 +112,7 @@ final class PreviewViewModel: ObservableObject {
 
     init() {
         setupTimeObserver()
+        setupProjectEditedObservers()
         #if DEBUG
         Task { await autoLoadDebugFiles() }
         #endif
@@ -345,6 +351,8 @@ final class PreviewViewModel: ObservableObject {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(document)
             try data.write(to: url, options: .atomic)
+            projectURL = url
+            isProjectEdited = false
             projectWarningMessage = nil
             statusMessage = "プロジェクト保存完了: \(url.lastPathComponent)"
         } catch {
@@ -369,6 +377,8 @@ final class PreviewViewModel: ObservableObject {
             let data = try Data(contentsOf: url)
             let document = try JSONDecoder().decode(ProjectDocument.self, from: data)
             await restoreProject(document, sourceName: url.lastPathComponent)
+            projectURL = url
+            isProjectEdited = false
         } catch {
             showError(
                 title: "プロジェクトを読み込めませんでした",
@@ -467,6 +477,8 @@ final class PreviewViewModel: ObservableObject {
         segmentDurations = []
         videoNativeWidth = 0
         projectWarningMessage = nil
+        projectURL = nil
+        isProjectEdited = false
     }
 
     private func confirmDiscardCurrentProject() -> Bool {
@@ -562,6 +574,7 @@ final class PreviewViewModel: ObservableObject {
             }
 
             statusMessage = "FIT: \(fitDataPoints.count) データポイント読み込み完了"
+            markProjectEdited()
         } catch {
             showError(
                 title: "FITを読み込めませんでした",
@@ -604,6 +617,7 @@ final class PreviewViewModel: ObservableObject {
                 }
             }
             statusMessage = msg
+            markProjectEdited()
         } catch {
             showError(
                 title: "動画を読み込めませんでした",
@@ -656,6 +670,7 @@ final class PreviewViewModel: ObservableObject {
             overlayImage = nil
             overlayRenderer = nil
         }
+        markProjectEdited()
     }
 
     private func insertVideo(_ url: URL, metadata: VideoMetadata, trim: TrimSettings, at index: Int) {
@@ -668,6 +683,7 @@ final class PreviewViewModel: ObservableObject {
         updateNativeVideoWidth()
         setupTimeSync()
         Task { await rebuildComposition() }
+        markProjectEdited()
     }
 
     // MARK: - Composition
@@ -964,6 +980,26 @@ final class PreviewViewModel: ObservableObject {
             timeSync?.addVideo(adjustedMetadata, offsetSeconds: syncOffset)
             cumulativeOffset += metadata.duration
         }
+    }
+
+    private func setupProjectEditedObservers() {
+        let editedPublishers: [AnyPublisher<Void, Never>] = [
+            $syncOffset.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $trimSettings.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $textOverlays.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            $chapterMarkers.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            overlaySettings.objectWillChange.map { _ in () }.eraseToAnyPublisher()
+        ]
+
+        Publishers.MergeMany(editedPublishers)
+            .sink { [weak self] in
+                self?.markProjectEdited()
+            }
+            .store(in: &projectEditedCancellables)
+    }
+
+    private func markProjectEdited() {
+        isProjectEdited = true
     }
 
     private func setupTimeObserver() {
