@@ -3,6 +3,7 @@ import SwiftUI
 /// Export configuration and progress view.
 struct ExportView: View {
     @ObservedObject var viewModel: ExportViewModel
+    var isTextFocused: FocusState<Bool>.Binding
 
     var body: some View {
         VStack(spacing: 16) {
@@ -44,6 +45,7 @@ struct ExportView: View {
 
             TextField("ファイル名", text: $viewModel.outputFileName)
                 .textFieldStyle(.roundedBorder)
+                .focused(isTextFocused)
 
             if viewModel.videoCount > 1 {
                 Toggle("複数動画を結合", isOn: $viewModel.concatenateVideos)
