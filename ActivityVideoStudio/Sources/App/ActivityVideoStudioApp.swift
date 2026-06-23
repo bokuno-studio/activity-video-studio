@@ -8,6 +8,9 @@ struct ActivityVideoStudioApp: App {
         WindowGroup {
             ContentView()
         }
+        .defaultSize(width: 1280, height: 800)
+        .windowResizability(.contentMinSize)
+        .windowToolbarStyle(.unified)
         .commands {
             ActivityVideoStudioCommands()
         }

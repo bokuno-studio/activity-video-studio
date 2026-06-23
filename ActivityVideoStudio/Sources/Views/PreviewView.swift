@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import AVFoundation
 import UniformTypeIdentifiers
 
@@ -164,50 +165,64 @@ struct PreviewView: View {
                 dismissButton: .default(Text("閉じる"))
             )
         }
+        .background {
+            WindowDocumentBridge(
+                title: viewModel.windowTitle,
+                representedURL: viewModel.projectURL,
+                isDocumentEdited: viewModel.isProjectEdited
+            )
+            .frame(width: 0, height: 0)
+        }
         .focusedSceneValue(\.previewCommandContext, commandContext)
         .toolbar {
-            ToolbarItemGroup {
-                Button {
-                    viewModel.presentOpenProjectPanel()
-                } label: {
-                    Image(systemName: "folder")
-                }
-                .help("プロジェクトを開く (⌘O)")
-                .accessibilityLabel("プロジェクトを開く")
-
-                Button {
-                    viewModel.presentSaveProjectPanel()
-                } label: {
-                    Image(systemName: "square.and.arrow.down")
-                }
-                .help("プロジェクトを保存 (⌘S)")
-                .accessibilityLabel("プロジェクトを保存")
-                .disabled(!viewModel.canSaveProject)
-
-                Divider()
-
+            ToolbarItem(placement: .navigation) {
                 Button {
                     viewModel.showFileList.toggle()
                 } label: {
-                    Image(systemName: "sidebar.left")
+                    Label("ファイル一覧と設定", systemImage: "sidebar.left")
                 }
                 .help("ファイル一覧・設定")
                 .accessibilityLabel("ファイル一覧と設定")
                 .accessibilityValue(viewModel.showFileList ? "表示中" : "非表示")
+            }
 
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    viewModel.presentOpenProjectPanel()
+                } label: {
+                    Label("プロジェクトを開く", systemImage: "folder")
+                }
+                .help("プロジェクトを開く (⌘O)")
+                .accessibilityLabel("プロジェクトを開く")
+            }
+
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    viewModel.presentSaveProjectPanel()
+                } label: {
+                    Label("プロジェクトを保存", systemImage: "square.and.arrow.down")
+                }
+                .help("プロジェクトを保存 (⌘S)")
+                .accessibilityLabel("プロジェクトを保存")
+                .disabled(!viewModel.canSaveProject)
+            }
+
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     showRightPanel.toggle()
                 } label: {
-                    Image(systemName: "sidebar.right")
+                    Label("編集パネル", systemImage: "sidebar.right")
                 }
                 .help("編集パネル")
                 .accessibilityLabel("編集パネル")
                 .accessibilityValue(showRightPanel ? "表示中" : "非表示")
+            }
 
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     viewModel.showExport = true
                 } label: {
-                    Image(systemName: "square.and.arrow.up")
+                    Label("エクスポート", systemImage: "square.and.arrow.up")
                 }
                 .help("エクスポート (⌘E)")
                 .accessibilityLabel("エクスポート")
@@ -248,7 +263,7 @@ struct PreviewView: View {
     }
 
     private var frontModalPresented: Bool {
-        viewModel.showExport || viewModel.showSettings || viewModel.showYouTube
+        viewModel.showExport
     }
 
     private var previewShortcutsSuspended: Bool {
@@ -632,3 +647,56 @@ struct PreviewView: View {
         .frame(width: 1100, height: 700)
 }
 #endif
+
+private struct WindowDocumentBridge: NSViewRepresentable {
+    var title: String
+    var representedURL: URL?
+    var isDocumentEdited: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> WindowDocumentBridgeView {
+        let view = WindowDocumentBridgeView(frame: .zero)
+        view.onWindowChange = { [weak coordinator = context.coordinator] window in
+            coordinator?.apply(to: window)
+        }
+        updateCoordinator(context.coordinator)
+        context.coordinator.apply(to: view.window)
+        return view
+    }
+
+    func updateNSView(_ nsView: WindowDocumentBridgeView, context: Context) {
+        updateCoordinator(context.coordinator)
+        context.coordinator.apply(to: nsView.window)
+    }
+
+    private func updateCoordinator(_ coordinator: Coordinator) {
+        coordinator.title = title
+        coordinator.representedURL = representedURL
+        coordinator.isDocumentEdited = isDocumentEdited
+    }
+
+    final class Coordinator {
+        var title = ""
+        var representedURL: URL?
+        var isDocumentEdited = false
+
+        func apply(to window: NSWindow?) {
+            guard let window else { return }
+            window.title = title
+            window.representedURL = representedURL
+            window.isDocumentEdited = isDocumentEdited
+        }
+    }
+
+    final class WindowDocumentBridgeView: NSView {
+        var onWindowChange: ((NSWindow?) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            onWindowChange?(window)
+        }
+    }
+}
