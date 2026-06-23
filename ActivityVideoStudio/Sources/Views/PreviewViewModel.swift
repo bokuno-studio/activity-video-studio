@@ -248,6 +248,7 @@ final class PreviewViewModel: ObservableObject {
 
     func presentSaveProjectPanel() {
         let panel = NSSavePanel()
+        panel.title = "プロジェクトを保存"
         panel.allowedContentTypes = [Self.projectFileType]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = defaultProjectFileName()
@@ -264,6 +265,7 @@ final class PreviewViewModel: ObservableObject {
 
     func presentOpenProjectPanel() {
         let panel = NSOpenPanel()
+        panel.title = "プロジェクトを開く"
         panel.allowedContentTypes = [Self.projectFileType]
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -449,7 +451,7 @@ final class PreviewViewModel: ObservableObject {
         return baseName + ".avsproj"
     }
 
-    private static let projectFileType = UTType(filenameExtension: "avsproj") ?? .json
+    private static let projectFileType = UTType(exportedAs: "com.activityvideostudio.project", conformingTo: .json)
 
     // MARK: - File loading
 
