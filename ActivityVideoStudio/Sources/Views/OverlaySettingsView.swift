@@ -3,6 +3,7 @@ import SwiftUI
 /// Settings panel for overlay configuration.
 struct OverlaySettingsView: View {
     @ObservedObject var settings: OverlaySettings
+    var isTextFocused: FocusState<Bool>.Binding
 
     var body: some View {
         Form {
@@ -40,6 +41,7 @@ struct OverlaySettingsView: View {
                     TextField("", value: $settings.z1Max, format: .number)
                         .frame(width: 60)
                         .multilineTextAlignment(.trailing)
+                        .focused(isTextFocused)
                 }
                 HStack {
                     Text("Z2 上限")
@@ -47,6 +49,7 @@ struct OverlaySettingsView: View {
                     TextField("", value: $settings.z2Max, format: .number)
                         .frame(width: 60)
                         .multilineTextAlignment(.trailing)
+                        .focused(isTextFocused)
                 }
                 HStack {
                     Text("Z3 上限")
@@ -54,6 +57,7 @@ struct OverlaySettingsView: View {
                     TextField("", value: $settings.z3Max, format: .number)
                         .frame(width: 60)
                         .multilineTextAlignment(.trailing)
+                        .focused(isTextFocused)
                 }
                 HStack {
                     Text("Z4 上限")
@@ -61,6 +65,7 @@ struct OverlaySettingsView: View {
                     TextField("", value: $settings.z4Max, format: .number)
                         .frame(width: 60)
                         .multilineTextAlignment(.trailing)
+                        .focused(isTextFocused)
                 }
             }
         }

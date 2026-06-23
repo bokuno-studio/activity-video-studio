@@ -34,7 +34,10 @@ struct PreviewView: View {
 
                     // Settings inline
                     ScrollView {
-                        OverlaySettingsView(settings: viewModel.overlaySettings)
+                        OverlaySettingsView(
+                            settings: viewModel.overlaySettings,
+                            isTextFocused: $isTextFieldFocused
+                        )
                     }
                     .frame(maxHeight: 300)
                 }
@@ -143,7 +146,10 @@ struct PreviewView: View {
             }
         }
         .sheet(isPresented: $viewModel.showExport) {
-            ExportView(viewModel: viewModel.makeExportViewModel())
+            ExportView(
+                viewModel: viewModel.makeExportViewModel(),
+                isTextFocused: $isTextFieldFocused
+            )
         }
         .toolbar {
             ToolbarItemGroup {
@@ -190,42 +196,50 @@ struct PreviewView: View {
                 .disabled(!viewModel.videoLoaded || !viewModel.fitLoaded)
             }
         }
-        // Keyboard shortcuts (disabled when editing text)
+        // Keyboard shortcuts (disabled when editing text or a front modal is open)
         .onKeyPress(.leftArrow) {
-            guard !isTextFieldFocused else { return .ignored }
+            guard !previewShortcutsSuspended else { return .ignored }
             viewModel.skipBackward()
             return .handled
         }
         .onKeyPress(.rightArrow) {
-            guard !isTextFieldFocused else { return .ignored }
+            guard !previewShortcutsSuspended else { return .ignored }
             viewModel.skipForward()
             return .handled
         }
         .onKeyPress("j") {
-            guard !isTextFieldFocused else { return .ignored }
+            guard !previewShortcutsSuspended else { return .ignored }
             viewModel.skipBackward(10)
             return .handled
         }
         .onKeyPress("l") {
-            guard !isTextFieldFocused else { return .ignored }
+            guard !previewShortcutsSuspended else { return .ignored }
             viewModel.skipForward(10)
             return .handled
         }
         .onKeyPress("k") {
-            guard !isTextFieldFocused else { return .ignored }
+            guard !previewShortcutsSuspended else { return .ignored }
             viewModel.togglePlayback()
             return .handled
         }
         .onKeyPress(",") {
-            guard !isTextFieldFocused else { return .ignored }
+            guard !previewShortcutsSuspended else { return .ignored }
             viewModel.cyclePlaybackRate()
             return .handled
         }
         .onKeyPress("m") {
-            guard !isTextFieldFocused else { return .ignored }
+            guard !previewShortcutsSuspended else { return .ignored }
             viewModel.addChapterMarker()
             return .handled
         }
+    }
+
+    private var frontModalPresented: Bool {
+        viewModel.showExport || viewModel.showSettings || viewModel.showYouTube
+    }
+
+    private var previewShortcutsSuspended: Bool {
+        isTextFieldFocused || frontModalPresented
     }
 
     // MARK: - Controls bar (compact)
@@ -314,6 +328,7 @@ struct PreviewView: View {
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.space, modifiers: [])
+                .disabled(frontModalPresented)
 
                 // Skip forward 5s
                 Button { viewModel.skipForward() } label: {
