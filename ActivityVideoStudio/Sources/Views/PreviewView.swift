@@ -205,7 +205,8 @@ struct PreviewView: View {
                         trimSettings: $viewModel.trimSettings,
                         videoNames: viewModel.videoURLs.map { $0.lastPathComponent },
                         videoDurations: viewModel.videoMetadatas.map { $0.duration },
-                        onSeek: { time in viewModel.seek(to: time) },
+                        onPreviewSeek: { time in viewModel.previewTrimSeek(to: time) },
+                        onCommitSeek: { time in viewModel.commitTrimSeek(to: time) },
                         isTextFocused: $isTextFieldFocused
                     )
                 case .textOverlay:
@@ -494,7 +495,7 @@ struct PreviewView: View {
             Text("FIT ファイルと動画をドラッグ&ドロップ")
                 .font(.title3)
                 .foregroundStyle(.primary)
-            Text(".fit + .mp4 / .mov")
+            Text(".fit / .zip + .mp4 / .mov")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
 
@@ -506,7 +507,7 @@ struct PreviewView: View {
                         Text("読み込み済み")
                             .font(.caption2)
                     }
-                    Text(".FIT (アクティビティデータ)")
+                    Text(".FIT / .ZIP (アクティビティデータ)")
                         .foregroundStyle(viewModel.fitLoaded ? .primary : .secondary)
                 }
                 HStack(spacing: 10) {
@@ -572,14 +573,14 @@ struct PreviewView: View {
 
                 let ext = url.pathExtension.lowercased()
                 Task { @MainActor in
-                    if ext == "fit" {
+                    if ext == "fit" || ext == "zip" {
                         viewModel.loadFITFile(url: url)
                     } else if ["mp4", "mov", "m4v"].contains(ext) {
                         await viewModel.loadVideo(url: url)
                     } else {
                         viewModel.showError(
                             title: "対応していないファイル形式です",
-                            message: "\(url.lastPathComponent) は読み込めません。対応形式は .fit / .mp4 / .mov / .m4v です。"
+                            message: "\(url.lastPathComponent) は読み込めません。対応形式は .fit / .zip / .mp4 / .mov / .m4v です。"
                         )
                     }
                 }
