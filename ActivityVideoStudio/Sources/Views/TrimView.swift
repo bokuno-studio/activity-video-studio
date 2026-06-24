@@ -159,14 +159,12 @@ struct TrimView: View {
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 72, alignment: .trailing)
 
-            TextField("分:秒", value: binding, formatter: Self.durationFormatter)
-                .textFieldStyle(.roundedBorder)
-                .font(.caption.monospacedDigit())
-                .frame(width: 68)
-                .multilineTextAlignment(.trailing)
-                .focused(isTextFocused)
-                .onSubmit(commitValue)
-                .accessibilityLabel("\(title)カット時間")
+            TrimTimeField(
+                value: binding,
+                isTextFocused: isTextFocused,
+                accessibilityTitle: title,
+                onCommit: commitValue
+            )
 
             Text("分:秒")
                 .font(.caption2)
@@ -317,7 +315,7 @@ private final class TrimDurationFormatter: Formatter {
         return true
     }
 
-    private static func string(from seconds: TimeInterval) -> String {
+    static func string(from seconds: TimeInterval) -> String {
         let tenths = Int((max(0, seconds) * 10).rounded())
         let total = tenths / 10
         let h = total / 3600
@@ -332,7 +330,7 @@ private final class TrimDurationFormatter: Formatter {
         return "\(m):\(secondText)"
     }
 
-    private static func parse(_ string: String) -> TimeInterval? {
+    static func parse(_ string: String) -> TimeInterval? {
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
@@ -357,5 +355,52 @@ private final class TrimDurationFormatter: Formatter {
             return hours * 3600 + minutes * 60 + seconds
         }
         return nil
+    }
+}
+
+/// Editable m:ss time field backed by a string buffer.
+/// The text is parsed into the numeric value only on commit (Return key or when
+/// the field loses focus), so the value isn't re-formatted mid-edit — typing
+/// "0" no longer snaps back to "00".
+private struct TrimTimeField: View {
+    @Binding var value: TimeInterval
+    var isTextFocused: FocusState<Bool>.Binding
+    let accessibilityTitle: String
+    let onCommit: () -> Void
+
+    @State private var editText: String = ""
+
+    var body: some View {
+        TextField("分:秒", text: $editText)
+            .textFieldStyle(.roundedBorder)
+            .font(.caption.monospacedDigit())
+            .frame(width: 68)
+            .multilineTextAlignment(.trailing)
+            .focused(isTextFocused)
+            .onSubmit { commit() }
+            .onChange(of: isTextFocused.wrappedValue) { _, focused in
+                if focused {
+                    // Load the editable text once when editing starts.
+                    editText = TrimDurationFormatter.string(from: value)
+                } else {
+                    commit()
+                }
+            }
+            .onChange(of: value) { _, newValue in
+                // Reflect external changes (slider/stepper) only while not editing.
+                if !isTextFocused.wrappedValue {
+                    editText = TrimDurationFormatter.string(from: newValue)
+                }
+            }
+            .onAppear { editText = TrimDurationFormatter.string(from: value) }
+            .accessibilityLabel("\(accessibilityTitle)カット時間")
+    }
+
+    private func commit() {
+        if let parsed = TrimDurationFormatter.parse(editText) {
+            value = parsed   // binding setter clamps to the valid range
+        }
+        editText = TrimDurationFormatter.string(from: value)
+        onCommit()
     }
 }
