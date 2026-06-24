@@ -1,0 +1,13 @@
+ActivityVideoStudio overlays Garmin .FIT activity data onto GoPro .MP4 footage and exports a single MP4.
+
+Sample files to verify all core features (publicly hosted, will remain available):
+https://github.com/bokuno-studio/activity-video-studio/releases/tag/app-review-samples-v1
+- sample_activity.fit  (Garmin Fenix 8 activity record)
+- sample_clip.mp4       (GoPro footage, 60 s, 1080p H.264)
+
+How to test:
+1. Launch the app.
+2. Drag both files into the main window.
+3. The app auto-aligns video and activity by the MP4 creation timestamp; overlays (heart rate, pace, distance, elevation, mini-map) appear immediately.
+4. Press Play to preview the synchronized overlay.
+5. Use Export to render a final MP4 with overlays burned in.
