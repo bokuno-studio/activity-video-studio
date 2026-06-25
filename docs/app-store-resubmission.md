@@ -69,14 +69,14 @@
 ```
 Hello App Review Team,
 
-Thank you for the feedback regarding sample files needed to review ActivityVideoStudio. We've prepared a Garmin .FIT file and a GoPro .MP4 clip that you can use to verify all core features. They are hosted in a permanent location and will remain available for future reviews.
+Thank you for the feedback regarding sample files needed to review ActivityVideoStudio. We've prepared a .FIT activity file and an action-camera .MP4 clip that you can use to verify all core features. They are hosted in a permanent location and will remain available for future reviews.
 
 Sample files (GitHub Releases):
 https://github.com/bokuno-studio/activity-video-studio/releases/tag/app-review-samples-v1
 
 Direct downloads:
-- sample_activity.fit (≈400 KB) — Garmin Fenix 8 activity record
-- sample_clip.mp4 (≈148 MB) — GoPro footage (60 s, 1080p H.264)
+- sample_activity.fit (≈400 KB) — activity record in .FIT format from a GPS smartwatch
+- sample_clip.mp4 (≈148 MB) — action-camera footage (60 s, 1080p H.264)
 
 How to test the app:
 1. Launch ActivityVideoStudio.
