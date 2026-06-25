@@ -92,6 +92,9 @@ def main():
         app_id, build_version = sys.argv[2], sys.argv[3]
         notes = open(sys.argv[4]).read() if len(sys.argv) > 4 else None
         submit_for_review(app_id, build_version, notes)
+    elif cmd == "cancel":
+        # cancel <app_id>  → cancel all blocking (non-terminal) reviewSubmissions
+        cancel_blocking_submissions(sys.argv[2])
     else:
         print(__doc__); sys.exit(2)
 
@@ -114,15 +117,62 @@ def editable_version(app_id):
     return body.get("data", [None])[0]
 
 def find_build(app_id, version):
+    # `version` here is the build number (CFBundleVersion), as printed by the
+    # `builds` command. Filter by filter[version] (build number), NOT by
+    # preReleaseVersion.version (which is the marketing/short version string).
     st, body = request("GET",
-        f"/v1/builds?filter[app]={app_id}&filter[preReleaseVersion.version]={version}"
+        f"/v1/builds?filter[app]={app_id}&filter[version]={version}"
         f"&sort=-version&limit=1")
     if st != 200:
         _die("find build failed", st, body)
     data = body.get("data", [])
     return data[0]["id"] if data else None
 
+def _list_submissions(app_id):
+    st, body = request("GET",
+        f"/v1/reviewSubmissions?filter[app]={app_id}&limit=50"
+        f"&fields[reviewSubmissions]=state,submittedDate")
+    if st != 200:
+        _die("list reviewSubmissions failed", st, body)
+    return body.get("data", [])
+
+def cancel_blocking_submissions(app_id):
+    """Cancel SUBMITTED reviewSubmissions that still hold the version. After a
+    rejection the prior submission sits in UNRESOLVED_ISSUES and keeps ownership
+    of the appStoreVersion, blocking a new submission (HTTP 409
+    ITEM_PART_OF_ANOTHER_SUBMISSION). The ASC UI cancels it implicitly on
+    re-submit; over the API we must do it explicitly. Drafts (never submitted)
+    can't be canceled or deleted via the API, so they are reused, not canceled."""
+    cancelable = {"WAITING_FOR_REVIEW", "IN_REVIEW", "UNRESOLVED_ISSUES"}
+    for s in _list_submissions(app_id):
+        sid, state = s["id"], s["attributes"].get("state")
+        if state in cancelable:
+            print(f"canceling submission {sid} (state={state})…")
+            cst, cbody = request("PATCH", f"/v1/reviewSubmissions/{sid}",
+                {"data": {"type": "reviewSubmissions", "id": sid,
+                          "attributes": {"canceled": True}}})
+            if cst not in (200, 204):
+                _die(f"cancel submission {sid} failed", cst, cbody)
+
+def find_or_create_draft(app_id):
+    """Reuse an existing un-submitted draft (the API forbids deleting them), else
+    create a fresh reviewSubmission."""
+    for s in _list_submissions(app_id):
+        if s["attributes"].get("submittedDate") is None \
+           and s["attributes"].get("state") in (None, "READY_FOR_REVIEW", "UNRESOLVED_ISSUES"):
+            print(f"reusing existing draft submission {s['id']}…")
+            return s["id"]
+    print("creating review submission…")
+    st, body = request("POST", "/v1/reviewSubmissions",
+        {"data": {"type": "reviewSubmissions",
+                  "attributes": {"platform": "MAC_OS"},
+                  "relationships": {"app": {"data": {"type": "apps", "id": app_id}}}}})
+    if st not in (200, 201):
+        _die("create reviewSubmission failed", st, body)
+    return body["data"]["id"]
+
 def submit_for_review(app_id, build_version, notes):
+    cancel_blocking_submissions(app_id)
     ver = editable_version(app_id)
     if not ver:
         _die("no editable App Store version", 0, {})
@@ -155,23 +205,22 @@ def submit_for_review(app_id, build_version, notes):
         if st not in (200, 201):
             _die("set review notes failed", st, body)
 
-    print("creating review submission…")
-    st, body = request("POST", "/v1/reviewSubmissions",
-        {"data": {"type": "reviewSubmissions",
-                  "attributes": {"platform": "MAC_OS"},
-                  "relationships": {"app": {"data": {"type": "apps", "id": app_id}}}}})
-    if st not in (200, 201):
-        _die("create reviewSubmission failed", st, body)
-    sub_id = body["data"]["id"]
+    sub_id = find_or_create_draft(app_id)
 
-    print("adding version to submission…")
-    st, body = request("POST", "/v1/reviewSubmissionItems",
-        {"data": {"type": "reviewSubmissionItems",
-                  "relationships": {
-                      "reviewSubmission": {"data": {"type": "reviewSubmissions", "id": sub_id}},
-                      "appStoreVersion": {"data": {"type": "appStoreVersions", "id": ver_id}}}}})
-    if st not in (200, 201):
-        _die("add submission item failed", st, body)
+    # Add the version as a submission item only if it isn't already one (a reused
+    # draft from a prior partial run may already have it).
+    ist, ibody = request("GET", f"/v1/reviewSubmissions/{sub_id}/items")
+    if ist == 200 and ibody.get("data"):
+        print("  version already on this submission — continuing.")
+    else:
+        print("adding version to submission…")
+        st, body = request("POST", "/v1/reviewSubmissionItems",
+            {"data": {"type": "reviewSubmissionItems",
+                      "relationships": {
+                          "reviewSubmission": {"data": {"type": "reviewSubmissions", "id": sub_id}},
+                          "appStoreVersion": {"data": {"type": "appStoreVersions", "id": ver_id}}}}})
+        if st not in (200, 201):
+            _die("add submission item failed", st, body)
 
     print("submitting for review…")
     st, body = request("PATCH", f"/v1/reviewSubmissions/{sub_id}",
