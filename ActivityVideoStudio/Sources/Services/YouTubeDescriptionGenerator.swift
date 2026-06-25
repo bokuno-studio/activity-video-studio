@@ -88,12 +88,12 @@ final class YouTubeDescriptionGenerator {
 
         // Equipment
         lines.append("🎥 撮影機材")
-        lines.append("カメラ: GoPro")
-        lines.append("GPS: Garmin Fenix 8")
+        lines.append("カメラ: アクションカメラ")
+        lines.append("GPS: GPSウォッチ")
         lines.append("")
 
         // Hashtags
-        lines.append("#トレイルランニング #trailrunning #GoPro #Garmin #アウトドア")
+        lines.append("#トレイルランニング #trailrunning #アクションカメラ #アウトドア #ランニング")
 
         return lines.joined(separator: "\n")
     }

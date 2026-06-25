@@ -1,6 +1,6 @@
 # QA シナリオ — ActivityVideoStudio
 
-macOS native SwiftUI app (Garmin .FIT × GoPro .MP4 overlay)。
+macOS native SwiftUI app (.FIT activity × action-camera .MP4 overlay)。
 テスト資産:
 - FIT: `/Volumes/Extreme SSD/SDcard/DCIM/100GOPRO/21933178412_ACTIVITY.fit`
 - MP4: `/Volumes/Extreme SSD/SDcard/GX010047.MP4` (11GB) / `GX020047.MP4` (9GB)
