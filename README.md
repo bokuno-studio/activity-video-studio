@@ -109,4 +109,4 @@ MIT License — 詳細は [LICENSE](./LICENSE) を参照。
 ## 謝辞
 
 - 地図タイル: [Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9)
-- FIT Protocol: [Garmin FIT SDK](https://developer.garmin.com/fit/protocol/)
+- FIT Protocol: [FIT SDK](https://developer.garmin.com/fit/protocol/)

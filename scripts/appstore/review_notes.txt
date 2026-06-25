@@ -1,3 +1,5 @@
+Note for App Review (Guideline 5.2.1): ActivityVideoStudio is an independent app, not affiliated with, endorsed by, or sponsored by any third party. It works only with open, standard file formats — .FIT activity files and .MP4 video — and does not bundle, display, or control any third-party brand content or hardware. We have removed all third-party brand names from the app, screenshots, and metadata.
+
 ActivityVideoStudio overlays .FIT activity data (recorded by GPS smartwatches) onto action-camera .MP4 footage and exports a single MP4.
 
 Sample files to verify all core features (publicly hosted, will remain available):
