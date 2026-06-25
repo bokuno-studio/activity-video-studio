@@ -4,8 +4,13 @@ import CoreLocation
 import CoreGraphics
 
 struct ActivityVideoStudioApp: App {
+    /// Stable identifier so the main window can be reopened from the menu after
+    /// the user closes it (App Store Guideline 4 — a closed window must be
+    /// reachable again via a menu item).
+    static let mainWindowID = "main"
+
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: ActivityVideoStudioApp.mainWindowID) {
             ContentView()
         }
         .defaultSize(width: 1280, height: 800)
@@ -48,9 +53,19 @@ extension FocusedValues {
 
 struct ActivityVideoStudioCommands: Commands {
     @FocusedValue(\.previewCommandContext) private var context
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
+            // Reopens the main window after it has been closed. Required so the
+            // window is always reachable from the menu (App Store Guideline 4).
+            Button("新規ウィンドウ") {
+                openWindow(id: ActivityVideoStudioApp.mainWindowID)
+            }
+            .keyboardShortcut("n", modifiers: .command)
+
+            Divider()
+
             Button("プロジェクトを開く...") {
                 context?.openProject()
             }
