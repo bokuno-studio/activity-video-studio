@@ -795,22 +795,21 @@ final class PreviewViewModel: ObservableObject {
         currentTime = target
         isSeeking = true
 
+        // Preview seeks use a loose tolerance so the player can settle on a nearby
+        // keyframe instead of decoding to an exact frame. On a multi-hour
+        // composition an exact (.zero) seek costs seconds of decode, so the exact
+        // frame is deferred to commitTrimSeek (drag release / field commit). This
+        // is what kept the trim slider feeling heavy on long videos.
         trimPreviewSeekTask?.cancel()
         trimPreviewSeekTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 90_000_000)
+            try? await Task.sleep(nanoseconds: 60_000_000)
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 self?.performSeek(
                     to: target,
-                    tolerance: CMTime(seconds: 0.25, preferredTimescale: 600),
+                    tolerance: CMTime(seconds: 0.5, preferredTimescale: 600),
                     finishSeeking: false
                 )
-            }
-
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self?.performSeek(to: target, tolerance: .zero, finishSeeking: true)
                 self?.trimPreviewSeekTask = nil
             }
         }

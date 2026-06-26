@@ -90,6 +90,7 @@ final class YouTubeDescriptionGenerator {
         lines.append("🎥 撮影機材")
         lines.append("カメラ: アクションカメラ")
         lines.append("GPS: GPSウォッチ")
+        lines.append("編集アプリ: ActivityVideoStudio（Mac）https://apps.apple.com/app/activityvideostudio/id6764239734")
         lines.append("")
 
         // Hashtags

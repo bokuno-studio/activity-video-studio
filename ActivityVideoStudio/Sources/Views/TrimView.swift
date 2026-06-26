@@ -8,7 +8,11 @@ struct TrimView: View {
     let videoDurations: [TimeInterval]
     var onPreviewSeek: ((TimeInterval) -> Void)?
     var onCommitSeek: ((TimeInterval) -> Void)?
-    var isTextFocused: FocusState<Bool>.Binding
+    /// Reports whether any trim time field is currently being edited, so the
+    /// parent can suspend playback keyboard shortcuts while the user is typing.
+    var onEditingChanged: (Bool) -> Void = { _ in }
+
+    @State private var editingFields: Set<String> = []
 
     private static let durationFormatter = TrimDurationFormatter()
 
@@ -161,9 +165,16 @@ struct TrimView: View {
 
             TrimTimeField(
                 value: binding,
-                isTextFocused: isTextFocused,
                 accessibilityTitle: title,
-                onCommit: commitValue
+                onCommit: commitValue,
+                onFocusChange: { focused in
+                    if focused {
+                        editingFields.insert(title)
+                    } else {
+                        editingFields.remove(title)
+                    }
+                    onEditingChanged(!editingFields.isEmpty)
+                }
             )
 
             Text("分:秒")
@@ -359,15 +370,19 @@ private final class TrimDurationFormatter: Formatter {
 }
 
 /// Editable m:ss time field backed by a string buffer.
-/// The text is parsed into the numeric value only on commit (Return key or when
-/// the field loses focus), so the value isn't re-formatted mid-edit — typing
-/// "0" no longer snaps back to "00".
+///
+/// Each field owns its own focus state so the parent's "is a text field being
+/// edited" flag can no longer be confused between the start/end fields. Typed
+/// input is applied live (the slider, output total and preview react without
+/// pressing Return), while changes coming from the slider/stepper/reset are
+/// reflected straight back into the field.
 private struct TrimTimeField: View {
     @Binding var value: TimeInterval
-    var isTextFocused: FocusState<Bool>.Binding
     let accessibilityTitle: String
     let onCommit: () -> Void
+    var onFocusChange: (Bool) -> Void = { _ in }
 
+    @FocusState private var isFocused: Bool
     @State private var editText: String = ""
 
     var body: some View {
@@ -376,21 +391,33 @@ private struct TrimTimeField: View {
             .font(.caption.monospacedDigit())
             .frame(width: 68)
             .multilineTextAlignment(.trailing)
-            .focused(isTextFocused)
+            .focused($isFocused)
             .onSubmit { commit() }
-            .onChange(of: isTextFocused.wrappedValue) { _, focused in
+            .onChange(of: isFocused) { _, focused in
+                onFocusChange(focused)
                 if focused {
-                    // Load the editable text once when editing starts.
+                    // Load the editable text when editing starts.
                     editText = TrimDurationFormatter.string(from: value)
                 } else {
                     commit()
                 }
             }
-            .onChange(of: value) { _, newValue in
-                // Reflect external changes (slider/stepper) only while not editing.
-                if !isTextFocused.wrappedValue {
-                    editText = TrimDurationFormatter.string(from: newValue)
+            .onChange(of: editText) { _, newText in
+                // Apply the typed value live so the slider, output total and
+                // preview react immediately — no need to press Return. Partial or
+                // invalid input (e.g. "6:") is simply not applied yet.
+                guard isFocused else { return }
+                if let parsed = TrimDurationFormatter.parse(newText), parsed != value {
+                    value = parsed   // binding setter clamps to the valid range
                 }
+            }
+            .onChange(of: value) { _, newValue in
+                // Reflect changes coming from the slider / stepper / reset back
+                // into the field. When the new value is the echo of our own
+                // keystroke the text already represents it, so leave it alone and
+                // avoid clobbering the cursor mid-typing.
+                if isFocused, TrimDurationFormatter.parse(editText) == newValue { return }
+                editText = TrimDurationFormatter.string(from: newValue)
             }
             .onAppear { editText = TrimDurationFormatter.string(from: value) }
             .accessibilityLabel("\(accessibilityTitle)カット時間")

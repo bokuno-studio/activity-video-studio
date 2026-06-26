@@ -10,6 +10,7 @@ struct PreviewView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showRightPanel = true
     @FocusState private var isTextFieldFocused: Bool
+    @State private var trimFieldEditing = false
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.undoManager) private var undoManager
@@ -207,7 +208,7 @@ struct PreviewView: View {
                         videoDurations: viewModel.videoMetadatas.map { $0.duration },
                         onPreviewSeek: { time in viewModel.previewTrimSeek(to: time) },
                         onCommitSeek: { time in viewModel.commitTrimSeek(to: time) },
-                        isTextFocused: $isTextFieldFocused
+                        onEditingChanged: { trimFieldEditing = $0 }
                     )
                 case .textOverlay:
                     TextOverlayEditView(
@@ -263,7 +264,7 @@ struct PreviewView: View {
     }
 
     private var previewShortcutsSuspended: Bool {
-        isTextFieldFocused || frontModalPresented
+        isTextFieldFocused || trimFieldEditing || frontModalPresented
     }
 
     // MARK: - Controls bar (compact)
