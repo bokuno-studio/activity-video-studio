@@ -232,6 +232,7 @@ final class VideoExporter: @unchecked Sendable {
     }
 
     private static let minimumInternalChunkDuration: TimeInterval = 120
+    private static let minimumExportableDuration: TimeInterval = 0.05
 
     private static func adaptiveExportConcurrencyLimit() -> Int {
         let cores = Swift.max(ProcessInfo.processInfo.activeProcessorCount, 1)
@@ -256,13 +257,7 @@ final class VideoExporter: @unchecked Sendable {
         maxChunkCount: Int
     ) -> [SourceExportRange] {
         let duration = Swift.max(trimmedDuration, 0)
-        guard duration > 0 else {
-            return [SourceExportRange(
-                sourceStartTime: sourceStartTime,
-                outputStartTime: outputTimeOffset,
-                duration: 0
-            )]
-        }
+        guard duration >= minimumExportableDuration else { return [] }
 
         let chunkLimit = Swift.max(maxChunkCount, 1)
         let chunksAllowedByDuration = Swift.max(1, Int(duration / minimumInternalChunkDuration))
@@ -319,6 +314,9 @@ final class VideoExporter: @unchecked Sendable {
             outputTimeOffset: outputTimeOffset,
             maxChunkCount: Self.adaptiveExportConcurrencyLimit()
         )
+        guard !ranges.isEmpty else {
+            throw ExportError.exportFailed("カットの結果、書き出せる映像がありません")
+        }
 
         if ranges.count > 1 {
             try await exportSingleVideoInRanges(
@@ -377,7 +375,7 @@ final class VideoExporter: @unchecked Sendable {
         let clampedSourceStart = Swift.max(sourceStartTime, 0)
         let availableDuration = Swift.max(totalSeconds - clampedSourceStart, 0)
         let exportDuration = Swift.min(duration, availableDuration)
-        guard exportDuration > 0 else {
+        guard exportDuration >= Self.minimumExportableDuration else {
             throw ExportError.exportFailed("書き出す時間範囲が空です")
         }
 
@@ -506,6 +504,10 @@ final class VideoExporter: @unchecked Sendable {
         config: ExportConfig,
         progress: @escaping ProgressCallback
     ) async throws {
+        guard !ranges.isEmpty else {
+            throw ExportError.exportFailed("カットの結果、書き出せる映像がありません")
+        }
+
         let tempDir = config.outputURL.deletingLastPathComponent()
         let tempURLs = ranges.map { _ in
             tempDir
@@ -613,9 +615,8 @@ final class VideoExporter: @unchecked Sendable {
         for (segIdx, url) in videoURLs.enumerated() {
             let dur = CMTimeGetSeconds(try await AVURLAsset(url: url).load(.duration))
             let trim = segIdx < trimSettings.count ? trimSettings[segIdx] : TrimSettings()
-            segmentDurations.append(max(trim.trimmedDuration(original: dur), 0.001))
+            segmentDurations.append(Swift.max(trim.trimmedDuration(original: dur), 0))
         }
-        let totalDuration = segmentDurations.reduce(0, +)
 
         // Phase 2: export each segment/range to temp file.
         // Keep intermediates next to the final output so large exports stay on
@@ -658,10 +659,14 @@ final class VideoExporter: @unchecked Sendable {
                 ))
             }
         }
+        guard !jobs.isEmpty else {
+            throw ExportError.exportFailed("カットの結果、書き出せる映像がありません")
+        }
         let tempURLs = jobs.map { $0.tempURL }
         defer { tempURLs.forEach { try? FileManager.default.removeItem(at: $0) } }
 
         let jobDurations = jobs.map { $0.range.duration }
+        let totalDuration = jobDurations.reduce(0, +)
         let progressAggregator = ConcatenatedProgress(
             segmentDurations: jobDurations,
             totalDuration: totalDuration
@@ -739,6 +744,10 @@ final class VideoExporter: @unchecked Sendable {
     // MARK: - Helpers
 
     private func concatenateExportedFiles(_ tempURLs: [URL], outputURL: URL) async throws {
+        guard !tempURLs.isEmpty else {
+            throw ExportError.exportFailed("カットの結果、書き出せる映像がありません")
+        }
+
         let concatComp = AVMutableComposition()
         guard let vcTrack = concatComp.addMutableTrack(
             withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid
