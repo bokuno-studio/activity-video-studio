@@ -44,7 +44,7 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>&#x00A9; 2026 bokuno-studio. All rights reserved.</string>
+	<string>&#x00A9; 2026 flexplore. All rights reserved.</string>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
