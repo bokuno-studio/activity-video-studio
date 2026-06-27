@@ -920,13 +920,39 @@ final class PreviewViewModel: ObservableObject {
         guard !didApplyDefaultFITStartAlignment,
               videoLoaded,
               fitLoaded,
-              let creationDate = videoMetadatas.first?.creationDate,
-              let fitStart = fitDataPoints.first?.timestamp else {
+              let videoTimeline = videoTimelineRange(),
+              let fitStart = fitDataPoints.first?.timestamp,
+              let fitEnd = fitDataPoints.last?.timestamp else {
             return
         }
 
         didApplyDefaultFITStartAlignment = true
-        updateSyncOffset(fitStart.timeIntervalSince(creationDate))
+        let timelinesOverlap = videoTimeline.start <= fitEnd && fitStart <= videoTimeline.end
+        guard !timelinesOverlap else {
+            updateOverlay()
+            return
+        }
+
+        updateSyncOffset(fitStart.timeIntervalSince(videoTimeline.start))
+    }
+
+    private func videoTimelineRange() -> (start: Date, end: Date)? {
+        var cumulativeOffset: TimeInterval = 0
+        var rangeStart: Date?
+        var rangeEnd: Date?
+
+        for metadata in videoMetadatas {
+            guard let creationDate = metadata.creationDate else { continue }
+
+            let segmentStart = creationDate.addingTimeInterval(cumulativeOffset)
+            let segmentEnd = segmentStart.addingTimeInterval(metadata.duration)
+            rangeStart = rangeStart.map { min($0, segmentStart) } ?? segmentStart
+            rangeEnd = rangeEnd.map { max($0, segmentEnd) } ?? segmentEnd
+            cumulativeOffset += metadata.duration
+        }
+
+        guard let rangeStart, let rangeEnd else { return nil }
+        return (rangeStart, rangeEnd)
     }
 
     /// Wall-clock time mapped to the first frame of the first video, given the
