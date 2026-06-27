@@ -1168,18 +1168,13 @@ final class PreviewViewModel: ObservableObject {
     func trimRangesForSeekbar() -> [TrimRange] {
         guard duration > 0 else { return [] }
 
-        // Combine all segments into one range for the full timeline
         var totalStartTrim: TimeInterval = 0
         var totalEndTrim: TimeInterval = 0
 
         for i in segmentDurations.indices {
             if i < trimSettings.count {
-                if i == 0 {
-                    totalStartTrim = trimSettings[i].startTrim
-                }
-                if i == segmentDurations.count - 1 {
-                    totalEndTrim = trimSettings[i].endTrim
-                }
+                totalStartTrim += min(max(trimSettings[i].startTrim, 0), segmentDurations[i])
+                totalEndTrim += min(max(trimSettings[i].endTrim, 0), segmentDurations[i])
             }
         }
 

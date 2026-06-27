@@ -1,7 +1,7 @@
 import SwiftUI
 import Foundation
 
-/// Simplified trim: cut from start of first video and end of last video only.
+/// Trim controls on the combined video timeline.
 struct TrimView: View {
     @Binding var trimSettings: [TrimSettings]
     let videoNames: [String]
@@ -15,9 +15,79 @@ struct TrimView: View {
     @FocusState private var focusedField: String?
 
     private static let durationFormatter = TrimDurationFormatter()
+    private static let minimumOutputDuration: TimeInterval = 0.5
 
     private var totalDuration: TimeInterval {
         videoDurations.reduce(0, +)
+    }
+
+    private var firstSegmentDuration: TimeInterval {
+        videoDurations.first ?? 0
+    }
+
+    private var startPosition: TimeInterval {
+        guard !trimSettings.isEmpty else { return 0 }
+        return min(max(trimSettings[0].startTrim, 0), firstSegmentDuration)
+    }
+
+    private var totalEndTrim: TimeInterval {
+        trimSettings.indices.reduce(0) { total, index in
+            guard index < videoDurations.count else { return total }
+            return total + min(max(trimSettings[index].endTrim, 0), max(videoDurations[index], 0))
+        }
+    }
+
+    private var endPosition: TimeInterval {
+        min(max(totalDuration - totalEndTrim, minimumEndPosition), totalDuration)
+    }
+
+    private var minimumEndPosition: TimeInterval {
+        min(totalDuration, startPosition + Self.minimumOutputDuration)
+    }
+
+    private var startPositionRange: ClosedRange<TimeInterval> {
+        let firstEndTrim = trimSettings.isEmpty ? 0 : trimSettings[0].endTrim
+        let segmentLimit = max(0, firstSegmentDuration - max(firstEndTrim, 0) - Self.minimumOutputDuration)
+        let timelineLimit = max(0, endPosition - Self.minimumOutputDuration)
+        let upperBound = min(segmentLimit, timelineLimit)
+        return 0...max(0, upperBound)
+    }
+
+    private var endPositionRange: ClosedRange<TimeInterval> {
+        let lowerBound = min(max(0, minimumEndPosition), totalDuration)
+        return lowerBound...max(lowerBound, totalDuration)
+    }
+
+    private var startPositionBinding: Binding<TimeInterval> {
+        Binding(
+            get: { startPosition },
+            set: { newValue in
+                guard !trimSettings.isEmpty else { return }
+                let clamped = clampedTime(newValue, to: startPositionRange)
+                trimSettings[0].startTrim = clamped
+                if endPosition < clamped + Self.minimumOutputDuration {
+                    applyEndPosition(clamped + Self.minimumOutputDuration)
+                }
+            }
+        )
+    }
+
+    private var totalEndTrimBinding: Binding<TimeInterval> {
+        Binding(
+            get: { totalEndTrim },
+            set: { newValue in
+                applyEndPosition(totalDuration - newValue)
+            }
+        )
+    }
+
+    private var endPositionBinding: Binding<TimeInterval> {
+        Binding(
+            get: { endPosition },
+            set: { newValue in
+                applyEndPosition(newValue)
+            }
+        )
     }
 
     var body: some View {
@@ -33,25 +103,30 @@ struct TrimView: View {
             }
 
             if !trimSettings.isEmpty && !videoDurations.isEmpty {
-                // Start trim (first video)
                 VStack(alignment: .leading, spacing: 6) {
                     Text("先頭カット")
                         .font(.subheadline.bold())
 
                     TrimBarView(
-                        startTrim: $trimSettings[0].startTrim,
+                        startTrim: startPositionBinding,
                         endTrim: .constant(0),
-                        duration: videoDurations[0],
+                        duration: totalDuration,
                         segmentOffset: 0,
+                        adjustableStart: true,
+                        adjustableEnd: false,
+                        minimumActiveDuration: Self.minimumOutputDuration,
                         onPreviewSeek: onPreviewSeek,
                         onCommitSeek: onCommitSeek
                     )
                     .frame(height: 36)
 
                     trimValueControl(
-                        title: "先頭",
-                        value: $trimSettings[0].startTrim,
-                        maxValue: max(0, videoDurations[0] - trimSettings[0].endTrim - 0.5),
+                        title: "開始位置",
+                        value: startPositionBinding,
+                        range: startPositionRange,
+                        resetValue: 0,
+                        unitLabel: "H:MM:SS",
+                        accessibilityLabel: "先頭カット開始位置",
                         seekTime: { $0 }
                     )
                 }
@@ -59,62 +134,36 @@ struct TrimView: View {
                 .background(.quaternary.opacity(0.5))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
-                // End trim (last video)
-                if trimSettings.count > 1 {
-                    let lastIdx = trimSettings.count - 1
-                    let lastOffset = videoDurations[0..<lastIdx].reduce(0, +)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("末尾カット")
+                        .font(.subheadline.bold())
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("末尾カット")
-                            .font(.subheadline.bold())
+                    TrimBarView(
+                        startTrim: .constant(startPosition),
+                        endTrim: totalEndTrimBinding,
+                        duration: totalDuration,
+                        segmentOffset: 0,
+                        adjustableStart: false,
+                        adjustableEnd: true,
+                        minimumActiveDuration: Self.minimumOutputDuration,
+                        onPreviewSeek: onPreviewSeek,
+                        onCommitSeek: onCommitSeek
+                    )
+                    .frame(height: 36)
 
-                        TrimBarView(
-                            startTrim: .constant(0),
-                            endTrim: $trimSettings[lastIdx].endTrim,
-                            duration: videoDurations[lastIdx],
-                            segmentOffset: lastOffset,
-                            onPreviewSeek: onPreviewSeek,
-                            onCommitSeek: onCommitSeek
-                        )
-                        .frame(height: 36)
-
-                        trimValueControl(
-                            title: "末尾",
-                            value: $trimSettings[lastIdx].endTrim,
-                            maxValue: max(0, videoDurations[lastIdx] - 0.5),
-                            seekTime: { lastOffset + videoDurations[lastIdx] - $0 }
-                        )
-                    }
-                    .padding(8)
-                    .background(.quaternary.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                } else {
-                    // Single video: end trim on same video
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("末尾カット")
-                            .font(.subheadline.bold())
-
-                        TrimBarView(
-                            startTrim: .constant(0),
-                            endTrim: $trimSettings[0].endTrim,
-                            duration: videoDurations[0],
-                            segmentOffset: 0,
-                            onPreviewSeek: onPreviewSeek,
-                            onCommitSeek: onCommitSeek
-                        )
-                        .frame(height: 36)
-
-                        trimValueControl(
-                            title: "末尾",
-                            value: $trimSettings[0].endTrim,
-                            maxValue: max(0, videoDurations[0] - trimSettings[0].startTrim - 0.5),
-                            seekTime: { videoDurations[0] - $0 }
-                        )
-                    }
-                    .padding(8)
-                    .background(.quaternary.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    trimValueControl(
+                        title: "終了位置",
+                        value: endPositionBinding,
+                        range: endPositionRange,
+                        resetValue: totalDuration,
+                        unitLabel: "H:MM:SS",
+                        accessibilityLabel: "末尾カット終了位置",
+                        seekTime: { $0 }
+                    )
                 }
+                .padding(8)
+                .background(.quaternary.opacity(0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
         .padding()
@@ -129,9 +178,10 @@ struct TrimView: View {
 
     private func trimmedTotalDuration() -> TimeInterval {
         guard !trimSettings.isEmpty else { return totalDuration }
-        let startTrim = trimSettings.first?.startTrim ?? 0
-        let endTrim = trimSettings.last?.endTrim ?? 0
-        return max(0, totalDuration - startTrim - endTrim)
+        return videoDurations.enumerated().reduce(0) { total, item in
+            let trim = item.offset < trimSettings.count ? trimSettings[item.offset] : TrimSettings()
+            return total + trim.trimmedDuration(original: item.element)
+        }
     }
 
     private func formatTime(_ seconds: TimeInterval) -> String {
@@ -150,10 +200,13 @@ struct TrimView: View {
     private func trimValueControl(
         title: String,
         value: Binding<TimeInterval>,
-        maxValue: TimeInterval,
+        range: ClosedRange<TimeInterval>,
+        resetValue: TimeInterval,
+        unitLabel: String,
+        accessibilityLabel: String,
         seekTime: @escaping (TimeInterval) -> TimeInterval
     ) -> some View {
-        let binding = clampedTrimBinding(value, maxValue: maxValue) { newValue in
+        let binding = clampedTrimBinding(value, range: range) { newValue in
             onPreviewSeek?(seekTime(newValue))
         }
         let commitValue: () -> Void = {
@@ -172,17 +225,18 @@ struct TrimView: View {
 
             TrimTimeField(
                 value: binding,
-                accessibilityTitle: title,
+                placeholder: unitLabel,
+                accessibilityLabel: accessibilityLabel,
                 focusedField: $focusedField,
                 fieldID: title,
                 onCommit: commitValue
             )
 
-            Text("分:秒")
+            Text(unitLabel)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            Stepper(value: binding, in: 0...max(0, maxValue), step: 0.5, onEditingChanged: { editing in
+            Stepper(value: binding, in: range, step: 0.5, onEditingChanged: { editing in
                 if !editing { commitValue() }
             }) {
                 Text(title)
@@ -193,7 +247,7 @@ struct TrimView: View {
             Spacer(minLength: 0)
 
             Button("リセット") {
-                binding.wrappedValue = 0
+                binding.wrappedValue = resetValue
                 commitValue()
             }
             .font(.caption)
@@ -202,17 +256,36 @@ struct TrimView: View {
 
     private func clampedTrimBinding(
         _ value: Binding<TimeInterval>,
-        maxValue: TimeInterval,
+        range: ClosedRange<TimeInterval>,
         onValueChanged: @escaping (TimeInterval) -> Void
     ) -> Binding<TimeInterval> {
         Binding(
-            get: { min(max(value.wrappedValue, 0), max(0, maxValue)) },
+            get: { clampedTime(value.wrappedValue, to: range) },
             set: { newValue in
-                let clamped = min(max(newValue, 0), max(0, maxValue))
+                let clamped = clampedTime(newValue, to: range)
                 value.wrappedValue = clamped
                 onValueChanged(clamped)
             }
         )
+    }
+
+    private func clampedTime(_ value: TimeInterval, to range: ClosedRange<TimeInterval>) -> TimeInterval {
+        min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    private func applyEndPosition(_ position: TimeInterval) {
+        let usableCount = min(trimSettings.count, videoDurations.count)
+        guard usableCount > 0 else { return }
+
+        let clampedPosition = clampedTime(position, to: endPositionRange)
+        var remainingEndTrim = max(0, totalDuration - clampedPosition)
+
+        for index in stride(from: usableCount - 1, through: 0, by: -1) {
+            let duration = max(videoDurations[index], 0)
+            let trim = min(remainingEndTrim, duration)
+            trimSettings[index].endTrim = trim
+            remainingEndTrim -= trim
+        }
     }
 }
 
@@ -222,14 +295,20 @@ struct TrimBarView: View {
     @Binding var endTrim: TimeInterval
     let duration: TimeInterval
     var segmentOffset: TimeInterval = 0
+    var adjustableStart = true
+    var adjustableEnd = true
+    var minimumActiveDuration: TimeInterval = 0.5
     var onPreviewSeek: ((TimeInterval) -> Void)?
     var onCommitSeek: ((TimeInterval) -> Void)?
 
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
-            let startFrac = duration > 0 ? CGFloat(startTrim / duration) : 0
-            let endFrac = duration > 0 ? CGFloat(endTrim / duration) : 0
+            let clampedStartTrim = min(max(startTrim, 0), max(duration, 0))
+            let clampedEndTrim = min(max(endTrim, 0), max(duration, 0))
+            let startFrac = duration > 0 ? CGFloat(clampedStartTrim / duration) : 0
+            let endFrac = duration > 0 ? CGFloat(clampedEndTrim / duration) : 0
+            let minGapFrac = duration > 0 ? CGFloat(min(max(minimumActiveDuration, 0), duration) / duration) : 0
             let activeStart = startFrac * w
             let activeEnd = w - endFrac * w
 
@@ -252,14 +331,14 @@ struct TrimBarView: View {
                     .frame(width: max(activeEnd - activeStart, 0))
                     .offset(x: activeStart)
 
-                // Start handle
-                if startTrim >= 0 {
+                if adjustableStart {
                     TrimHandle(color: .accentColor)
                         .offset(x: activeStart - 6)
                         .gesture(
                             DragGesture()
                                 .onChanged { value in
-                                    let frac = max(0, min(value.location.x / w, 1 - endFrac - 0.02))
+                                    guard w > 0 else { return }
+                                    let frac = max(0, min(value.location.x / w, 1 - endFrac - minGapFrac))
                                     startTrim = Double(frac) * duration
                                     onPreviewSeek?(segmentOffset + startTrim)
                                 }
@@ -269,14 +348,14 @@ struct TrimBarView: View {
                         )
                 }
 
-                // End handle
-                if endTrim >= 0 {
+                if adjustableEnd {
                     TrimHandle(color: .accentColor)
                         .offset(x: activeEnd - 6)
                         .gesture(
                             DragGesture()
                                 .onChanged { value in
-                                    let frac = max(0, min((w - value.location.x) / w, 1 - startFrac - 0.02))
+                                    guard w > 0 else { return }
+                                    let frac = max(0, min((w - value.location.x) / w, 1 - startFrac - minGapFrac))
                                     endTrim = Double(frac) * duration
                                     onPreviewSeek?(segmentOffset + duration - endTrim)
                                 }
@@ -377,7 +456,8 @@ private final class TrimDurationFormatter: Formatter {
 /// are reflected straight back into the field.
 private struct TrimTimeField: View {
     @Binding var value: TimeInterval
-    let accessibilityTitle: String
+    let placeholder: String
+    let accessibilityLabel: String
     @FocusState.Binding var focusedField: String?
     let fieldID: String
     let onCommit: () -> Void
@@ -389,10 +469,10 @@ private struct TrimTimeField: View {
     }
 
     var body: some View {
-        TextField("分:秒", text: $editText)
+        TextField(placeholder, text: $editText)
             .textFieldStyle(.roundedBorder)
             .font(.caption.monospacedDigit())
-            .frame(width: 68)
+            .frame(width: 84)
             .multilineTextAlignment(.trailing)
             .focused($focusedField, equals: fieldID)
             .onSubmit { commit() }
@@ -422,7 +502,7 @@ private struct TrimTimeField: View {
                 editText = TrimDurationFormatter.string(from: newValue)
             }
             .onAppear { editText = TrimDurationFormatter.string(from: value) }
-            .accessibilityLabel("\(accessibilityTitle)カット時間")
+            .accessibilityLabel(accessibilityLabel)
     }
 
     private func commit() {
