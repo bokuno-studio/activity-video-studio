@@ -775,6 +775,9 @@ final class PreviewViewModel: ObservableObject {
         if isPlaying {
             player.pause()
         } else {
+            // Clear any stale seeking state so the periodic time observer resumes
+            // driving overlay updates the moment playback starts.
+            isSeeking = false
             player.rate = playbackRate
         }
         isPlaying.toggle()
@@ -805,10 +808,14 @@ final class PreviewViewModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 60_000_000)
             guard !Task.isCancelled else { return }
             await MainActor.run {
+                // finishSeeking: true clears isSeeking once the preview lands. The
+                // previous version left it false, so a trim drag could leave
+                // isSeeking stuck true and freeze the overlay during playback
+                // (the periodic time observer skips updates while seeking).
                 self?.performSeek(
                     to: target,
                     tolerance: CMTime(seconds: 0.5, preferredTimescale: 600),
-                    finishSeeking: false
+                    finishSeeking: true
                 )
                 self?.trimPreviewSeekTask = nil
             }
