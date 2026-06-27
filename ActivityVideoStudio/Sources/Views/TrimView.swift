@@ -12,7 +12,7 @@ struct TrimView: View {
     /// parent can suspend playback keyboard shortcuts while the user is typing.
     var onEditingChanged: (Bool) -> Void = { _ in }
 
-    @State private var editingFields: Set<String> = []
+    @FocusState private var focusedField: String?
 
     private static let durationFormatter = TrimDurationFormatter()
 
@@ -118,6 +118,13 @@ struct TrimView: View {
             }
         }
         .padding()
+        .contentShape(Rectangle())
+        .onTapGesture {
+            focusedField = nil
+        }
+        .onChange(of: focusedField) { _, field in
+            onEditingChanged(field != nil)
+        }
     }
 
     private func trimmedTotalDuration() -> TimeInterval {
@@ -166,15 +173,9 @@ struct TrimView: View {
             TrimTimeField(
                 value: binding,
                 accessibilityTitle: title,
-                onCommit: commitValue,
-                onFocusChange: { focused in
-                    if focused {
-                        editingFields.insert(title)
-                    } else {
-                        editingFields.remove(title)
-                    }
-                    onEditingChanged(!editingFields.isEmpty)
-                }
+                focusedField: $focusedField,
+                fieldID: title,
+                onCommit: commitValue
             )
 
             Text("分:秒")
@@ -371,19 +372,21 @@ private final class TrimDurationFormatter: Formatter {
 
 /// Editable m:ss time field backed by a string buffer.
 ///
-/// Each field owns its own focus state so the parent's "is a text field being
-/// edited" flag can no longer be confused between the start/end fields. Typed
-/// input is applied live (the slider, output total and preview react without
-/// pressing Return), while changes coming from the slider/stepper/reset are
-/// reflected straight back into the field.
+/// Typed input is applied live (the slider, output total and preview react
+/// without pressing Return), while changes coming from the slider/stepper/reset
+/// are reflected straight back into the field.
 private struct TrimTimeField: View {
     @Binding var value: TimeInterval
     let accessibilityTitle: String
+    @FocusState.Binding var focusedField: String?
+    let fieldID: String
     let onCommit: () -> Void
-    var onFocusChange: (Bool) -> Void = { _ in }
 
-    @FocusState private var isFocused: Bool
     @State private var editText: String = ""
+
+    private var isFocused: Bool {
+        focusedField == fieldID
+    }
 
     var body: some View {
         TextField("分:秒", text: $editText)
@@ -391,10 +394,9 @@ private struct TrimTimeField: View {
             .font(.caption.monospacedDigit())
             .frame(width: 68)
             .multilineTextAlignment(.trailing)
-            .focused($isFocused)
+            .focused($focusedField, equals: fieldID)
             .onSubmit { commit() }
             .onChange(of: isFocused) { _, focused in
-                onFocusChange(focused)
                 if focused {
                     // Load the editable text when editing starts.
                     editText = TrimDurationFormatter.string(from: value)
