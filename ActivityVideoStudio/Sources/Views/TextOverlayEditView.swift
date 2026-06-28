@@ -126,8 +126,6 @@ struct TextOverlayEditView: View {
     /// Measure actual text width and compute font size to fill ~95% of screen width.
     private func autoFitFontSize(overlay: inout TextOverlay) {
         let lines = overlay.text.components(separatedBy: "\n")
-        let longest = lines.max(by: { $0.count < $1.count }) ?? overlay.text
-        guard !longest.isEmpty else { return }
 
         let targetWidth: CGFloat = 3840 * 0.95  // 95% of 4K width
 
@@ -135,12 +133,16 @@ struct TextOverlayEditView: View {
         let refSize: CGFloat = 100
         let font = CTFontCreateWithName("Helvetica-Bold" as CFString, refSize, nil)
         let attrs: [NSAttributedString.Key: Any] = [.font: font]
-        let attrStr = NSAttributedString(string: longest, attributes: attrs)
-        let line = CTLineCreateWithAttributedString(attrStr)
-        let bounds = CTLineGetBoundsWithOptions(line, [])
+        let maxLineWidth = lines
+            .map { lineText -> CGFloat in
+                let attrStr = NSAttributedString(string: lineText, attributes: attrs)
+                let line = CTLineCreateWithAttributedString(attrStr)
+                return CTLineGetBoundsWithOptions(line, []).width
+            }
+            .max() ?? 0
 
-        guard bounds.width > 0 else { return }
-        let fontSize = refSize * targetWidth / bounds.width
+        guard maxLineWidth > 0 else { return }
+        let fontSize = refSize * targetWidth / maxLineWidth
         overlay.fontSize = min(max(fontSize / 2, 24), 300)  // /2 because scale=2 for 4K
     }
 }
