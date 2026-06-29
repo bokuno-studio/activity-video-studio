@@ -44,6 +44,7 @@ final class PreviewViewModel: ObservableObject {
     @Published var alert: UserFacingAlert?
     @Published var isLoading = false
     @Published var loadingMessage: String?
+    @Published var loadingProgress: Double?
     @Published var projectWarningMessage: String?
     @Published var textOverlays: [TextOverlay] = []
     @Published var trimSettings: [TrimSettings] = []
@@ -87,14 +88,21 @@ final class PreviewViewModel: ObservableObject {
         alert = UserFacingAlert(title: title, message: details.joined(separator: "\n\n"))
     }
 
-    private func beginLoading(_ message: String) {
+    private func beginLoading(_ message: String, progress: Double? = nil) {
         loadingMessage = message
+        loadingProgress = progress
         isLoading = true
     }
 
     private func endLoading() {
         isLoading = false
         loadingMessage = nil
+        loadingProgress = nil
+    }
+
+    private func updateLoading(_ message: String, progress: Double? = nil) {
+        loadingMessage = message
+        loadingProgress = progress
     }
 
     private var projectEditedCancellables: Set<AnyCancellable> = []
@@ -598,35 +606,8 @@ final class PreviewViewModel: ObservableObject {
 
         let reader = VideoMetadataReader()
         do {
-            let metadata = try await reader.read(url: url)
-            videoURLs.append(url)
-            videoMetadatas.append(metadata)
-
-            trimSettings.append(TrimSettings())
-
-            // Sort all videos by creationDate
-            sortVideosByCreationDate()
-
-            videoLoaded = true
-
-            // Rebuild timeSync with sorted order
-            setupTimeSync()
-
-            // Build combined player item
-            guard await rebuildComposition() else { return }
-            applyDefaultFITStartAlignmentIfPossible()
-
-            var msg = "動画読み込み完了 (\(videoURLs.count)本, 合計 \(formatDuration(duration)))"
-            // Show FIT offset info
-            if let ts = timeSync, let firstSeg = ts.segments.first,
-               let fitStart = ts.activityStartTime {
-                let offset = fitStart.timeIntervalSince(firstSeg.fitStartTime)
-                if offset > 0 {
-                    msg += " | FIT記録開始: \(formatDuration(offset))後"
-                }
-            }
-            statusMessage = msg
-            markProjectEdited()
+            try await appendVideo(url: url, reader: reader)
+            await finishVideoLoading()
         } catch {
             showError(
                 title: "動画を読み込めませんでした",
@@ -634,6 +615,98 @@ final class PreviewViewModel: ObservableObject {
                 recovery: "対応形式は .mp4 / .mov / .m4v です。ファイルが破損していないか確認してください。"
             )
         }
+    }
+
+    func loadVideos(urls: [URL]) async {
+        guard !urls.isEmpty else { return }
+        guard urls.count > 1 else {
+            await loadVideo(url: urls[0])
+            return
+        }
+
+        beginLoading("0 / \(urls.count) 本 読み込み中...", progress: 0)
+        defer { endLoading() }
+
+        let reader = VideoMetadataReader()
+        var loadedCount = 0
+        var failedNames: [String] = []
+
+        for (index, url) in urls.enumerated() {
+            updateLoading(
+                "\(index + 1) / \(urls.count) 本 読み込み中...",
+                progress: Double(index) / Double(urls.count)
+            )
+
+            do {
+                try await appendVideo(url: url, reader: reader)
+                loadedCount += 1
+                updateLoading(
+                    "\(index + 1) / \(urls.count) 本 読み込み中...",
+                    progress: Double(index + 1) / Double(urls.count)
+                )
+            } catch {
+                failedNames.append(url.lastPathComponent)
+            }
+        }
+
+        guard loadedCount > 0 else {
+            showError(
+                title: "動画を読み込めませんでした",
+                message: "ドロップされた動画を読み込めませんでした。対応形式は .mp4 / .mov / .m4v です。ファイルが破損していないか確認してください。"
+            )
+            return
+        }
+
+        await finishVideoLoading(loadedCount: loadedCount, requestedCount: urls.count)
+
+        if !failedNames.isEmpty {
+            showError(
+                title: "一部の動画を読み込めませんでした",
+                message: "\(failedNames.joined(separator: ", ")) を読み込めませんでした。ファイルが破損していないか確認してください。"
+            )
+        }
+    }
+
+    private func appendVideo(url: URL, reader: VideoMetadataReader) async throws {
+        let metadata = try await reader.read(url: url)
+        videoURLs.append(url)
+        videoMetadatas.append(metadata)
+        trimSettings.append(TrimSettings())
+    }
+
+    private func finishVideoLoading(loadedCount: Int? = nil, requestedCount: Int? = nil) async {
+        sortVideosByCreationDate()
+        videoLoaded = true
+        setupTimeSync()
+
+        guard await rebuildComposition() else { return }
+        applyDefaultFITStartAlignmentIfPossible()
+
+        statusMessage = videoLoadStatusMessage(loadedCount: loadedCount, requestedCount: requestedCount)
+        markProjectEdited()
+    }
+
+    private func videoLoadStatusMessage(loadedCount: Int? = nil, requestedCount: Int? = nil) -> String {
+        let loadSummary: String
+        if let loadedCount, let requestedCount, requestedCount > 1 {
+            if loadedCount == requestedCount {
+                loadSummary = "\(loadedCount)本 読み込み完了"
+            } else {
+                loadSummary = "\(loadedCount) / \(requestedCount)本 読み込み完了"
+            }
+        } else {
+            loadSummary = "動画読み込み完了"
+        }
+
+        var message = "\(loadSummary) (\(videoURLs.count)本, 合計 \(formatDuration(duration)))"
+        if let ts = timeSync, let firstSeg = ts.segments.first,
+           let fitStart = ts.activityStartTime {
+            let offset = fitStart.timeIntervalSince(firstSeg.fitStartTime)
+            if offset > 0 {
+                message += " | FIT記録開始: \(formatDuration(offset))後"
+            }
+        }
+        return message
     }
 
     /// Sort videos chronologically.

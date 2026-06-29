@@ -568,8 +568,14 @@ struct PreviewView: View {
 
     private var loadingOverlay: some View {
         VStack(spacing: 12) {
-            ProgressView()
-                .controlSize(.large)
+            if let progress = viewModel.loadingProgress {
+                ProgressView(value: progress, total: 1)
+                    .controlSize(.large)
+                    .frame(width: 220)
+            } else {
+                ProgressView()
+                    .controlSize(.large)
+            }
             Text(viewModel.loadingMessage ?? "読み込み中...")
                 .font(.callout)
                 .foregroundStyle(.primary)
@@ -590,31 +596,73 @@ struct PreviewView: View {
     // MARK: - Drop handling
 
     private func handleDrop(providers: [NSItemProvider]) {
-        for provider in providers {
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil) else {
-                    Task { @MainActor in
-                        viewModel.showError(
-                            title: "ファイルを読み込めませんでした",
-                            message: "ドロップされた項目のファイルURLを取得できませんでした。"
-                        )
-                    }
-                    return
-                }
+        Task { @MainActor in
+            let droppedFiles = await droppedFileURLs(from: providers)
+            guard !droppedFiles.urls.isEmpty else {
+                viewModel.showError(
+                    title: "ファイルを読み込めませんでした",
+                    message: "ドロップされた項目のファイルURLを取得できませんでした。"
+                )
+                return
+            }
 
+            var videoURLs: [URL] = []
+            var unsupportedNames: [String] = []
+
+            for url in droppedFiles.urls {
                 let ext = url.pathExtension.lowercased()
-                Task { @MainActor in
-                    if ext == "fit" || ext == "zip" {
-                        viewModel.loadFITFile(url: url)
-                    } else if ["mp4", "mov", "m4v"].contains(ext) {
-                        await viewModel.loadVideo(url: url)
-                    } else {
-                        viewModel.showError(
-                            title: "対応していないファイル形式です",
-                            message: "\(url.lastPathComponent) は読み込めません。対応形式は .fit / .zip / .mp4 / .mov / .m4v です。"
-                        )
-                    }
+                if ext == "fit" || ext == "zip" {
+                    viewModel.loadFITFile(url: url)
+                } else if ["mp4", "mov", "m4v"].contains(ext) {
+                    videoURLs.append(url)
+                } else {
+                    unsupportedNames.append(url.lastPathComponent)
+                }
+            }
+
+            if !videoURLs.isEmpty {
+                await viewModel.loadVideos(urls: videoURLs)
+            }
+
+            if droppedFiles.failedCount > 0 {
+                viewModel.showError(
+                    title: "ファイルを読み込めませんでした",
+                    message: "ドロップされた項目のうち \(droppedFiles.failedCount) 件のファイルURLを取得できませんでした。"
+                )
+            } else if !unsupportedNames.isEmpty {
+                viewModel.showError(
+                    title: "対応していないファイル形式です",
+                    message: "\(unsupportedNames.joined(separator: ", ")) は読み込めません。対応形式は .fit / .zip / .mp4 / .mov / .m4v です。"
+                )
+            }
+        }
+    }
+
+    private func droppedFileURLs(from providers: [NSItemProvider]) async -> (urls: [URL], failedCount: Int) {
+        var urls: [URL] = []
+        var failedCount = 0
+
+        for provider in providers {
+            if let url = await droppedFileURL(from: provider) {
+                urls.append(url)
+            } else {
+                failedCount += 1
+            }
+        }
+
+        return (urls, failedCount)
+    }
+
+    private func droppedFileURL(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                if let data = item as? Data,
+                   let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    continuation.resume(returning: url)
+                } else if let url = item as? URL {
+                    continuation.resume(returning: url)
+                } else {
+                    continuation.resume(returning: nil)
                 }
             }
         }
