@@ -7,7 +7,7 @@ struct ChapterMarkerView: View {
     let onSeek: (ChapterMarker) -> Void
     let onAdd: () -> Void
     let onRemove: (ChapterMarker) -> Void
-    var isTextFocused: FocusState<Bool>.Binding
+    @FocusState.Binding var focusedMarkerID: ChapterMarker.ID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -15,7 +15,10 @@ struct ChapterMarkerView: View {
                 Text("チャプターマーカー")
                     .font(.headline)
                 Spacer()
-                Button(action: onAdd) {
+                Button {
+                    focusedMarkerID = nil
+                    onAdd()
+                } label: {
                     Label("現在位置にマーク", systemImage: "flag")
                 }
             }
@@ -36,6 +39,7 @@ struct ChapterMarkerView: View {
                 HStack(spacing: 8) {
                     // Time badge
                     Button {
+                        focusedMarkerID = nil
                         onSeek(marker)
                     } label: {
                         Text(formatTime(trimmedTime(marker.time)))
@@ -49,16 +53,19 @@ struct ChapterMarkerView: View {
                     .help("この位置にシーク")
                     .accessibilityLabel("\(formatTime(trimmedTime(marker.time))) にシーク")
 
-                    // Label (Enter/Esc to unfocus)
+                    // Label (Enter or outside click to unfocus)
                     TextField("ラベルを入力", text: $marker.label)
                         .textFieldStyle(.roundedBorder)
                         .font(.subheadline)
-                        .focused(isTextFocused)
-                        .onSubmit { isTextFocused.wrappedValue = false }
+                        .focused($focusedMarkerID, equals: marker.id)
+                        .onSubmit { focusedMarkerID = nil }
                         .accessibilityLabel("チャプターラベル")
 
                     // Delete
                     Button(role: .destructive) {
+                        if focusedMarkerID == marker.id {
+                            focusedMarkerID = nil
+                        }
                         onRemove(marker)
                     } label: {
                         Image(systemName: "xmark.circle.fill")
@@ -99,7 +106,7 @@ struct ChapterMarkerView: View {
         .padding()
         .contentShape(Rectangle())
         .onTapGesture {
-            isTextFocused.wrappedValue = false
+            focusedMarkerID = nil
         }
     }
 

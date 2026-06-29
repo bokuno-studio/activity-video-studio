@@ -10,6 +10,7 @@ struct PreviewView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showRightPanel = true
     @FocusState private var isTextFieldFocused: Bool
+    @FocusState private var focusedChapterMarkerID: ChapterMarker.ID?
     @State private var trimFieldEditing = false
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -27,6 +28,10 @@ struct PreviewView: View {
             sidebar
         } detail: {
             mainContent
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    clearChapterMarkerFocus()
+                }
         }
         .inspector(isPresented: $showRightPanel) {
             inspectorPanel
@@ -140,6 +145,10 @@ struct PreviewView: View {
             }
             .frame(maxHeight: 300)
         }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            clearChapterMarkerFocus()
+        }
         .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 260)
     }
 
@@ -221,9 +230,9 @@ struct PreviewView: View {
                         markers: $viewModel.chapterMarkers,
                         trimmedTime: viewModel.trimmedTime(for:),
                         onSeek: { viewModel.seekToMarker($0) },
-                        onAdd: { viewModel.addChapterMarker(undoManager: undoManager) },
+                        onAdd: { addChapterMarker() },
                         onRemove: { viewModel.removeChapterMarker(id: $0.id, undoManager: undoManager) },
-                        isTextFocused: $isTextFieldFocused
+                        focusedMarkerID: $focusedChapterMarkerID
                     )
                 case .youtube:
                     YouTubeDescriptionView(
@@ -234,9 +243,22 @@ struct PreviewView: View {
                     )
                 }
             }
+            .background {
+                Rectangle()
+                    .fill(.clear)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        clearChapterMarkerFocus()
+                    }
+            }
         }
         .background(.regularMaterial)
         .inspectorColumnWidth(min: 320, ideal: 340, max: 380)
+        .onChange(of: rightPanelTab) { _, tab in
+            if tab != .chapters {
+                clearChapterMarkerFocus()
+            }
+        }
     }
 
     private var commandContext: PreviewCommandContext {
@@ -255,7 +277,7 @@ struct PreviewView: View {
             skipForward10: { viewModel.skipForward(10) },
             togglePlayback: { viewModel.togglePlayback() },
             cyclePlaybackRate: { viewModel.cyclePlaybackRate() },
-            addChapterMarker: { viewModel.addChapterMarker(undoManager: undoManager) }
+            addChapterMarker: { addChapterMarker() }
         )
     }
 
@@ -264,7 +286,16 @@ struct PreviewView: View {
     }
 
     private var previewShortcutsSuspended: Bool {
-        isTextFieldFocused || trimFieldEditing || frontModalPresented
+        isTextFieldFocused || focusedChapterMarkerID != nil || trimFieldEditing || frontModalPresented
+    }
+
+    private func clearChapterMarkerFocus() {
+        focusedChapterMarkerID = nil
+    }
+
+    private func addChapterMarker() {
+        clearChapterMarkerFocus()
+        viewModel.addChapterMarker(undoManager: undoManager)
     }
 
     // MARK: - Controls bar (compact)
