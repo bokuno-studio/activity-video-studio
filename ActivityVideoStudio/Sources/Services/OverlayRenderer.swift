@@ -542,46 +542,54 @@ final class OverlayRenderer {
     // MARK: - Text overlay
 
     private func drawTextOverlay(ctx: CGContext, overlay: TextOverlay, opacity: Double) {
-        let fontSize = overlay.fontSize * scale
-        let font = CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
-        let textColor = NSColor(cgColor: overlay.color)?.withAlphaComponent(opacity) ?? NSColor.white.withAlphaComponent(opacity)
+        let fontSize = max(1, overlay.fontSize * scale)
+        let font = textOverlayFont(for: overlay, size: fontSize)
+        let textColor = nsColor(overlay.color, applyingOpacity: opacity, fallback: .white)
+        let strokeColor = nsColor(overlay.strokeColor, applyingOpacity: opacity, fallback: .black)
+        let shadowColor = cgColor(overlay.shadowColor, applyingOpacity: opacity, fallback: .black)
         let padding = 30 * scale
-        let lineSpacing = fontSize * 1.2
+        let strokeWidth = max(0, overlay.strokeWidth) * scale
+        let lineHeight = max(CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font), fontSize * 1.2)
 
         // Split text into lines
         let lines = overlay.text.components(separatedBy: "\n")
-        var lineData: [(CTLine, CGRect)] = []
+        var lineData: [(CTLine, CGFloat, CGRect)] = []
         var maxWidth: CGFloat = 0
 
         for lineText in lines {
-            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: textColor]
+            var attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: textColor
+            ]
+            if strokeWidth > 0 {
+                attrs[.strokeColor] = strokeColor
+                attrs[.strokeWidth] = -(strokeWidth / fontSize * 100)
+            }
             let attrStr = NSAttributedString(string: lineText, attributes: attrs)
             let ctLine = CTLineCreateWithAttributedString(attrStr)
+            let width = CGFloat(CTLineGetTypographicBounds(ctLine, nil, nil, nil))
             let bounds = CTLineGetBoundsWithOptions(ctLine, [])
-            lineData.append((ctLine, bounds))
-            maxWidth = max(maxWidth, bounds.width)
+            lineData.append((ctLine, width, bounds))
+            maxWidth = max(maxWidth, width)
         }
 
-        let totalHeight = lineSpacing * CGFloat(lines.count)
-
-        // Vertical position
-        let baseY: CGFloat
-        switch overlay.position {
-        case .topCenter:
-            baseY = videoSize.height - padding - totalHeight
-        case .center:
-            baseY = (videoSize.height + totalHeight) / 2 - lineSpacing
-        case .bottomCenter:
-            baseY = padding + 80 * scale + totalHeight - lineSpacing
-        }
+        let totalHeight = lineHeight * CGFloat(lines.count)
+        let centerX = min(max(overlay.relativeX, 0), 1) * videoSize.width
+        let centerY = videoSize.height - min(max(overlay.relativeY, 0), 1) * videoSize.height
 
         // Background
-        let bgRect = CGRect(
-            x: (videoSize.width - maxWidth) / 2 - padding,
-            y: baseY - totalHeight + lineSpacing - padding / 2,
-            width: maxWidth + padding * 2,
-            height: totalHeight + padding
+        let textRect = CGRect(
+            x: centerX - maxWidth / 2,
+            y: centerY - totalHeight / 2,
+            width: maxWidth,
+            height: totalHeight
         )
+        let bgRect = CGRect(
+            x: textRect.minX - padding - strokeWidth,
+            y: textRect.minY - padding / 2 - strokeWidth,
+            width: maxWidth + padding * 2 + strokeWidth * 2,
+            height: totalHeight + padding + strokeWidth * 2
+        ).integral
         ctx.saveGState()
         ctx.setAlpha(opacity)
         ctx.setFillColor(overlay.backgroundColor)
@@ -589,15 +597,42 @@ final class OverlayRenderer {
         ctx.fill(bgRect)
         ctx.restoreGState()
 
-        // Draw each line centered
-        for (i, (ctLine, bounds)) in lineData.enumerated() {
-            let x = (videoSize.width - bounds.width) / 2
-            let y = baseY - lineSpacing * CGFloat(i)
+        // Draw each line centered around the relative placement anchor.
+        let firstBaseline = centerY + totalHeight / 2 - CTFontGetAscent(font)
+        for (i, (ctLine, width, bounds)) in lineData.enumerated() {
+            let x = centerX - width / 2 - bounds.origin.x
+            let y = firstBaseline - lineHeight * CGFloat(i)
             ctx.saveGState()
+            ctx.setShadow(
+                offset: CGSize(width: overlay.shadowOffsetX * scale, height: -overlay.shadowOffsetY * scale),
+                blur: max(0, overlay.shadowBlur) * scale,
+                color: shadowColor
+            )
             ctx.textPosition = CGPoint(x: x, y: y)
             CTLineDraw(ctLine, ctx)
             ctx.restoreGState()
         }
+    }
+
+    private func textOverlayFont(for overlay: TextOverlay, size: CGFloat) -> CTFont {
+        let fallback = NSFont.systemFont(ofSize: size, weight: overlay.fontWeight.nsFontWeight)
+        let nsFont = NSFontManager.shared.font(
+            withFamily: overlay.fontFamily,
+            traits: [],
+            weight: overlay.fontWeight.nsFontManagerWeight,
+            size: size
+        ) ?? fallback
+
+        return CTFontCreateWithName(nsFont.fontName as CFString, size, nil)
+    }
+
+    private func nsColor(_ color: CGColor, applyingOpacity opacity: Double, fallback: NSColor) -> NSColor {
+        let base = NSColor(cgColor: color) ?? fallback
+        return base.withAlphaComponent(base.alphaComponent * CGFloat(opacity))
+    }
+
+    private func cgColor(_ color: CGColor, applyingOpacity opacity: Double, fallback: NSColor) -> CGColor {
+        nsColor(color, applyingOpacity: opacity, fallback: fallback).cgColor
     }
 
     // MARK: - Waiting indicator
@@ -630,5 +665,27 @@ final class OverlayRenderer {
         else if temp >= 39.0 { return CGColor(red: 1, green: 0.4, blue: 0, alpha: 1) }
         else if temp >= 38.0 { return CGColor(red: 1, green: 0.8, blue: 0, alpha: 1) }
         else { return CGColor(red: 0.3, green: 0.8, blue: 0.3, alpha: 1) }
+    }
+}
+
+private extension TextOverlay.FontWeight {
+    var nsFontWeight: NSFont.Weight {
+        switch self {
+        case .regular: return .regular
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        case .heavy: return .heavy
+        }
+    }
+
+    var nsFontManagerWeight: Int {
+        switch self {
+        case .regular: return 5
+        case .medium: return 6
+        case .semibold: return 8
+        case .bold: return 9
+        case .heavy: return 10
+        }
     }
 }

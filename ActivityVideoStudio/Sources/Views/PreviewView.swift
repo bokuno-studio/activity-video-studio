@@ -12,6 +12,7 @@ struct PreviewView: View {
     @FocusState private var isTextFieldFocused: Bool
     @FocusState private var focusedChapterMarkerID: ChapterMarker.ID?
     @State private var trimFieldEditing = false
+    @State private var selectedTextOverlayID: TextOverlay.ID?
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.undoManager) private var undoManager
@@ -168,6 +169,14 @@ struct PreviewView: View {
                     OverlayView(overlayImage: viewModel.overlayImage)
                         .allowsHitTesting(false)
                 }
+                .overlay {
+                    if rightPanelTab == .textOverlay {
+                        TextOverlayPlacementLayer(
+                            overlays: $viewModel.textOverlays,
+                            selectedOverlayID: $selectedTextOverlayID
+                        )
+                    }
+                }
                 .background(Color.black)
                 .layoutPriority(1)
 
@@ -222,6 +231,7 @@ struct PreviewView: View {
                 case .textOverlay:
                     TextOverlayEditView(
                         overlays: $viewModel.textOverlays,
+                        selectedOverlayID: $selectedTextOverlayID,
                         videoDuration: viewModel.duration,
                         isTextFocused: $isTextFieldFocused
                     )
@@ -723,6 +733,72 @@ struct PreviewView: View {
         .frame(width: 1100, height: 700)
 }
 #endif
+
+private struct TextOverlayPlacementLayer: View {
+    @Binding var overlays: [TextOverlay]
+    @Binding var selectedOverlayID: TextOverlay.ID?
+
+    private static let coordinateSpaceName = "TextOverlayPlacementLayer"
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.coordinateSpaceName))
+                            .onChanged { value in
+                                guard let selectedOverlayID else { return }
+                                moveOverlay(id: selectedOverlayID, to: value.location, in: geometry.size)
+                            }
+                    )
+
+                ForEach(overlays) { overlay in
+                    placementHandle(for: overlay, in: geometry.size)
+                }
+            }
+            .coordinateSpace(name: Self.coordinateSpaceName)
+        }
+    }
+
+    @ViewBuilder
+    private func placementHandle(for overlay: TextOverlay, in size: CGSize) -> some View {
+        let selected = selectedOverlayID == overlay.id
+        let diameter: CGFloat = selected ? 20 : 14
+
+        Circle()
+            .fill(selected ? Color.accentColor : Color.white.opacity(0.85))
+            .frame(width: diameter, height: diameter)
+            .overlay {
+                Circle()
+                    .stroke(Color.black.opacity(0.65), lineWidth: 1.5)
+            }
+            .shadow(color: .black.opacity(0.3), radius: 3, x: 0, y: 1)
+            .position(
+                x: min(max(overlay.relativeX, 0), 1) * size.width,
+                y: min(max(overlay.relativeY, 0), 1) * size.height
+            )
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.coordinateSpaceName))
+                    .onChanged { value in
+                        selectedOverlayID = overlay.id
+                        moveOverlay(id: overlay.id, to: value.location, in: size)
+                    }
+            )
+            .accessibilityLabel("テキスト位置")
+            .accessibilityValue(selected ? "選択中" : "未選択")
+    }
+
+    private func moveOverlay(id: TextOverlay.ID, to point: CGPoint, in size: CGSize) {
+        guard size.width > 0, size.height > 0,
+              let index = overlays.firstIndex(where: { $0.id == id }) else { return }
+
+        overlays[index].relativeX = min(max(point.x / size.width, 0), 1)
+        overlays[index].relativeY = min(max(point.y / size.height, 0), 1)
+        overlays[index].clampRelativePosition()
+    }
+}
 
 private struct WindowDocumentBridge: NSViewRepresentable {
     var title: String
