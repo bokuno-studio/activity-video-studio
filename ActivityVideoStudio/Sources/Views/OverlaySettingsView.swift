@@ -24,6 +24,13 @@ struct OverlaySettingsView: View {
             }
 
             Section("外観") {
+                Picker("プリセット", selection: $settings.overlayPreset) {
+                    ForEach(OverlayPreset.allCases) { preset in
+                        Text(preset.title).tag(preset)
+                    }
+                }
+                .pickerStyle(.menu)
+
                 LabeledContent("透明度") {
                     Slider(value: $settings.overlayOpacity, in: 0.3...1.0, step: 0.05)
                         .accessibilityLabel("透明度")

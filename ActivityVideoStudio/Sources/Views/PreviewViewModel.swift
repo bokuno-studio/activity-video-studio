@@ -143,6 +143,7 @@ final class PreviewViewModel: ObservableObject {
         var overlayText: String?
         var overlayPos: TextOverlay.Position = .center
         var overlayFontSize: CGFloat = 48
+        var overlayPreset: OverlayPreset?
         var cliOffset: Double?
         var alignFitStart = false
 
@@ -180,6 +181,11 @@ final class PreviewViewModel: ObservableObject {
                     overlayFontSize = CGFloat(value)
                     i += 1
                 }
+            case "--overlay-preset":
+                if i + 1 < args.count {
+                    overlayPreset = OverlayPreset(rawValue: args[i + 1])
+                    i += 1
+                }
             case "--export-to":
                 if i + 1 < args.count { exportPath = args[i + 1]; i += 1 }
             case "--offset":
@@ -192,6 +198,10 @@ final class PreviewViewModel: ObservableObject {
             default: break
             }
             i += 1
+        }
+
+        if let overlayPreset {
+            overlaySettings.overlayPreset = overlayPreset
         }
 
         if let fp = fitPath {
@@ -1380,6 +1390,7 @@ private struct ResolvedProjectFile {
 }
 
 private struct OverlaySettingsSnapshot: Codable {
+    var overlayPreset: OverlayPreset?
     var showTime: Bool
     var showDistance: Bool
     var showHeartRate: Bool
@@ -1398,6 +1409,7 @@ private struct OverlaySettingsSnapshot: Codable {
     var z4Max: UInt8
 
     init(settings: OverlaySettings) {
+        overlayPreset = settings.overlayPreset
         showTime = settings.showTime
         showDistance = settings.showDistance
         showHeartRate = settings.showHeartRate
@@ -1417,6 +1429,7 @@ private struct OverlaySettingsSnapshot: Codable {
     }
 
     func apply(to settings: OverlaySettings) {
+        settings.overlayPreset = overlayPreset ?? .defaultPreset
         settings.showTime = showTime
         settings.showDistance = showDistance
         settings.showHeartRate = showHeartRate

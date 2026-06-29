@@ -175,7 +175,8 @@ struct AppEntryPoint {
 ///   --headless-export --fit <path> --video <path> [--video <path> ...]
 ///   --export-to <path> [--align-fit-start | --offset <sec>]
 ///   [--trim-start <sec>] [--trim-end <sec>] [--trim-start-N <sec>] [--trim-end-N <sec>]
-///   [--width <px>] [--height <px>] [--text <str>] [--text-pos <pos>] [--text-size <pt>]
+///   [--width <px>] [--height <px>] [--overlay-preset <preset>]
+///   [--text <str>] [--text-pos <pos>] [--text-size <pt>]
 enum HeadlessExporter {
 
     private static let logURL = URL(fileURLWithPath: "/tmp/avs_export.log")
@@ -293,7 +294,13 @@ enum HeadlessExporter {
         // Overlay
         let w = value("--width").flatMap(Int.init) ?? 1920
         let h = value("--height").flatMap(Int.init) ?? 1080
-        let renderer = OverlayRenderer(videoSize: CGSize(width: w, height: h))
+        let overlaySettings = OverlaySettings()
+        if let presetValue = value("--overlay-preset"),
+           let preset = OverlayPreset(rawValue: presetValue) {
+            overlaySettings.overlayPreset = preset
+            logLine("[Headless] overlayPreset: \(preset.rawValue)")
+        }
+        let renderer = OverlayRenderer(videoSize: CGSize(width: w, height: h), settings: overlaySettings)
         renderer.allDataPoints = pts
         renderer.trackCoordinates = pts.compactMap { $0.coordinate }
         if let text = value("--text"), !text.isEmpty {

@@ -43,11 +43,12 @@ final class OverlayRenderer {
     var totalElevationGain: Double { elevationGainCache.last ?? 0 }
 
     // Colors
-    private let accentColor = CGColor(red: 1.0, green: 0.45, blue: 0.1, alpha: 1)   // Orange
-    private let accentRed = CGColor(red: 1.0, green: 0.2, blue: 0.15, alpha: 1)
+    private var renderStyle: OverlayPresetRenderStyle { settings.overlayPreset.renderStyle }
+    private var accentColor: CGColor { renderStyle.accentColor }
+    private var accentRed: CGColor { renderStyle.accentRed }
     private let white = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
-    private let shadowColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0.7)
-    private let metricsBackgroundColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0.45)
+    private var shadowColor: CGColor { renderStyle.shadowColor }
+    private var metricsBackgroundColor: CGColor { renderStyle.metricsBackgroundColor }
 
 
     init(videoSize: CGSize, settings: OverlaySettings = OverlaySettings()) {
@@ -82,35 +83,43 @@ final class OverlayRenderer {
             drawWaitingIndicator(ctx: ctx)
         }
 
+        let style = renderStyle
+        let labelFontSize = style.labelFontSize
+        let valueFontSize = style.valueFontSize
+        let distanceFontSize = style.distanceFontSize * scale
+        let leftAdvance = style.leftMetricAdvance * scale
+        let rightDistanceAdvance = style.rightDistanceAdvance * scale
+        let rightAdvance = style.rightMetricAdvance * scale
+
         // === LEFT SIDE (top→bottom): HR → PACE → CADENCE → CORE ===
-        let leftX = 50 * scale
-        var leftY = videoSize.height - 50 * scale
+        let leftX = style.leftX(in: videoSize, scale: scale)
+        var leftY = style.leftStartY(in: videoSize, scale: scale)
         var leftMetricRects: [CGRect] = []
 
         if settings.showHeartRate {
-            leftMetricRects.append(labelValueRect(x: leftX, y: leftY, valueSize: 80 * scale))
-            leftY -= 130 * scale
+            leftMetricRects.append(labelValueRect(x: leftX, y: leftY, valueSize: valueFontSize * scale))
+            leftY += leftAdvance
         }
 
         if settings.showPace {
-            leftMetricRects.append(labelValueRect(x: leftX, y: leftY, valueSize: 80 * scale))
-            leftY -= 130 * scale
+            leftMetricRects.append(labelValueRect(x: leftX, y: leftY, valueSize: valueFontSize * scale))
+            leftY += leftAdvance
         }
 
         if settings.showCadence {
-            leftMetricRects.append(labelValueRect(x: leftX, y: leftY, valueSize: 80 * scale))
-            leftY -= 130 * scale
+            leftMetricRects.append(labelValueRect(x: leftX, y: leftY, valueSize: valueFontSize * scale))
+            leftY += leftAdvance
         }
 
         if settings.showCoreTemp, dataPoint.coreTemperature != nil {
-            leftMetricRects.append(labelValueRect(x: leftX, y: leftY, valueSize: 80 * scale))
+            leftMetricRects.append(labelValueRect(x: leftX, y: leftY, valueSize: valueFontSize * scale))
         }
 
         if let leftBackgroundRect = unionRect(for: leftMetricRects) {
             drawMetricsBackground(ctx: ctx, rect: leftBackgroundRect)
         }
 
-        leftY = videoSize.height - 50 * scale
+        leftY = style.leftStartY(in: videoSize, scale: scale)
 
         // HR + Zone
         if settings.showHeartRate {
@@ -124,29 +133,29 @@ final class OverlayRenderer {
                 hrValue = "-- bpm"
                 hrColor = white
             }
-            drawLabelValue(ctx: ctx, label: "HEART RATE", value: hrValue, x: leftX, y: leftY, labelColor: accentColor, valueColor: hrColor)
-            leftY -= 130 * scale
+            drawLabelValue(ctx: ctx, label: "HEART RATE", value: hrValue, x: leftX, y: leftY, labelColor: accentColor, valueSize: valueFontSize, valueColor: hrColor, labelSize: labelFontSize)
+            leftY += leftAdvance
         }
 
         // PACE
         if settings.showPace {
             let value = dataPoint.paceFormatted ?? "--'--\""
-            drawLabelValue(ctx: ctx, label: "PACE", value: value, x: leftX, y: leftY, labelColor: accentColor)
-            leftY -= 130 * scale
+            drawLabelValue(ctx: ctx, label: "PACE", value: value, x: leftX, y: leftY, labelColor: accentColor, valueSize: valueFontSize, labelSize: labelFontSize)
+            leftY += leftAdvance
         }
 
         // CADENCE
         if settings.showCadence {
             let value = dataPoint.runningCadence.map { "\($0) spm" } ?? "-- spm"
-            drawLabelValue(ctx: ctx, label: "CADENCE", value: value, x: leftX, y: leftY, labelColor: accentColor)
-            leftY -= 130 * scale
+            drawLabelValue(ctx: ctx, label: "CADENCE", value: value, x: leftX, y: leftY, labelColor: accentColor, valueSize: valueFontSize, labelSize: labelFontSize)
+            leftY += leftAdvance
         }
 
         // CORE TEMP
         if settings.showCoreTemp, let ct = dataPoint.coreTemperature {
             let value = String(format: "%.1f°C", ct)
             let c = coreTempColor(ct)
-            drawLabelValue(ctx: ctx, label: "CORE TEMP", value: value, x: leftX, y: leftY, labelColor: accentColor, valueColor: c)
+            drawLabelValue(ctx: ctx, label: "CORE TEMP", value: value, x: leftX, y: leftY, labelColor: accentColor, valueSize: valueFontSize, valueColor: c, labelSize: labelFontSize)
         }
 
         // === RIGHT SIDE (top→bottom): GPS track (drawn directly by OverlayRenderer) → Distance → TIME → ELEV GAIN → ALTITUDE → 標高グラフ ===
@@ -154,27 +163,27 @@ final class OverlayRenderer {
         // Distance - right, below GPS track area.
         // GPS track drawn directly by OverlayRenderer (see drawGPSTrack) in the top-right corner.
         // Formula keeps the text clear of the map across 720p / 1080p / 4K.
-        let rightX = videoSize.width - 450 * scale
-        var rightY = videoSize.height * 0.65 - 130 * scale
+        let rightX = style.rightX(in: videoSize, scale: scale)
+        var rightY = style.rightStartY(in: videoSize, scale: scale)
         var rightMetricRects: [CGRect] = []
 
         if settings.showDistance {
-            rightMetricRects.append(textRect(x: rightX, y: rightY, fontSize: 68 * scale))
-            rightY -= 120 * scale
+            rightMetricRects.append(textRect(x: rightX, y: rightY, fontSize: distanceFontSize))
+            rightY += rightDistanceAdvance
         }
 
         if settings.showTime {
-            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: 80 * scale))
-            rightY -= 130 * scale
+            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: valueFontSize * scale))
+            rightY += rightAdvance
         }
 
         if settings.showElevationGain {
-            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: 80 * scale))
-            rightY -= 130 * scale
+            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: valueFontSize * scale))
+            rightY += rightAdvance
         }
 
         if settings.showAltitude {
-            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: 80 * scale))
+            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: valueFontSize * scale))
         }
 
         let rightBackgroundRect = unionRect(for: rightMetricRects)
@@ -182,36 +191,36 @@ final class OverlayRenderer {
             drawMetricsBackground(ctx: ctx, rect: rightBackgroundRect)
         }
 
-        rightY = videoSize.height * 0.65 - 130 * scale
+        rightY = style.rightStartY(in: videoSize, scale: scale)
 
         if settings.showDistance {
             let current = dataPoint.distance.map { String(format: "%.1f", $0 / 1000.0) } ?? "--"
             let total = String(format: "%.1f KM", totalDistance / 1000.0)
             // Show as "X.X / Y.Y KM" on a single line to avoid visual confusion
             let distText = "\(current) / \(total)"
-            drawText(ctx: ctx, text: distText, x: rightX, y: rightY, fontSize: 68 * scale, color: white, bold: true)
-            rightY -= 120 * scale
+            drawText(ctx: ctx, text: distText, x: rightX, y: rightY, fontSize: distanceFontSize, color: white, bold: true)
+            rightY += rightDistanceAdvance
         }
 
         // TIME - right, below distance
         if settings.showTime {
             let value = formatElapsedTime(elapsedTime)
-            drawLabelValue(ctx: ctx, label: "TIME", value: value, x: rightX, y: rightY, labelColor: accentColor)
-            rightY -= 130 * scale
+            drawLabelValue(ctx: ctx, label: "TIME", value: value, x: rightX, y: rightY, labelColor: accentColor, valueSize: valueFontSize, labelSize: labelFontSize)
+            rightY += rightAdvance
         }
 
         // ELEV GAIN - right, below time
         if settings.showElevationGain {
             let gain = cumulativeElevationGain(upTo: dataPoint.distance)
             let value = String(format: "+%.0f m", gain)
-            drawLabelValue(ctx: ctx, label: "ELEV GAIN", value: value, x: rightX, y: rightY, labelColor: accentColor, valueColor: CGColor(red: 0.3, green: 0.8, blue: 0.3, alpha: 1))
-            rightY -= 130 * scale
+            drawLabelValue(ctx: ctx, label: "ELEV GAIN", value: value, x: rightX, y: rightY, labelColor: accentColor, valueSize: valueFontSize, valueColor: style.elevationColor, labelSize: labelFontSize)
+            rightY += rightAdvance
         }
 
         // ALTITUDE (current elevation) - right, below elev gain
         if settings.showAltitude {
             let value = dataPoint.altitude.map { String(format: "%.0f M", $0) } ?? "-- M"
-            drawLabelValue(ctx: ctx, label: "ALTITUDE", value: value, x: rightX, y: rightY, labelColor: accentColor)
+            drawLabelValue(ctx: ctx, label: "ALTITUDE", value: value, x: rightX, y: rightY, labelColor: accentColor, valueSize: valueFontSize, labelSize: labelFontSize)
         }
 
         // Elevation profile - directly under the top-right mini-map
@@ -264,32 +273,36 @@ final class OverlayRenderer {
         let altitudes = allDataPoints.compactMap { $0.altitude }
         guard let minAlt = altitudes.min(), let maxAlt = altitudes.max(), maxAlt > minAlt else { return }
 
-        // Match the mini-map geometry (top-right, 22% × 28%, 20pt margin).
-        let margin = 20 * scale
-        let mapWidth = videoSize.width * 0.22
-        let mapHeight = videoSize.height * 0.28
-        let mapBottom = videoSize.height - mapHeight - margin   // CG y of map's bottom edge
+        let style = renderStyle
+        let mapRect = self.mapRect()
+        let mapBottom = mapRect.minY
 
-        let topY = mapBottom - 12 * scale                       // just below the map
+        let topY = mapBottom - style.profileGap * scale         // just below the map
         // Clear the right metrics block. Its top edge is the union rect's maxY;
         // fall back to a safe default if no metrics are shown.
-        let bottomY = (metricsTopY ?? videoSize.height * 0.45) + 14 * scale
+        let clearanceBaseY: CGFloat
+        if style.mapPlacement == .topLeft {
+            clearanceBaseY = videoSize.height * 0.48
+        } else {
+            clearanceBaseY = metricsTopY ?? videoSize.height * 0.45
+        }
+        let bottomY = clearanceBaseY + style.profileBottomPadding * scale
         let availableHeight = topY - bottomY
         // Too little room (very short overlay) → skip rather than overlap.
         guard availableHeight >= 36 * scale else { return }
 
         let profileRect = CGRect(
-            x: videoSize.width - mapWidth - margin,
+            x: mapRect.minX,
             y: bottomY,
-            width: mapWidth,
+            width: mapRect.width,
             height: availableHeight
         )
 
         // Semi-transparent background
         ctx.saveGState()
         ctx.setShadow(offset: .zero, blur: 0)
-        ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.35))
-        let bgPath = CGPath(roundedRect: profileRect, cornerWidth: 6 * scale, cornerHeight: 6 * scale, transform: nil)
+        ctx.setFillColor(style.panelBackgroundColor)
+        let bgPath = CGPath(roundedRect: profileRect, cornerWidth: style.profileCornerRadius * scale, cornerHeight: style.profileCornerRadius * scale, transform: nil)
         ctx.addPath(bgPath)
         ctx.fillPath()
         ctx.restoreGState()
@@ -314,11 +327,11 @@ final class OverlayRenderer {
         }
         ctx.addLine(to: CGPoint(x: profileRect.maxX, y: profileRect.minY))
         ctx.closePath()
-        ctx.setFillColor(CGColor(red: 0.3, green: 0.8, blue: 0.3, alpha: 0.2))
+        ctx.setFillColor(style.elevationFillColor)
         ctx.fillPath()
 
         // Stroke the line
-        ctx.setStrokeColor(CGColor(red: 0.3, green: 0.8, blue: 0.3, alpha: 0.9))
+        ctx.setStrokeColor(style.elevationLineColor)
         ctx.setLineWidth(2 * scale)
         ctx.beginPath()
         for (i, dp) in pointsWithAlt.enumerated() {
@@ -356,25 +369,17 @@ final class OverlayRenderer {
     private func drawGPSTrack(ctx: CGContext, currentPoint: FITDataPoint) {
         guard trackCoordinates.count >= 2 else { return }
 
-        // Layout: match SwiftUI GPSTrackView (22% width, 28% height, top-right, 20pt margin).
-        let margin = 20 * scale
-        let mapWidth = videoSize.width * 0.22
-        let mapHeight = videoSize.height * 0.28
-        let mapRect = CGRect(
-            x: videoSize.width - mapWidth - margin,
-            y: videoSize.height - mapHeight - margin,
-            width: mapWidth,
-            height: mapHeight
-        )
+        let style = renderStyle
+        let mapRect = self.mapRect()
 
         // Background: semi-transparent black, 8pt corner radius
         ctx.saveGState()
         ctx.setShadow(offset: .zero, blur: 0)
-        ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.45))
+        ctx.setFillColor(style.mapBackgroundColor)
         let bgPath = CGPath(
             roundedRect: mapRect,
-            cornerWidth: 8 * scale,
-            cornerHeight: 8 * scale,
+            cornerWidth: style.mapCornerRadius * scale,
+            cornerHeight: style.mapCornerRadius * scale,
             transform: nil
         )
         ctx.addPath(bgPath)
@@ -441,13 +446,13 @@ final class OverlayRenderer {
 
         // Outline (black, alpha 0.5, 5pt)
         ctx.addPath(polyline)
-        ctx.setStrokeColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.5))
+        ctx.setStrokeColor(style.trackOutlineColor)
         ctx.setLineWidth(5 * scale)
         ctx.strokePath()
 
         // Foreground (cyan, 3pt)
         ctx.addPath(polyline)
-        ctx.setStrokeColor(CGColor(red: 0.0, green: 0.88, blue: 0.98, alpha: 1.0))
+        ctx.setStrokeColor(style.trackLineColor)
         ctx.setLineWidth(3 * scale)
         ctx.strokePath()
 
@@ -461,7 +466,7 @@ final class OverlayRenderer {
                 width: dotDiameter,
                 height: dotDiameter
             )
-            ctx.setFillColor(CGColor(red: 1.0, green: 0.2, blue: 0.15, alpha: 1.0))
+            ctx.setFillColor(style.mapDotColor)
             ctx.fillEllipse(in: dotRect)
             ctx.setStrokeColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
             ctx.setLineWidth(2.5 * scale)
@@ -471,11 +476,43 @@ final class OverlayRenderer {
         ctx.restoreGState()
     }
 
+    private func mapRect() -> CGRect {
+        let style = renderStyle
+        let margin = style.mapMargin * scale
+        let mapWidth = videoSize.width * style.mapWidthRatio
+        let mapHeight = videoSize.height * style.mapHeightRatio
+
+        let x: CGFloat
+        switch style.mapPlacement {
+        case .topLeft:
+            x = margin
+        case .topRight:
+            x = videoSize.width - mapWidth - margin
+        }
+
+        return CGRect(
+            x: x,
+            y: videoSize.height - mapHeight - margin,
+            width: mapWidth,
+            height: mapHeight
+        )
+    }
+
     // MARK: - Text helpers
 
-    private func drawLabelValue(ctx: CGContext, label: String, value: String, x: CGFloat, y: CGFloat, labelColor: CGColor, valueSize: CGFloat = 80, valueColor: CGColor? = nil) {
+    private func drawLabelValue(
+        ctx: CGContext,
+        label: String,
+        value: String,
+        x: CGFloat,
+        y: CGFloat,
+        labelColor: CGColor,
+        valueSize: CGFloat = 80,
+        valueColor: CGColor? = nil,
+        labelSize: CGFloat = 28
+    ) {
         // Label
-        drawText(ctx: ctx, text: label, x: x, y: y, fontSize: 28 * scale, color: labelColor, bold: true)
+        drawText(ctx: ctx, text: label, x: x, y: y, fontSize: labelSize * scale, color: labelColor, bold: true)
         // Value
         drawText(ctx: ctx, text: value, x: x, y: y - 70 * scale, fontSize: valueSize * scale, color: valueColor ?? white, bold: true)
     }
@@ -501,7 +538,7 @@ final class OverlayRenderer {
         CGRect(
             x: x - 18 * scale,
             y: y - 88 * scale,
-            width: 700 * scale,
+            width: 700 * scale * renderStyle.metricPanelWidthScale,
             height: valueSize + 62 * scale
         )
     }
@@ -511,7 +548,7 @@ final class OverlayRenderer {
         CGRect(
             x: x - 18 * scale,
             y: y - 18 * scale,
-            width: 600 * scale,
+            width: 600 * scale * renderStyle.distancePanelWidthScale,
             height: fontSize + 30 * scale
         )
     }
@@ -530,8 +567,8 @@ final class OverlayRenderer {
         ctx.setFillColor(metricsBackgroundColor)
         let path = CGPath(
             roundedRect: rect,
-            cornerWidth: 8 * scale,
-            cornerHeight: 8 * scale,
+            cornerWidth: renderStyle.metricsCornerRadius * scale,
+            cornerHeight: renderStyle.metricsCornerRadius * scale,
             transform: nil
         )
         ctx.addPath(path)
@@ -666,6 +703,292 @@ final class OverlayRenderer {
         else if temp >= 38.0 { return CGColor(red: 1, green: 0.8, blue: 0, alpha: 1) }
         else { return CGColor(red: 0.3, green: 0.8, blue: 0.3, alpha: 1) }
     }
+}
+
+private enum OverlayMapPlacement {
+    case topLeft
+    case topRight
+}
+
+private enum OverlayHorizontalPosition {
+    case left(CGFloat)
+    case right(CGFloat)
+    case proportion(CGFloat, offset: CGFloat)
+
+    func x(in width: CGFloat, scale: CGFloat) -> CGFloat {
+        switch self {
+        case .left(let offset):
+            return offset * scale
+        case .right(let inset):
+            return width - inset * scale
+        case .proportion(let fraction, let offset):
+            return width * fraction + offset * scale
+        }
+    }
+}
+
+private enum OverlayVerticalPosition {
+    case top(CGFloat)
+    case bottom(CGFloat)
+    case proportion(CGFloat, offset: CGFloat)
+
+    func y(in height: CGFloat, scale: CGFloat) -> CGFloat {
+        switch self {
+        case .top(let inset):
+            return height - inset * scale
+        case .bottom(let offset):
+            return offset * scale
+        case .proportion(let fraction, let offset):
+            return height * fraction + offset * scale
+        }
+    }
+}
+
+private struct OverlayPresetRenderStyle {
+    var accentColor: CGColor
+    var accentRed: CGColor
+    var shadowColor: CGColor
+    var metricsBackgroundColor: CGColor
+    var panelBackgroundColor: CGColor
+    var mapBackgroundColor: CGColor
+    var elevationColor: CGColor
+    var elevationLineColor: CGColor
+    var elevationFillColor: CGColor
+    var trackOutlineColor: CGColor
+    var trackLineColor: CGColor
+    var mapDotColor: CGColor
+    var labelFontSize: CGFloat
+    var valueFontSize: CGFloat
+    var distanceFontSize: CGFloat
+    var leftXPosition: OverlayHorizontalPosition
+    var leftStartYPosition: OverlayVerticalPosition
+    var rightXPosition: OverlayHorizontalPosition
+    var rightStartYPosition: OverlayVerticalPosition
+    var leftMetricAdvance: CGFloat
+    var rightDistanceAdvance: CGFloat
+    var rightMetricAdvance: CGFloat
+    var metricPanelWidthScale: CGFloat
+    var distancePanelWidthScale: CGFloat
+    var metricsCornerRadius: CGFloat
+    var mapWidthRatio: CGFloat
+    var mapHeightRatio: CGFloat
+    var mapMargin: CGFloat
+    var mapCornerRadius: CGFloat
+    var mapPlacement: OverlayMapPlacement
+    var profileGap: CGFloat
+    var profileBottomPadding: CGFloat
+    var profileCornerRadius: CGFloat
+
+    func leftX(in videoSize: CGSize, scale: CGFloat) -> CGFloat {
+        leftXPosition.x(in: videoSize.width, scale: scale)
+    }
+
+    func leftStartY(in videoSize: CGSize, scale: CGFloat) -> CGFloat {
+        leftStartYPosition.y(in: videoSize.height, scale: scale)
+    }
+
+    func rightX(in videoSize: CGSize, scale: CGFloat) -> CGFloat {
+        rightXPosition.x(in: videoSize.width, scale: scale)
+    }
+
+    func rightStartY(in videoSize: CGSize, scale: CGFloat) -> CGFloat {
+        rightStartYPosition.y(in: videoSize.height, scale: scale)
+    }
+}
+
+private extension OverlayPreset {
+    var renderStyle: OverlayPresetRenderStyle {
+        switch self {
+        case .defaultPreset:
+            return OverlayPresetRenderStyle(
+                accentColor: overlayColor(1.0, 0.45, 0.1, 1),
+                accentRed: overlayColor(1.0, 0.2, 0.15, 1),
+                shadowColor: overlayColor(0, 0, 0, 0.7),
+                metricsBackgroundColor: overlayColor(0, 0, 0, 0.45),
+                panelBackgroundColor: overlayColor(0, 0, 0, 0.35),
+                mapBackgroundColor: overlayColor(0, 0, 0, 0.45),
+                elevationColor: overlayColor(0.3, 0.8, 0.3, 1),
+                elevationLineColor: overlayColor(0.3, 0.8, 0.3, 0.9),
+                elevationFillColor: overlayColor(0.3, 0.8, 0.3, 0.2),
+                trackOutlineColor: overlayColor(0, 0, 0, 0.5),
+                trackLineColor: overlayColor(0.0, 0.88, 0.98, 1.0),
+                mapDotColor: overlayColor(1.0, 0.2, 0.15, 1.0),
+                labelFontSize: 28,
+                valueFontSize: 80,
+                distanceFontSize: 68,
+                leftXPosition: .left(50),
+                leftStartYPosition: .top(50),
+                rightXPosition: .right(450),
+                rightStartYPosition: .proportion(0.65, offset: -130),
+                leftMetricAdvance: -130,
+                rightDistanceAdvance: -120,
+                rightMetricAdvance: -130,
+                metricPanelWidthScale: 1,
+                distancePanelWidthScale: 1,
+                metricsCornerRadius: 8,
+                mapWidthRatio: 0.22,
+                mapHeightRatio: 0.28,
+                mapMargin: 20,
+                mapCornerRadius: 8,
+                mapPlacement: .topRight,
+                profileGap: 12,
+                profileBottomPadding: 14,
+                profileCornerRadius: 6
+            )
+
+        case .compact:
+            return OverlayPresetRenderStyle(
+                accentColor: overlayColor(0.0, 0.78, 1.0, 1),
+                accentRed: overlayColor(1.0, 0.25, 0.18, 1),
+                shadowColor: overlayColor(0, 0, 0, 0.75),
+                metricsBackgroundColor: overlayColor(0.02, 0.04, 0.05, 0.38),
+                panelBackgroundColor: overlayColor(0.02, 0.04, 0.05, 0.32),
+                mapBackgroundColor: overlayColor(0.02, 0.04, 0.05, 0.4),
+                elevationColor: overlayColor(0.58, 0.95, 0.36, 1),
+                elevationLineColor: overlayColor(0.58, 0.95, 0.36, 0.9),
+                elevationFillColor: overlayColor(0.58, 0.95, 0.36, 0.18),
+                trackOutlineColor: overlayColor(0, 0, 0, 0.55),
+                trackLineColor: overlayColor(0.0, 0.95, 1.0, 1),
+                mapDotColor: overlayColor(1.0, 0.24, 0.18, 1),
+                labelFontSize: 22,
+                valueFontSize: 58,
+                distanceFontSize: 50,
+                leftXPosition: .left(36),
+                leftStartYPosition: .top(38),
+                rightXPosition: .right(360),
+                rightStartYPosition: .proportion(0.62, offset: -92),
+                leftMetricAdvance: -96,
+                rightDistanceAdvance: -86,
+                rightMetricAdvance: -96,
+                metricPanelWidthScale: 0.82,
+                distancePanelWidthScale: 0.84,
+                metricsCornerRadius: 6,
+                mapWidthRatio: 0.18,
+                mapHeightRatio: 0.22,
+                mapMargin: 18,
+                mapCornerRadius: 6,
+                mapPlacement: .topRight,
+                profileGap: 10,
+                profileBottomPadding: 12,
+                profileCornerRadius: 5
+            )
+
+        case .highContrast:
+            return OverlayPresetRenderStyle(
+                accentColor: overlayColor(1.0, 0.84, 0.0, 1),
+                accentRed: overlayColor(1.0, 0.12, 0.1, 1),
+                shadowColor: overlayColor(0, 0, 0, 0.9),
+                metricsBackgroundColor: overlayColor(0, 0, 0, 0.72),
+                panelBackgroundColor: overlayColor(0, 0, 0, 0.62),
+                mapBackgroundColor: overlayColor(0, 0, 0, 0.68),
+                elevationColor: overlayColor(0.62, 1.0, 0.32, 1),
+                elevationLineColor: overlayColor(0.62, 1.0, 0.32, 1),
+                elevationFillColor: overlayColor(0.62, 1.0, 0.32, 0.24),
+                trackOutlineColor: overlayColor(0, 0, 0, 0.9),
+                trackLineColor: overlayColor(1, 1, 1, 1),
+                mapDotColor: overlayColor(1.0, 0.12, 0.1, 1),
+                labelFontSize: 30,
+                valueFontSize: 84,
+                distanceFontSize: 70,
+                leftXPosition: .left(50),
+                leftStartYPosition: .top(52),
+                rightXPosition: .right(470),
+                rightStartYPosition: .proportion(0.65, offset: -132),
+                leftMetricAdvance: -134,
+                rightDistanceAdvance: -124,
+                rightMetricAdvance: -134,
+                metricPanelWidthScale: 1.04,
+                distancePanelWidthScale: 1.04,
+                metricsCornerRadius: 4,
+                mapWidthRatio: 0.22,
+                mapHeightRatio: 0.28,
+                mapMargin: 20,
+                mapCornerRadius: 4,
+                mapPlacement: .topRight,
+                profileGap: 12,
+                profileBottomPadding: 14,
+                profileCornerRadius: 4
+            )
+
+        case .lowerThird:
+            return OverlayPresetRenderStyle(
+                accentColor: overlayColor(0.0, 0.9, 0.85, 1),
+                accentRed: overlayColor(1.0, 0.22, 0.16, 1),
+                shadowColor: overlayColor(0, 0, 0, 0.78),
+                metricsBackgroundColor: overlayColor(0.01, 0.02, 0.02, 0.52),
+                panelBackgroundColor: overlayColor(0.01, 0.02, 0.02, 0.42),
+                mapBackgroundColor: overlayColor(0.01, 0.02, 0.02, 0.46),
+                elevationColor: overlayColor(0.92, 0.95, 0.34, 1),
+                elevationLineColor: overlayColor(0.92, 0.95, 0.34, 0.9),
+                elevationFillColor: overlayColor(0.92, 0.95, 0.34, 0.2),
+                trackOutlineColor: overlayColor(0, 0, 0, 0.6),
+                trackLineColor: overlayColor(0.0, 0.92, 0.86, 1),
+                mapDotColor: overlayColor(1.0, 0.22, 0.16, 1),
+                labelFontSize: 22,
+                valueFontSize: 58,
+                distanceFontSize: 48,
+                leftXPosition: .left(50),
+                leftStartYPosition: .bottom(232),
+                rightXPosition: .right(670),
+                rightStartYPosition: .bottom(232),
+                leftMetricAdvance: 96,
+                rightDistanceAdvance: 94,
+                rightMetricAdvance: 96,
+                metricPanelWidthScale: 0.82,
+                distancePanelWidthScale: 0.9,
+                metricsCornerRadius: 8,
+                mapWidthRatio: 0.20,
+                mapHeightRatio: 0.25,
+                mapMargin: 20,
+                mapCornerRadius: 8,
+                mapPlacement: .topRight,
+                profileGap: 12,
+                profileBottomPadding: 14,
+                profileCornerRadius: 6
+            )
+
+        case .mapLeft:
+            return OverlayPresetRenderStyle(
+                accentColor: overlayColor(1.0, 0.52, 0.12, 1),
+                accentRed: overlayColor(1.0, 0.2, 0.15, 1),
+                shadowColor: overlayColor(0, 0, 0, 0.76),
+                metricsBackgroundColor: overlayColor(0, 0, 0, 0.48),
+                panelBackgroundColor: overlayColor(0, 0, 0, 0.38),
+                mapBackgroundColor: overlayColor(0, 0, 0, 0.48),
+                elevationColor: overlayColor(0.35, 0.86, 0.38, 1),
+                elevationLineColor: overlayColor(0.35, 0.86, 0.38, 0.92),
+                elevationFillColor: overlayColor(0.35, 0.86, 0.38, 0.2),
+                trackOutlineColor: overlayColor(0, 0, 0, 0.56),
+                trackLineColor: overlayColor(0.0, 0.84, 1.0, 1),
+                mapDotColor: overlayColor(1.0, 0.2, 0.15, 1),
+                labelFontSize: 24,
+                valueFontSize: 64,
+                distanceFontSize: 54,
+                leftXPosition: .left(50),
+                leftStartYPosition: .proportion(0.43, offset: 0),
+                rightXPosition: .right(450),
+                rightStartYPosition: .proportion(0.58, offset: 0),
+                leftMetricAdvance: -108,
+                rightDistanceAdvance: -98,
+                rightMetricAdvance: -108,
+                metricPanelWidthScale: 0.9,
+                distancePanelWidthScale: 0.9,
+                metricsCornerRadius: 8,
+                mapWidthRatio: 0.22,
+                mapHeightRatio: 0.28,
+                mapMargin: 20,
+                mapCornerRadius: 8,
+                mapPlacement: .topLeft,
+                profileGap: 12,
+                profileBottomPadding: 14,
+                profileCornerRadius: 6
+            )
+        }
+    }
+}
+
+private func overlayColor(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat, _ alpha: CGFloat) -> CGColor {
+    CGColor(red: red, green: green, blue: blue, alpha: alpha)
 }
 
 private extension TextOverlay.FontWeight {

@@ -1,7 +1,29 @@
 import Foundation
 
+/// Built-in visual styles for the burned-in activity overlay.
+enum OverlayPreset: String, CaseIterable, Codable, Identifiable {
+    case defaultPreset = "default"
+    case compact
+    case highContrast
+    case lowerThird
+    case mapLeft
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .defaultPreset: return "デフォルト"
+        case .compact: return "コンパクト"
+        case .highContrast: return "高コントラスト"
+        case .lowerThird: return "ローワーサード"
+        case .mapLeft: return "マップ左"
+        }
+    }
+}
+
 /// Configuration for which overlay elements to display.
 final class OverlaySettings: ObservableObject {
+    @Published var overlayPreset: OverlayPreset = .defaultPreset
     @Published var showTime = true
     @Published var showDistance = true
     @Published var showHeartRate = true
@@ -30,6 +52,7 @@ final class OverlaySettings: ObservableObject {
     /// Immutable export workers should not share the live SwiftUI settings object.
     func snapshot() -> OverlaySettings {
         let copy = OverlaySettings()
+        copy.overlayPreset = overlayPreset
         copy.showTime = showTime
         copy.showDistance = showDistance
         copy.showHeartRate = showHeartRate
