@@ -1160,12 +1160,15 @@ final class PreviewViewModel: ObservableObject {
     }
 
     private func setupProjectEditedObservers() {
+        let textOverlayEdits = $textOverlays.dropFirst().map { _ in () }.eraseToAnyPublisher()
+        let overlaySettingEdits = overlaySettings.objectWillChange.map { _ in () }.eraseToAnyPublisher()
+        let overlayEditPublishers: [AnyPublisher<Void, Never>] = [textOverlayEdits, overlaySettingEdits]
         let editedPublishers: [AnyPublisher<Void, Never>] = [
             $syncOffset.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             $trimSettings.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            $textOverlays.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            textOverlayEdits,
             $chapterMarkers.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            overlaySettings.objectWillChange.map { _ in () }.eraseToAnyPublisher()
+            overlaySettingEdits
         ]
 
         Publishers.MergeMany(editedPublishers)
@@ -1173,10 +1176,22 @@ final class PreviewViewModel: ObservableObject {
                 self?.markProjectEdited()
             }
             .store(in: &projectEditedCancellables)
+
+        Publishers.MergeMany(overlayEditPublishers)
+            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .sink { [weak self] in
+                self?.refreshOverlayAfterEdit()
+            }
+            .store(in: &projectEditedCancellables)
     }
 
     private func markProjectEdited() {
         isProjectEdited = true
+    }
+
+    private func refreshOverlayAfterEdit() {
+        overlayRenderer?.textOverlays = textOverlays
+        updateOverlay()
     }
 
     private func setupTimeObserver() {
