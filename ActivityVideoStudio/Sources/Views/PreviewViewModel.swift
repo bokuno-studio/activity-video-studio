@@ -12,6 +12,17 @@ struct UserFacingAlert: Identifiable {
     let message: String
 }
 
+/// Lightweight preview-only overlay state. The preview renders this as live SwiftUI
+/// layers; export still burns overlays with `OverlayRenderer`.
+struct LivePreviewOverlayFrame {
+    let dataPoint: FITDataPoint
+    let elapsedTime: TimeInterval
+    let globalPlaybackTime: TimeInterval
+    let fitRecordingActive: Bool
+    let currentElevationGain: Double
+    let totalDistance: Double
+}
+
 #if DEBUG
 /// Append a line to /tmp/avs_export.log and stderr. Nonisolated so @Sendable closures can call it.
 func autoExportLog(_ msg: String) {
@@ -32,7 +43,7 @@ final class PreviewViewModel: ObservableObject {
     @Published var currentTime: TimeInterval = 0
     @Published var isSeeking = false
     @Published var duration: TimeInterval = 0
-    @Published var overlayImage: CGImage?
+    @Published var liveOverlayFrame: LivePreviewOverlayFrame?
     @Published var fitLoaded = false
     @Published var videoLoaded = false
     @Published var syncOffset: Double = 0
@@ -483,7 +494,7 @@ final class PreviewViewModel: ObservableObject {
         currentTime = 0
         isSeeking = false
         duration = 0
-        overlayImage = nil
+        liveOverlayFrame = nil
         currentCoordinate = nil
         trackCoordinates = []
         fitDataPoints = []
@@ -759,7 +770,7 @@ final class PreviewViewModel: ObservableObject {
             player.replaceCurrentItem(with: nil)
             duration = 0
             currentTime = 0
-            overlayImage = nil
+            liveOverlayFrame = nil
             overlayRenderer = nil
         }
         markProjectEdited()
@@ -1126,7 +1137,7 @@ final class PreviewViewModel: ObservableObject {
         vm.timeSync = timeSync
         overlayRenderer?.textOverlays = textOverlays
         overlayRenderer?.trackCoordinates = trackCoordinates
-        vm.overlayRenderer = overlayRenderer
+        vm.overlayRenderer = overlayRenderer?.makeExportCopy()
         vm.onDismiss = { [weak self] in
             self?.showExport = false
         }
@@ -1191,7 +1202,6 @@ final class PreviewViewModel: ObservableObject {
 
     private func refreshOverlayAfterEdit() {
         overlayRenderer?.textOverlays = textOverlays
-        updateOverlay()
     }
 
     private func setupTimeObserver() {
@@ -1209,7 +1219,7 @@ final class PreviewViewModel: ObservableObject {
         guard let timeSync = timeSync,
               let renderer = overlayRenderer,
               !timeSync.segments.isEmpty else {
-            overlayImage = nil
+            liveOverlayFrame = nil
             currentCoordinate = nil
             return
         }
@@ -1220,10 +1230,21 @@ final class PreviewViewModel: ObservableObject {
         if let dataPoint = timeSync.dataPoint(segmentIndex: segmentIndex, playbackTime: segmentPlaybackTime),
            let elapsed = timeSync.elapsedTime(segmentIndex: segmentIndex, playbackTime: segmentPlaybackTime) {
             // Check if FIT recording is active (elapsed > 0 means past FIT start)
-            renderer.fitRecordingActive = elapsed >= 0 && (dataPoint.distance ?? 0) > 0
+            let fitRecordingActive = elapsed >= 0 && (dataPoint.distance ?? 0) > 0
+            renderer.fitRecordingActive = fitRecordingActive
             renderer.textOverlays = textOverlays
-            overlayImage = renderer.render(dataPoint: dataPoint, elapsedTime: elapsed, globalPlaybackTime: trimmedPlaybackTime())
+            liveOverlayFrame = LivePreviewOverlayFrame(
+                dataPoint: dataPoint,
+                elapsedTime: elapsed,
+                globalPlaybackTime: trimmedPlaybackTime(),
+                fitRecordingActive: fitRecordingActive,
+                currentElevationGain: renderer.cumulativeElevationGain(upTo: dataPoint.distance),
+                totalDistance: renderer.totalDistance
+            )
             currentCoordinate = dataPoint.coordinate
+        } else {
+            liveOverlayFrame = nil
+            currentCoordinate = nil
         }
     }
 
