@@ -160,13 +160,14 @@ struct PreviewView: View {
                 viewModel.seekBy(delta)
             }
                 .aspectRatio(16/9, contentMode: .fit)
-                // Single source of truth for the overlay: OverlayView shows the
-                // exact image OverlayRenderer burns into the export (mini-map,
-                // metrics, elevation profile included). The old SwiftUI
-                // GPSTrackView drew a second map on top, so the preview showed
-                // two overlapping maps that didn't match the export.
                 .overlay {
-                    OverlayView(overlayImage: viewModel.overlayImage)
+                    LivePreviewOverlayView(
+                        frame: viewModel.liveOverlayFrame,
+                        settings: viewModel.overlaySettings,
+                        allDataPoints: viewModel.fitDataPoints,
+                        trackCoordinates: viewModel.trackCoordinates,
+                        textOverlays: viewModel.textOverlays
+                    )
                         .allowsHitTesting(false)
                 }
                 .overlay {

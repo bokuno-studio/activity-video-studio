@@ -705,12 +705,12 @@ final class OverlayRenderer {
     }
 }
 
-private enum OverlayMapPlacement {
+enum OverlayMapPlacement {
     case topLeft
     case topRight
 }
 
-private enum OverlayHorizontalPosition {
+enum OverlayHorizontalPosition {
     case left(CGFloat)
     case right(CGFloat)
     case proportion(CGFloat, offset: CGFloat)
@@ -727,7 +727,7 @@ private enum OverlayHorizontalPosition {
     }
 }
 
-private enum OverlayVerticalPosition {
+enum OverlayVerticalPosition {
     case top(CGFloat)
     case bottom(CGFloat)
     case proportion(CGFloat, offset: CGFloat)
@@ -744,7 +744,7 @@ private enum OverlayVerticalPosition {
     }
 }
 
-private struct OverlayPresetRenderStyle {
+struct OverlayPresetRenderStyle {
     var accentColor: CGColor
     var accentRed: CGColor
     var shadowColor: CGColor
@@ -796,7 +796,7 @@ private struct OverlayPresetRenderStyle {
     }
 }
 
-private extension OverlayPreset {
+extension OverlayPreset {
     var renderStyle: OverlayPresetRenderStyle {
         switch self {
         case .defaultPreset:
@@ -987,7 +987,7 @@ private extension OverlayPreset {
     }
 }
 
-private func overlayColor(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat, _ alpha: CGFloat) -> CGColor {
+func overlayColor(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat, _ alpha: CGFloat) -> CGColor {
     CGColor(red: red, green: green, blue: blue, alpha: alpha)
 }
 
