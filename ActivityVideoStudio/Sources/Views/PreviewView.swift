@@ -742,52 +742,17 @@ private struct TextOverlayPlacementLayer: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.coordinateSpaceName))
-                            .onChanged { value in
-                                guard let selectedOverlayID else { return }
-                                moveOverlay(id: selectedOverlayID, to: value.location, in: geometry.size)
-                            }
-                    )
-
-                ForEach(overlays) { overlay in
-                    placementHandle(for: overlay, in: geometry.size)
-                }
-            }
-            .coordinateSpace(name: Self.coordinateSpaceName)
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.coordinateSpaceName))
+                        .onChanged { value in
+                            guard let selectedOverlayID else { return }
+                            moveOverlay(id: selectedOverlayID, to: value.location, in: geometry.size)
+                        }
+                )
+                .coordinateSpace(name: Self.coordinateSpaceName)
         }
-    }
-
-    @ViewBuilder
-    private func placementHandle(for overlay: TextOverlay, in size: CGSize) -> some View {
-        let selected = selectedOverlayID == overlay.id
-        let diameter: CGFloat = selected ? 20 : 14
-
-        Circle()
-            .fill(selected ? Color.accentColor : Color.white.opacity(0.85))
-            .frame(width: diameter, height: diameter)
-            .overlay {
-                Circle()
-                    .stroke(Color.black.opacity(0.65), lineWidth: 1.5)
-            }
-            .shadow(color: .black.opacity(0.3), radius: 3, x: 0, y: 1)
-            .position(
-                x: min(max(overlay.relativeX, 0), 1) * size.width,
-                y: min(max(overlay.relativeY, 0), 1) * size.height
-            )
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.coordinateSpaceName))
-                    .onChanged { value in
-                        selectedOverlayID = overlay.id
-                        moveOverlay(id: overlay.id, to: value.location, in: size)
-                    }
-            )
-            .accessibilityLabel("テキスト位置")
-            .accessibilityValue(selected ? "選択中" : "未選択")
     }
 
     private func moveOverlay(id: TextOverlay.ID, to point: CGPoint, in size: CGSize) {
