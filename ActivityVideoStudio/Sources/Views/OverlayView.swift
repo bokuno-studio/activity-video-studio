@@ -53,7 +53,7 @@ private struct LiveActivityDataLayer: View {
     let scale: CGFloat
 
     private var style: OverlayPresetRenderStyle {
-        settings.overlayPreset.renderStyle
+        settings.selectedRenderStyle
     }
 
     var body: some View {

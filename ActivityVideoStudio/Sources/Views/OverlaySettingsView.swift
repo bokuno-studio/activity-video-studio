@@ -3,6 +3,18 @@ import SwiftUI
 /// Settings panel for overlay configuration.
 struct OverlaySettingsView: View {
     @ObservedObject var settings: OverlaySettings
+    let onImportTheme: () -> Void
+    let onExportTheme: () -> Void
+
+    init(
+        settings: OverlaySettings,
+        onImportTheme: @escaping () -> Void = {},
+        onExportTheme: @escaping () -> Void = {}
+    ) {
+        self.settings = settings
+        self.onImportTheme = onImportTheme
+        self.onExportTheme = onExportTheme
+    }
 
     var body: some View {
         Form {
@@ -24,12 +36,29 @@ struct OverlaySettingsView: View {
             }
 
             Section("外観") {
-                Picker("プリセット", selection: $settings.overlayPreset) {
-                    ForEach(OverlayPreset.allCases) { preset in
-                        Text(preset.title).tag(preset)
+                Picker("テーマ", selection: selectedThemeBinding) {
+                    ForEach(settings.availableThemes) { theme in
+                        Text(themeLabel(for: theme)).tag(theme.id)
                     }
                 }
                 .pickerStyle(.menu)
+
+                HStack {
+                    Button {
+                        onImportTheme()
+                    } label: {
+                        Label("読み込み", systemImage: "tray.and.arrow.down")
+                    }
+                    .help(".avstheme を読み込み")
+
+                    Button {
+                        onExportTheme()
+                    } label: {
+                        Label("書き出し", systemImage: "square.and.arrow.up")
+                    }
+                    .help("選択中テーマを .avstheme として保存")
+                }
+                .controlSize(.small)
 
                 LabeledContent("透明度") {
                     Slider(value: $settings.overlayOpacity, in: 0.3...1.0, step: 0.05)
@@ -56,6 +85,17 @@ struct OverlaySettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var selectedThemeBinding: Binding<String> {
+        Binding(
+            get: { settings.selectedThemeID },
+            set: { settings.selectTheme(id: $0) }
+        )
+    }
+
+    private func themeLabel(for theme: OverlayTheme) -> String {
+        theme.isBuiltIn ? theme.displayName : "\(theme.displayName)（ユーザー）"
     }
 
     private func zoneStepper(_ title: String, value: Binding<Int>) -> some View {

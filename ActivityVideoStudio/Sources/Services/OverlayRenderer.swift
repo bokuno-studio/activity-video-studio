@@ -43,7 +43,7 @@ final class OverlayRenderer {
     var totalElevationGain: Double { elevationGainCache.last ?? 0 }
 
     // Colors
-    private var renderStyle: OverlayPresetRenderStyle { settings.overlayPreset.renderStyle }
+    private var renderStyle: OverlayPresetRenderStyle { settings.selectedRenderStyle }
     private var accentColor: CGColor { renderStyle.accentColor }
     private var accentRed: CGColor { renderStyle.accentRed }
     private let white = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
@@ -705,15 +705,61 @@ final class OverlayRenderer {
     }
 }
 
-enum OverlayMapPlacement {
+enum OverlayMapPlacement: String, Codable {
     case topLeft
     case topRight
 }
 
-enum OverlayHorizontalPosition {
+enum OverlayHorizontalPosition: Codable {
     case left(CGFloat)
     case right(CGFloat)
     case proportion(CGFloat, offset: CGFloat)
+
+    private enum CodingKeys: String, CodingKey {
+        case anchor
+        case fraction
+        case offset
+    }
+
+    private enum Anchor: String, Codable {
+        case left
+        case right
+        case proportion
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let anchor = try container.decode(Anchor.self, forKey: .anchor)
+
+        switch anchor {
+        case .left:
+            self = .left(try container.decode(CGFloat.self, forKey: .offset))
+        case .right:
+            self = .right(try container.decode(CGFloat.self, forKey: .offset))
+        case .proportion:
+            self = .proportion(
+                try container.decode(CGFloat.self, forKey: .fraction),
+                offset: try container.decodeIfPresent(CGFloat.self, forKey: .offset) ?? 0
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        switch self {
+        case .left(let offset):
+            try container.encode(Anchor.left, forKey: .anchor)
+            try container.encode(offset, forKey: .offset)
+        case .right(let offset):
+            try container.encode(Anchor.right, forKey: .anchor)
+            try container.encode(offset, forKey: .offset)
+        case .proportion(let fraction, let offset):
+            try container.encode(Anchor.proportion, forKey: .anchor)
+            try container.encode(fraction, forKey: .fraction)
+            try container.encode(offset, forKey: .offset)
+        }
+    }
 
     func x(in width: CGFloat, scale: CGFloat) -> CGFloat {
         switch self {
@@ -727,10 +773,56 @@ enum OverlayHorizontalPosition {
     }
 }
 
-enum OverlayVerticalPosition {
+enum OverlayVerticalPosition: Codable {
     case top(CGFloat)
     case bottom(CGFloat)
     case proportion(CGFloat, offset: CGFloat)
+
+    private enum CodingKeys: String, CodingKey {
+        case anchor
+        case fraction
+        case offset
+    }
+
+    private enum Anchor: String, Codable {
+        case top
+        case bottom
+        case proportion
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let anchor = try container.decode(Anchor.self, forKey: .anchor)
+
+        switch anchor {
+        case .top:
+            self = .top(try container.decode(CGFloat.self, forKey: .offset))
+        case .bottom:
+            self = .bottom(try container.decode(CGFloat.self, forKey: .offset))
+        case .proportion:
+            self = .proportion(
+                try container.decode(CGFloat.self, forKey: .fraction),
+                offset: try container.decodeIfPresent(CGFloat.self, forKey: .offset) ?? 0
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        switch self {
+        case .top(let offset):
+            try container.encode(Anchor.top, forKey: .anchor)
+            try container.encode(offset, forKey: .offset)
+        case .bottom(let offset):
+            try container.encode(Anchor.bottom, forKey: .anchor)
+            try container.encode(offset, forKey: .offset)
+        case .proportion(let fraction, let offset):
+            try container.encode(Anchor.proportion, forKey: .anchor)
+            try container.encode(fraction, forKey: .fraction)
+            try container.encode(offset, forKey: .offset)
+        }
+    }
 
     func y(in height: CGFloat, scale: CGFloat) -> CGFloat {
         switch self {
@@ -744,7 +836,7 @@ enum OverlayVerticalPosition {
     }
 }
 
-struct OverlayPresetRenderStyle {
+struct OverlayPresetRenderStyle: Codable {
     var accentColor: CGColor
     var accentRed: CGColor
     var shadowColor: CGColor
@@ -793,6 +885,153 @@ struct OverlayPresetRenderStyle {
 
     func rightStartY(in videoSize: CGSize, scale: CGFloat) -> CGFloat {
         rightStartYPosition.y(in: videoSize.height, scale: scale)
+    }
+}
+
+private struct OverlayThemeColor: Codable {
+    var red: Double
+    var green: Double
+    var blue: Double
+    var alpha: Double
+
+    init(red: Double, green: Double, blue: Double, alpha: Double) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+        self.alpha = alpha
+    }
+
+    init(_ color: CGColor) {
+        let nsColor = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) ?? .black
+        red = Double(nsColor.redComponent)
+        green = Double(nsColor.greenComponent)
+        blue = Double(nsColor.blueComponent)
+        alpha = Double(nsColor.alphaComponent)
+    }
+
+    var cgColor: CGColor {
+        CGColor(
+            red: clampedCGFloat(red),
+            green: clampedCGFloat(green),
+            blue: clampedCGFloat(blue),
+            alpha: clampedCGFloat(alpha)
+        )
+    }
+
+    private func clampedCGFloat(_ value: Double) -> CGFloat {
+        CGFloat(min(max(value, 0), 1))
+    }
+}
+
+extension OverlayPresetRenderStyle {
+    private enum CodingKeys: String, CodingKey {
+        case accentColor
+        case accentRed
+        case shadowColor
+        case metricsBackgroundColor
+        case panelBackgroundColor
+        case mapBackgroundColor
+        case elevationColor
+        case elevationLineColor
+        case elevationFillColor
+        case trackOutlineColor
+        case trackLineColor
+        case mapDotColor
+        case labelFontSize
+        case valueFontSize
+        case distanceFontSize
+        case leftXPosition
+        case leftStartYPosition
+        case rightXPosition
+        case rightStartYPosition
+        case leftMetricAdvance
+        case rightDistanceAdvance
+        case rightMetricAdvance
+        case metricPanelWidthScale
+        case distancePanelWidthScale
+        case metricsCornerRadius
+        case mapWidthRatio
+        case mapHeightRatio
+        case mapMargin
+        case mapCornerRadius
+        case mapPlacement
+        case profileGap
+        case profileBottomPadding
+        case profileCornerRadius
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accentColor = try container.decode(OverlayThemeColor.self, forKey: .accentColor).cgColor
+        accentRed = try container.decode(OverlayThemeColor.self, forKey: .accentRed).cgColor
+        shadowColor = try container.decode(OverlayThemeColor.self, forKey: .shadowColor).cgColor
+        metricsBackgroundColor = try container.decode(OverlayThemeColor.self, forKey: .metricsBackgroundColor).cgColor
+        panelBackgroundColor = try container.decode(OverlayThemeColor.self, forKey: .panelBackgroundColor).cgColor
+        mapBackgroundColor = try container.decode(OverlayThemeColor.self, forKey: .mapBackgroundColor).cgColor
+        elevationColor = try container.decode(OverlayThemeColor.self, forKey: .elevationColor).cgColor
+        elevationLineColor = try container.decode(OverlayThemeColor.self, forKey: .elevationLineColor).cgColor
+        elevationFillColor = try container.decode(OverlayThemeColor.self, forKey: .elevationFillColor).cgColor
+        trackOutlineColor = try container.decode(OverlayThemeColor.self, forKey: .trackOutlineColor).cgColor
+        trackLineColor = try container.decode(OverlayThemeColor.self, forKey: .trackLineColor).cgColor
+        mapDotColor = try container.decode(OverlayThemeColor.self, forKey: .mapDotColor).cgColor
+        labelFontSize = try container.decode(CGFloat.self, forKey: .labelFontSize)
+        valueFontSize = try container.decode(CGFloat.self, forKey: .valueFontSize)
+        distanceFontSize = try container.decode(CGFloat.self, forKey: .distanceFontSize)
+        leftXPosition = try container.decode(OverlayHorizontalPosition.self, forKey: .leftXPosition)
+        leftStartYPosition = try container.decode(OverlayVerticalPosition.self, forKey: .leftStartYPosition)
+        rightXPosition = try container.decode(OverlayHorizontalPosition.self, forKey: .rightXPosition)
+        rightStartYPosition = try container.decode(OverlayVerticalPosition.self, forKey: .rightStartYPosition)
+        leftMetricAdvance = try container.decode(CGFloat.self, forKey: .leftMetricAdvance)
+        rightDistanceAdvance = try container.decode(CGFloat.self, forKey: .rightDistanceAdvance)
+        rightMetricAdvance = try container.decode(CGFloat.self, forKey: .rightMetricAdvance)
+        metricPanelWidthScale = try container.decode(CGFloat.self, forKey: .metricPanelWidthScale)
+        distancePanelWidthScale = try container.decode(CGFloat.self, forKey: .distancePanelWidthScale)
+        metricsCornerRadius = try container.decode(CGFloat.self, forKey: .metricsCornerRadius)
+        mapWidthRatio = try container.decode(CGFloat.self, forKey: .mapWidthRatio)
+        mapHeightRatio = try container.decode(CGFloat.self, forKey: .mapHeightRatio)
+        mapMargin = try container.decode(CGFloat.self, forKey: .mapMargin)
+        mapCornerRadius = try container.decode(CGFloat.self, forKey: .mapCornerRadius)
+        mapPlacement = try container.decode(OverlayMapPlacement.self, forKey: .mapPlacement)
+        profileGap = try container.decode(CGFloat.self, forKey: .profileGap)
+        profileBottomPadding = try container.decode(CGFloat.self, forKey: .profileBottomPadding)
+        profileCornerRadius = try container.decode(CGFloat.self, forKey: .profileCornerRadius)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(OverlayThemeColor(accentColor), forKey: .accentColor)
+        try container.encode(OverlayThemeColor(accentRed), forKey: .accentRed)
+        try container.encode(OverlayThemeColor(shadowColor), forKey: .shadowColor)
+        try container.encode(OverlayThemeColor(metricsBackgroundColor), forKey: .metricsBackgroundColor)
+        try container.encode(OverlayThemeColor(panelBackgroundColor), forKey: .panelBackgroundColor)
+        try container.encode(OverlayThemeColor(mapBackgroundColor), forKey: .mapBackgroundColor)
+        try container.encode(OverlayThemeColor(elevationColor), forKey: .elevationColor)
+        try container.encode(OverlayThemeColor(elevationLineColor), forKey: .elevationLineColor)
+        try container.encode(OverlayThemeColor(elevationFillColor), forKey: .elevationFillColor)
+        try container.encode(OverlayThemeColor(trackOutlineColor), forKey: .trackOutlineColor)
+        try container.encode(OverlayThemeColor(trackLineColor), forKey: .trackLineColor)
+        try container.encode(OverlayThemeColor(mapDotColor), forKey: .mapDotColor)
+        try container.encode(labelFontSize, forKey: .labelFontSize)
+        try container.encode(valueFontSize, forKey: .valueFontSize)
+        try container.encode(distanceFontSize, forKey: .distanceFontSize)
+        try container.encode(leftXPosition, forKey: .leftXPosition)
+        try container.encode(leftStartYPosition, forKey: .leftStartYPosition)
+        try container.encode(rightXPosition, forKey: .rightXPosition)
+        try container.encode(rightStartYPosition, forKey: .rightStartYPosition)
+        try container.encode(leftMetricAdvance, forKey: .leftMetricAdvance)
+        try container.encode(rightDistanceAdvance, forKey: .rightDistanceAdvance)
+        try container.encode(rightMetricAdvance, forKey: .rightMetricAdvance)
+        try container.encode(metricPanelWidthScale, forKey: .metricPanelWidthScale)
+        try container.encode(distancePanelWidthScale, forKey: .distancePanelWidthScale)
+        try container.encode(metricsCornerRadius, forKey: .metricsCornerRadius)
+        try container.encode(mapWidthRatio, forKey: .mapWidthRatio)
+        try container.encode(mapHeightRatio, forKey: .mapHeightRatio)
+        try container.encode(mapMargin, forKey: .mapMargin)
+        try container.encode(mapCornerRadius, forKey: .mapCornerRadius)
+        try container.encode(mapPlacement, forKey: .mapPlacement)
+        try container.encode(profileGap, forKey: .profileGap)
+        try container.encode(profileBottomPadding, forKey: .profileBottomPadding)
+        try container.encode(profileCornerRadius, forKey: .profileCornerRadius)
     }
 }
 

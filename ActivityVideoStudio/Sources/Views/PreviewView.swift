@@ -141,7 +141,9 @@ struct PreviewView: View {
 
             ScrollView {
                 OverlaySettingsView(
-                    settings: viewModel.overlaySettings
+                    settings: viewModel.overlaySettings,
+                    onImportTheme: { viewModel.presentImportThemePanel() },
+                    onExportTheme: { viewModel.presentExportThemePanel() }
                 )
             }
             .frame(maxHeight: 300)

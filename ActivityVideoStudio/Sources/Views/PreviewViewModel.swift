@@ -71,7 +71,12 @@ final class PreviewViewModel: ObservableObject {
     let overlaySettings = OverlaySettings()
 
     var canSaveProject: Bool {
-        fitURL != nil || !videoURLs.isEmpty || !textOverlays.isEmpty || !chapterMarkers.isEmpty
+        fitURL != nil ||
+            !videoURLs.isEmpty ||
+            !textOverlays.isEmpty ||
+            !chapterMarkers.isEmpty ||
+            !overlaySettings.userThemes.isEmpty ||
+            overlaySettings.selectedThemeID != OverlayPreset.defaultPreset.themeID
     }
 
     var windowTitle: String {
@@ -362,6 +367,85 @@ final class PreviewViewModel: ObservableObject {
         }
     }
 
+    func presentImportThemePanel() {
+        let panel = NSOpenPanel()
+        panel.title = "テーマを読み込み"
+        panel.allowedContentTypes = [Self.themeFileType]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = ".avstheme(JSON) テーマファイルを読み込み"
+        panel.prompt = "読み込み"
+
+        panel.begin { [weak self] response in
+            Task { @MainActor in
+                guard response == .OK, let url = panel.url else { return }
+                self?.loadOverlayTheme(from: url)
+            }
+        }
+    }
+
+    func presentExportThemePanel() {
+        let theme = overlaySettings.selectedTheme
+        let panel = NSSavePanel()
+        panel.title = "テーマを書き出し"
+        panel.allowedContentTypes = [Self.themeFileType]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = theme.fileBaseName + ".avstheme"
+        panel.message = "選択中のオーバーレイテーマを .avstheme(JSON) として保存"
+        panel.prompt = "保存"
+
+        panel.begin { [weak self] response in
+            Task { @MainActor in
+                guard response == .OK, let url = panel.url else { return }
+                self?.saveSelectedOverlayTheme(to: url)
+            }
+        }
+    }
+
+    func loadOverlayTheme(from url: URL) {
+        let access = url.startAccessingSecurityScopedResource()
+        defer {
+            if access { url.stopAccessingSecurityScopedResource() }
+        }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let theme = try JSONDecoder().decode(OverlayTheme.self, from: data)
+            overlaySettings.installUserTheme(theme)
+            statusMessage = "テーマ読み込み完了: \(theme.displayName)"
+            markProjectEdited()
+        } catch {
+            showError(
+                title: "テーマを読み込めませんでした",
+                error: error,
+                recovery: ".avstheme JSON の形式とファイルアクセス権を確認してください。"
+            )
+        }
+    }
+
+    func saveSelectedOverlayTheme(to url: URL) {
+        let access = url.startAccessingSecurityScopedResource()
+        defer {
+            if access { url.stopAccessingSecurityScopedResource() }
+        }
+
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let theme = overlaySettings.selectedTheme
+            let data = try encoder.encode(theme)
+            try data.write(to: url, options: .atomic)
+            statusMessage = "テーマ書き出し完了: \(url.lastPathComponent)"
+        } catch {
+            showError(
+                title: "テーマを書き出せませんでした",
+                error: error,
+                recovery: "保存先の空き容量とアクセス権を確認して、もう一度保存してください。"
+            )
+        }
+    }
+
     func saveProject(to url: URL) {
         let access = url.startAccessingSecurityScopedResource()
         defer {
@@ -567,6 +651,7 @@ final class PreviewViewModel: ObservableObject {
     }
 
     private static let projectFileType = UTType(exportedAs: "com.activityvideostudio.project", conformingTo: .json)
+    private static let themeFileType = UTType(exportedAs: "com.activityvideostudio.theme", conformingTo: .json)
 
     // MARK: - File loading
 
@@ -1366,7 +1451,7 @@ final class PreviewViewModel: ObservableObject {
 }
 
 private struct ProjectDocument: Codable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     var version: Int
     var fitFile: ProjectFileReference?
@@ -1427,6 +1512,8 @@ private struct ResolvedProjectFile {
 
 private struct OverlaySettingsSnapshot: Codable {
     var overlayPreset: OverlayPreset?
+    var selectedThemeID: String?
+    var userThemes: [OverlayTheme]?
     var showTime: Bool
     var showDistance: Bool
     var showHeartRate: Bool
@@ -1446,6 +1533,8 @@ private struct OverlaySettingsSnapshot: Codable {
 
     init(settings: OverlaySettings) {
         overlayPreset = settings.overlayPreset
+        selectedThemeID = settings.selectedThemeID
+        userThemes = settings.userThemes
         showTime = settings.showTime
         showDistance = settings.showDistance
         showHeartRate = settings.showHeartRate
@@ -1465,7 +1554,12 @@ private struct OverlaySettingsSnapshot: Codable {
     }
 
     func apply(to settings: OverlaySettings) {
-        settings.overlayPreset = overlayPreset ?? .defaultPreset
+        settings.replaceUserThemes(userThemes ?? [])
+        if let selectedThemeID {
+            settings.selectTheme(id: selectedThemeID)
+        } else {
+            settings.overlayPreset = overlayPreset ?? .defaultPreset
+        }
         settings.showTime = showTime
         settings.showDistance = showDistance
         settings.showHeartRate = showHeartRate

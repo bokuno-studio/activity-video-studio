@@ -22,6 +22,18 @@
 				<string>com.activityvideostudio.project</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>ActivityVideoStudio Overlay Theme</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.activityvideostudio.theme</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
@@ -65,6 +77,26 @@
 				</array>
 				<key>public.mime-type</key>
 				<string>application/vnd.activityvideostudio.project+json</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>ActivityVideoStudio Overlay Theme</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.activityvideostudio.theme</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>avstheme</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/vnd.activityvideostudio.theme+json</string>
 			</dict>
 		</dict>
 	</array>

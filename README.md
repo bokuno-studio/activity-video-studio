@@ -17,6 +17,7 @@
   - 標高プロファイルグラフ（進行度インジケーター付き）
   - 右上にミニマップ（GPS トラックと現在位置）
   - 任意のテキストオーバーレイ（複数 + フェード）
+  - `.avstheme` JSON によるオーバーレイテーマの読み込み・書き出し
 - **チャプターマーカー**: 再生中に任意時刻を記録 → YouTube 概要欄用タイムコードを自動生成
 - **トリミング**: 先頭・末尾カット（同期はトリム後時刻で維持）
 
@@ -73,6 +74,8 @@ APP=".../ActivityVideoStudio.app/Contents/MacOS/ActivityVideoStudio"
 進捗・結果は `/tmp/avs_export.log` に追記される（`[AutoExport] DONE ✓` で完了）。
 
 ## アーキテクチャ
+
+`.avstheme` の JSON 仕様は [docs/avstheme-format.md](docs/avstheme-format.md) を参照。
 
 ```
 ActivityVideoStudio/Sources/
