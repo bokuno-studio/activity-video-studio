@@ -152,6 +152,23 @@ final class VideoExporter: @unchecked Sendable {
         }
     }
 
+    private final class OverlayRendererHolder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var renderer: OverlayRenderer?
+
+        func set(_ renderer: OverlayRenderer) {
+            locked(lock) {
+                self.renderer = renderer
+            }
+        }
+
+        func get() -> OverlayRenderer? {
+            locked(lock) {
+                renderer
+            }
+        }
+    }
+
     private final class ConcatenatedProgress: @unchecked Sendable {
         private let lock = NSLock()
         private let weights: [Double]
@@ -400,7 +417,7 @@ final class VideoExporter: @unchecked Sendable {
         // AVVideoComposition(asset:applyingCIFiltersWithHandler:) invokes the closure for every
         // frame — unlike customVideoCompositorClass which is silently bypassed on macOS 26.
         let capturedTimeSync = timeSync
-        let capturedRenderer = overlayRenderer
+        let rendererHolder = OverlayRendererHolder()
         let capturedSegIdx   = segmentIndex
         let capturedSourceStart = clampedSourceStart
         let capturedOutputOffset = outputTimeOffset
@@ -410,14 +427,14 @@ final class VideoExporter: @unchecked Sendable {
             textOverlays: overlayRenderer.textOverlays
         )
 
-        let videoComposition = AVVideoComposition(asset: composition) { [weak capturedRenderer] request in
+        let videoComposition = AVVideoComposition(asset: composition) { [rendererHolder] request in
             let t = CMTimeGetSeconds(request.compositionTime)
             // TimeSync expects playback time within the source segment. For split ranges,
             // that is the subrange source start plus the local composition time.
             let sourceVideoTime = capturedSourceStart + t
             let globalPlaybackTime = capturedOutputOffset + t
 
-            guard let renderer = capturedRenderer,
+            guard let renderer = rendererHolder.get(),
                   let dp       = capturedTimeSync.dataPoint(segmentIndex: capturedSegIdx, playbackTime: sourceVideoTime),
                   let elapsed  = capturedTimeSync.elapsedTime(segmentIndex: capturedSegIdx, playbackTime: sourceVideoTime) else {
                 request.finish(with: request.sourceImage, context: nil)
@@ -440,6 +457,16 @@ final class VideoExporter: @unchecked Sendable {
                 }
             }
         }
+        let overlayRenderSize = Self.validOverlayRenderSize(
+            videoComposition.renderSize,
+            fallback: overlayRenderer.videoSize
+        )
+        rendererHolder.set(overlayRenderer.makeExportCopy(videoSize: overlayRenderSize))
+        exportLog(
+            "overlay renderSize=\(Self.formatSize(overlayRenderSize)) " +
+            "sourceRendererSize=\(Self.formatSize(overlayRenderer.videoSize)) " +
+            "outputConfig=\(config.width)x\(config.height)"
+        )
 
         if FileManager.default.fileExists(atPath: config.outputURL.path) {
             try FileManager.default.removeItem(at: config.outputURL)
@@ -796,5 +823,14 @@ final class VideoExporter: @unchecked Sendable {
         if config.width >= 3840 { return AVAssetExportPreset3840x2160 }
         if config.width >= 1920 { return AVAssetExportPreset1920x1080 }
         return AVAssetExportPreset1280x720
+    }
+
+    private static func validOverlayRenderSize(_ renderSize: CGSize, fallback: CGSize) -> CGSize {
+        guard renderSize.width > 0, renderSize.height > 0 else { return fallback }
+        return renderSize
+    }
+
+    private static func formatSize(_ size: CGSize) -> String {
+        "\(Int(size.width.rounded()))x\(Int(size.height.rounded()))"
     }
 }

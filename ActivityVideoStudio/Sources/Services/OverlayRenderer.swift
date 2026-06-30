@@ -56,8 +56,8 @@ final class OverlayRenderer {
         self.settings = settings
     }
 
-    func makeExportCopy() -> OverlayRenderer {
-        let copy = OverlayRenderer(videoSize: videoSize, settings: settings.snapshot())
+    func makeExportCopy(videoSize exportVideoSize: CGSize? = nil) -> OverlayRenderer {
+        let copy = OverlayRenderer(videoSize: exportVideoSize ?? videoSize, settings: settings.snapshot())
         copy.allDataPoints = allDataPoints
         copy.textOverlays = textOverlays
         copy.trackCoordinates = trackCoordinates
