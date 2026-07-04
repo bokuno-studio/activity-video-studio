@@ -86,7 +86,6 @@ private struct LiveActivityDataLayer: View {
                 LiveElevationProfileView(
                     dataPoints: allDataPoints,
                     currentPoint: frame.dataPoint,
-                    totalDistance: frame.totalDistance,
                     style: style,
                     scale: scale
                 )
@@ -94,7 +93,7 @@ private struct LiveActivityDataLayer: View {
                 .offset(x: displayRect.minX, y: displayRect.minY)
             }
 
-            if settings.showMiniMap {
+            if settings.showMiniMap, hasDrawableTrack {
                 let displayRect = displayRect(fromRendererRect: mapRect(), in: size)
                 LiveGPSTrackMapView(
                     trackCoordinates: trackCoordinates,
@@ -327,8 +326,8 @@ private struct LiveActivityDataLayer: View {
     }
 
     private func elevationProfileRect(metricsTopY: CGFloat?) -> CGRect? {
-        guard !allDataPoints.isEmpty else { return nil }
-        let altitudes = allDataPoints.compactMap(\.altitude)
+        guard let profileData = elevationProfileData(for: allDataPoints) else { return nil }
+        let altitudes = profileData.samples.map(\.altitude)
         guard let minAlt = altitudes.min(), let maxAlt = altitudes.max(), maxAlt > minAlt else { return nil }
 
         let mapRect = mapRect()
@@ -347,8 +346,13 @@ private struct LiveActivityDataLayer: View {
         return CGRect(x: mapRect.minX, y: bottomY, width: mapRect.width, height: availableHeight)
     }
 
+    private var hasDrawableTrack: Bool {
+        trackProjection(for: trackCoordinates) != nil
+    }
+
     private func topForBaseline(_ baselineY: CGFloat, fontSize: CGFloat) -> CGFloat {
-        size.height - baselineY - fontSize
+        let font = CTFontCreateWithName("Helvetica-Bold" as CFString, max(1, fontSize), nil)
+        return size.height - baselineY - CTFontGetAscent(font)
     }
 
     private func heartRateZone(_ hr: UInt8) -> Int {
@@ -392,89 +396,79 @@ private struct LiveGPSTrackMapView: View {
     let scale: CGFloat
 
     var body: some View {
-        Canvas { context, size in
-            guard trackCoordinates.count >= 2 else { return }
+        if trackProjection(for: trackCoordinates) != nil {
+            Canvas { context, size in
+                guard let projection = trackProjection(for: trackCoordinates) else { return }
 
-            let lats = trackCoordinates.map(\.latitude)
-            let lons = trackCoordinates.map(\.longitude)
-            guard let minLat = lats.min(), let maxLat = lats.max(),
-                  let minLon = lons.min(), let maxLon = lons.max() else { return }
+                let inset = 10 * scale
+                let drawRect = CGRect(origin: .zero, size: size).insetBy(dx: inset, dy: inset)
+                let safeLatRange = projection.latRange > 0 ? projection.latRange : 1e-9
+                let safeLonRange = projection.lonRange > 0 ? projection.lonRange : 1e-9
+                let sx = drawRect.width / CGFloat(safeLonRange)
+                let sy = drawRect.height / CGFloat(safeLatRange)
+                let fitScale = min(sx, sy)
+                let usedWidth = CGFloat(safeLonRange) * fitScale
+                let usedHeight = CGFloat(safeLatRange) * fitScale
+                let originX = drawRect.midX - usedWidth / 2
+                let originY = drawRect.midY - usedHeight / 2
 
-            let latRange = maxLat - minLat
-            let lonRange = maxLon - minLon
-            guard latRange > 0 || lonRange > 0 else { return }
+                func project(_ coord: CLLocationCoordinate2D) -> CGPoint {
+                    CGPoint(
+                        x: originX + CGFloat(projection.projectedLongitude(coord) - projection.minProjectedLon) * fitScale,
+                        y: originY + CGFloat(projection.maxLat - coord.latitude) * fitScale
+                    )
+                }
 
-            let inset = 10 * scale
-            let drawRect = CGRect(origin: .zero, size: size).insetBy(dx: inset, dy: inset)
-            let safeLatRange = latRange > 0 ? latRange : 1e-9
-            let safeLonRange = lonRange > 0 ? lonRange : 1e-9
-            let sx = drawRect.width / CGFloat(safeLonRange)
-            let sy = drawRect.height / CGFloat(safeLatRange)
-            let fitScale = min(sx, sy)
-            let usedWidth = CGFloat(safeLonRange) * fitScale
-            let usedHeight = CGFloat(safeLatRange) * fitScale
-            let originX = drawRect.midX - usedWidth / 2
-            let originY = drawRect.midY - usedHeight / 2
+                var path = Path()
+                path.move(to: project(projection.coordinates[0]))
+                for coord in projection.coordinates.dropFirst() {
+                    path.addLine(to: project(coord))
+                }
 
-            func project(_ coord: CLLocationCoordinate2D) -> CGPoint {
-                CGPoint(
-                    x: originX + CGFloat(coord.longitude - minLon) * fitScale,
-                    y: originY + CGFloat(maxLat - coord.latitude) * fitScale
+                context.stroke(
+                    path,
+                    with: .color(color(style.trackOutlineColor)),
+                    style: StrokeStyle(lineWidth: 5 * scale, lineCap: .round, lineJoin: .round)
                 )
-            }
+                context.stroke(
+                    path,
+                    with: .color(color(style.trackLineColor)),
+                    style: StrokeStyle(lineWidth: 3 * scale, lineCap: .round, lineJoin: .round)
+                )
 
-            var path = Path()
-            path.move(to: project(trackCoordinates[0]))
-            for coord in trackCoordinates.dropFirst() {
-                path.addLine(to: project(coord))
+                if let currentCoordinate, CLLocationCoordinate2DIsValid(currentCoordinate) {
+                    let p = project(currentCoordinate)
+                    let dot = 12 * scale
+                    let dotRect = CGRect(x: p.x - dot / 2, y: p.y - dot / 2, width: dot, height: dot)
+                    context.fill(Path(ellipseIn: dotRect), with: .color(color(style.mapDotColor)))
+                    context.stroke(Path(ellipseIn: dotRect), with: .color(.white), lineWidth: 2.5 * scale)
+                }
             }
-
-            context.stroke(
-                path,
-                with: .color(color(style.trackOutlineColor)),
-                style: StrokeStyle(lineWidth: 5 * scale, lineCap: .round, lineJoin: .round)
-            )
-            context.stroke(
-                path,
-                with: .color(color(style.trackLineColor)),
-                style: StrokeStyle(lineWidth: 3 * scale, lineCap: .round, lineJoin: .round)
-            )
-
-            if let currentCoordinate {
-                let p = project(currentCoordinate)
-                let dot = 12 * scale
-                let dotRect = CGRect(x: p.x - dot / 2, y: p.y - dot / 2, width: dot, height: dot)
-                context.fill(Path(ellipseIn: dotRect), with: .color(color(style.mapDotColor)))
-                context.stroke(Path(ellipseIn: dotRect), with: .color(.white), lineWidth: 2.5 * scale)
-            }
+            .background(color(style.mapBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: style.mapCornerRadius * scale))
         }
-        .background(color(style.mapBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: style.mapCornerRadius * scale))
     }
 }
 
 private struct LiveElevationProfileView: View {
     let dataPoints: [FITDataPoint]
     let currentPoint: FITDataPoint
-    let totalDistance: Double
     let style: OverlayPresetRenderStyle
     let scale: CGFloat
 
     var body: some View {
         Canvas { context, size in
-            let pointsWithAlt = dataPoints.filter { $0.altitude != nil }
-            guard pointsWithAlt.count >= 2 else { return }
-            let altitudes = pointsWithAlt.compactMap(\.altitude)
+            guard let profileData = elevationProfileData(for: dataPoints) else { return }
+            let altitudes = profileData.samples.map(\.altitude)
             guard let minAlt = altitudes.min(), let maxAlt = altitudes.max(), maxAlt > minAlt else { return }
 
             let range = maxAlt - minAlt
             var fillPath = Path()
             var linePath = Path()
 
-            for (index, point) in pointsWithAlt.enumerated() {
-                guard let altitude = point.altitude else { continue }
-                let x = CGFloat(index) / CGFloat(pointsWithAlt.count - 1) * size.width
-                let y = size.height - CGFloat((altitude - minAlt) / range) * size.height
+            for (index, sample) in profileData.samples.enumerated() {
+                let x = sample.distanceRatio * size.width
+                let y = size.height - CGFloat((sample.altitude - minAlt) / range) * size.height
 
                 if index == 0 {
                     fillPath.move(to: CGPoint(x: x, y: size.height))
@@ -491,8 +485,8 @@ private struct LiveElevationProfileView: View {
             context.fill(fillPath, with: .color(color(style.elevationFillColor)))
             context.stroke(linePath, with: .color(color(style.elevationLineColor)), lineWidth: 2 * scale)
 
-            if let currentDistance = currentPoint.distance, totalDistance > 0 {
-                let markerX = CGFloat(currentDistance / totalDistance) * size.width
+            if let currentDistance = currentPoint.distance, profileData.totalDistance > 0 {
+                let markerX = CGFloat(min(max(currentDistance / profileData.totalDistance, 0), 1)) * size.width
                 var marker = Path()
                 marker.move(to: CGPoint(x: markerX, y: 0))
                 marker.addLine(to: CGPoint(x: markerX, y: size.height))
@@ -614,7 +608,7 @@ private struct LiveTextOverlayView: View {
             let y = firstBaseline - lineHeight * CGFloat(index)
             ctx.saveGState()
             ctx.setShadow(
-                offset: CGSize(width: overlay.shadowOffsetX * scale, height: -overlay.shadowOffsetY * scale),
+                offset: CGSize(width: overlay.shadowOffsetX * scale, height: overlay.shadowOffsetY * scale),
                 blur: max(0, overlay.shadowBlur) * scale,
                 color: shadowColor
             )
@@ -646,6 +640,74 @@ private struct LiveTextOverlayView: View {
     private func cgColor(_ color: CGColor, applyingOpacity opacity: Double, fallback: NSColor) -> CGColor {
         nsColor(color, applyingOpacity: opacity, fallback: fallback).cgColor
     }
+}
+
+private struct ElevationProfileSample {
+    let distanceRatio: CGFloat
+    let altitude: Double
+}
+
+private func elevationProfileData(for dataPoints: [FITDataPoint]) -> (samples: [ElevationProfileSample], totalDistance: Double)? {
+    let totalDistance = dataPoints.compactMap(\.distance).max() ?? 0
+    guard totalDistance > 0 else { return nil }
+
+    let samples = dataPoints.compactMap { point -> ElevationProfileSample? in
+        guard let altitude = point.altitude, let distance = point.distance else { return nil }
+        let ratio = min(max(distance / totalDistance, 0), 1)
+        return ElevationProfileSample(distanceRatio: CGFloat(ratio), altitude: altitude)
+    }
+
+    guard samples.count >= 2 else { return nil }
+    return (samples, totalDistance)
+}
+
+private struct TrackProjection {
+    let coordinates: [CLLocationCoordinate2D]
+    let minLat: Double
+    let maxLat: Double
+    let minProjectedLon: Double
+    let maxProjectedLon: Double
+    let lonScale: Double
+
+    var latRange: Double { maxLat - minLat }
+    var lonRange: Double { maxProjectedLon - minProjectedLon }
+
+    func projectedLongitude(_ coord: CLLocationCoordinate2D) -> Double {
+        coord.longitude * lonScale
+    }
+}
+
+private func trackProjection(for coordinates: [CLLocationCoordinate2D]) -> TrackProjection? {
+    let validCoordinates = coordinates.filter(CLLocationCoordinate2DIsValid)
+    guard validCoordinates.count >= 2 else { return nil }
+
+    let latitudes = validCoordinates.map(\.latitude)
+    let longitudes = validCoordinates.map(\.longitude)
+    guard let minLat = latitudes.min(), let maxLat = latitudes.max(),
+          let minLon = longitudes.min(), let maxLon = longitudes.max() else {
+        return nil
+    }
+
+    let centerLatitude = (minLat + maxLat) / 2
+    let lonScale = max(abs(cos(centerLatitude * .pi / 180)), 1e-9)
+    let projectedLongitudes = validCoordinates.map { $0.longitude * lonScale }
+    guard let minProjectedLon = projectedLongitudes.min(),
+          let maxProjectedLon = projectedLongitudes.max() else {
+        return nil
+    }
+
+    let latRange = maxLat - minLat
+    let lonRange = (maxLon - minLon) * lonScale
+    guard latRange > 0 || lonRange > 0 else { return nil }
+
+    return TrackProjection(
+        coordinates: validCoordinates,
+        minLat: minLat,
+        maxLat: maxLat,
+        minProjectedLon: minProjectedLon,
+        maxProjectedLon: maxProjectedLon,
+        lonScale: lonScale
+    )
 }
 
 private func liveScale(for size: CGSize) -> CGFloat {
