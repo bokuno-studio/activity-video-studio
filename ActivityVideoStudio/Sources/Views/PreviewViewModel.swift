@@ -1592,8 +1592,7 @@ final class PreviewViewModel: ObservableObject {
 
         if let dataPoint = timeSync.dataPoint(segmentIndex: segmentIndex, playbackTime: segmentPlaybackTime),
            let elapsed = timeSync.elapsedTime(segmentIndex: segmentIndex, playbackTime: segmentPlaybackTime) {
-            // Check if FIT recording is active (elapsed > 0 means past FIT start)
-            let fitRecordingActive = elapsed >= 0 && (dataPoint.distance ?? 0) > 0
+            let fitRecordingActive = renderer.isFitRecordingActive(dataPoint: dataPoint, elapsedTime: elapsed)
             renderer.fitRecordingActive = fitRecordingActive
             renderer.textOverlays = textOverlays
             liveOverlayFrame = LivePreviewOverlayFrame(

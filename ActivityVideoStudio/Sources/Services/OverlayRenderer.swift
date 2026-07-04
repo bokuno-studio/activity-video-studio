@@ -9,10 +9,15 @@ final class OverlayRenderer {
 
     let videoSize: CGSize
     var settings: OverlaySettings
-    var allDataPoints: [FITDataPoint] = []
+    var allDataPoints: [FITDataPoint] = [] {
+        didSet {
+            hasDistanceData = allDataPoints.contains { $0.distance != nil }
+        }
+    }
     var textOverlays: [TextOverlay] = []
     var trackCoordinates: [CLLocationCoordinate2D] = []
     var fitRecordingActive = true
+    private var hasDistanceData = false
 
     private var scale: CGFloat { videoSize.width / 1920.0 }
 
@@ -66,16 +71,28 @@ final class OverlayRenderer {
         return copy
     }
 
+    func isFitRecordingActive(dataPoint: FITDataPoint, elapsedTime: TimeInterval) -> Bool {
+        guard elapsedTime >= 0 else { return false }
+        guard hasDistanceData else { return true }
+        return (dataPoint.distance ?? 0) > 0
+    }
+
     // MARK: - Render
 
-    func render(dataPoint: FITDataPoint, elapsedTime: TimeInterval, globalPlaybackTime: TimeInterval = 0) -> CGImage? {
+    func render(
+        dataPoint: FITDataPoint,
+        elapsedTime: TimeInterval,
+        globalPlaybackTime: TimeInterval = 0,
+        fitRecordingActive: Bool? = nil
+    ) -> CGImage? {
         let w = Int(videoSize.width), h = Int(videoSize.height)
         guard let ctx = Self.makeBitmapContext(width: w, height: h) else { return nil }
 
         ctx.textMatrix = .identity
         ctx.setShadow(offset: CGSize(width: 1.5 * scale, height: -1.5 * scale), blur: 3 * scale, color: shadowColor)
 
-        if !fitRecordingActive {
+        let effectiveFITRecordingActive = fitRecordingActive ?? self.fitRecordingActive
+        if !effectiveFITRecordingActive {
             drawWaitingIndicator(ctx: ctx)
         }
 

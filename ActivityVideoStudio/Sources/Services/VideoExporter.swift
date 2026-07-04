@@ -88,6 +88,7 @@ final class VideoExporter: @unchecked Sendable {
     private struct OverlayCacheKey: Equatable {
         let sourceBucket: Int64
         let playbackBucket: Int64
+        let fitRecordingActive: Bool
     }
 
     private final class OverlayFrameCache: @unchecked Sendable {
@@ -114,9 +115,14 @@ final class VideoExporter: @unchecked Sendable {
             dataPoint: FITDataPoint,
             elapsedTime: TimeInterval,
             globalPlaybackTime: TimeInterval,
+            fitRecordingActive: Bool,
             renderer: OverlayRenderer
         ) -> CIImage? {
-            let key = cacheKey(sourceVideoTime: sourceVideoTime, globalPlaybackTime: globalPlaybackTime)
+            let key = cacheKey(
+                sourceVideoTime: sourceVideoTime,
+                globalPlaybackTime: globalPlaybackTime,
+                fitRecordingActive: fitRecordingActive
+            )
             if let cached = locked(lock, { entry }), cached.key == key {
                 return cached.ciImage
             }
@@ -124,7 +130,8 @@ final class VideoExporter: @unchecked Sendable {
             guard let cgImage = renderer.render(
                 dataPoint: dataPoint,
                 elapsedTime: elapsedTime,
-                globalPlaybackTime: globalPlaybackTime
+                globalPlaybackTime: globalPlaybackTime,
+                fitRecordingActive: fitRecordingActive
             ) else {
                 return nil
             }
@@ -136,14 +143,19 @@ final class VideoExporter: @unchecked Sendable {
             return ciImage
         }
 
-        private func cacheKey(sourceVideoTime: TimeInterval, globalPlaybackTime: TimeInterval) -> OverlayCacheKey {
+        private func cacheKey(
+            sourceVideoTime: TimeInterval,
+            globalPlaybackTime: TimeInterval,
+            fitRecordingActive: Bool
+        ) -> OverlayCacheKey {
             let playbackQuantum = textOverlays.contains { $0.isOpacityAnimating(at: globalPlaybackTime) }
                 ? Swift.min(baseQuantum, frameQuantum)
                 : baseQuantum
 
             return OverlayCacheKey(
                 sourceBucket: Self.bucket(for: sourceVideoTime, quantum: baseQuantum),
-                playbackBucket: Self.bucket(for: globalPlaybackTime, quantum: playbackQuantum)
+                playbackBucket: Self.bucket(for: globalPlaybackTime, quantum: playbackQuantum),
+                fitRecordingActive: fitRecordingActive
             )
         }
 
@@ -442,11 +454,13 @@ final class VideoExporter: @unchecked Sendable {
             }
 
             autoreleasepool {
+                let fitRecordingActive = renderer.isFitRecordingActive(dataPoint: dp, elapsedTime: elapsed)
                 if let overlayCI = overlayCache.image(
                     sourceVideoTime: sourceVideoTime,
                     dataPoint: dp,
                     elapsedTime: elapsed,
                     globalPlaybackTime: globalPlaybackTime,
+                    fitRecordingActive: fitRecordingActive,
                     renderer: renderer
                 ) {
                     let composited = overlayCI.composited(over: request.sourceImage)
