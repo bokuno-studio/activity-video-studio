@@ -37,6 +37,7 @@ struct LivePreviewOverlayView: View {
                     scale: scale
                 )
             }
+            .opacity(settings.effectiveOverlayOpacity)
             .frame(width: size.width, height: size.height, alignment: .topLeading)
             .clipped()
         }

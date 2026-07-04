@@ -70,11 +70,7 @@ final class OverlayRenderer {
 
     func render(dataPoint: FITDataPoint, elapsedTime: TimeInterval, globalPlaybackTime: TimeInterval = 0) -> CGImage? {
         let w = Int(videoSize.width), h = Int(videoSize.height)
-        guard let ctx = CGContext(
-            data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return nil }
+        guard let ctx = Self.makeBitmapContext(width: w, height: h) else { return nil }
 
         ctx.textMatrix = .identity
         ctx.setShadow(offset: CGSize(width: 1.5 * scale, height: -1.5 * scale), blur: 3 * scale, color: shadowColor)
@@ -239,7 +235,26 @@ final class OverlayRenderer {
             if opacity > 0 { drawTextOverlay(ctx: ctx, overlay: textOverlay, opacity: opacity) }
         }
 
-        return ctx.makeImage()
+        guard let overlayImage = ctx.makeImage() else { return nil }
+        return imageByApplyingOverlayOpacity(overlayImage, width: w, height: h)
+    }
+
+    private static func makeBitmapContext(width: Int, height: Int) -> CGContext? {
+        CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+    }
+
+    private func imageByApplyingOverlayOpacity(_ image: CGImage, width: Int, height: Int) -> CGImage {
+        let opacity = CGFloat(settings.effectiveOverlayOpacity)
+        guard opacity < 1 else { return image }
+        guard let ctx = Self.makeBitmapContext(width: width, height: height) else { return image }
+
+        ctx.setAlpha(opacity)
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+        return ctx.makeImage() ?? image
     }
 
     // MARK: - HR Zone

@@ -156,6 +156,10 @@ final class OverlaySettings: ObservableObject {
         selectedTheme.style
     }
 
+    var effectiveOverlayOpacity: Double {
+        min(max(overlayOpacity, 0.3), 1.0)
+    }
+
     func theme(withID id: String) -> OverlayTheme? {
         availableThemes.first { $0.id == id }
     }
