@@ -128,6 +128,7 @@ final class PreviewViewModel: ObservableObject {
     private var trimPreviewSeekTask: Task<Void, Never>?
     private var didApplyDefaultFITStartAlignment = false
     private var projectSecurityScopedURLs: [URL] = []
+    private var refreshedProjectFileReferencesByPath: [String: ProjectFileReference] = [:]
     private(set) var fitDataPoints: [FITDataPoint] = []
     private(set) var fitURL: URL?
     private(set) var videoURLs: [URL] = []
@@ -453,10 +454,13 @@ final class PreviewViewModel: ObservableObject {
         }
 
         do {
+            var bookmarkWarnings: [String] = []
+            let fitFile = fitURL.map { projectFileReference(for: $0, warnings: &bookmarkWarnings) }
+            let videoFiles = videoURLs.map { projectFileReference(for: $0, warnings: &bookmarkWarnings) }
             let document = ProjectDocument(
                 version: ProjectDocument.currentVersion,
-                fitFile: fitURL.map(ProjectFileReference.init(url:)),
-                videoFiles: videoURLs.map(ProjectFileReference.init(url:)),
+                fitFile: fitFile,
+                videoFiles: videoFiles,
                 syncOffset: syncOffset,
                 trimSettings: trimSettings,
                 overlaySettings: OverlaySettingsSnapshot(settings: overlaySettings),
@@ -469,8 +473,11 @@ final class PreviewViewModel: ObservableObject {
             try data.write(to: url, options: .atomic)
             projectURL = url
             isProjectEdited = false
-            projectWarningMessage = nil
-            statusMessage = "プロジェクト保存完了: \(url.lastPathComponent)"
+            refreshedProjectFileReferencesByPath.removeAll()
+            projectWarningMessage = warningMessage(from: bookmarkWarnings)
+            statusMessage = bookmarkWarnings.isEmpty
+                ? "プロジェクト保存完了: \(url.lastPathComponent)"
+                : "プロジェクト保存完了（警告あり）: \(url.lastPathComponent)"
         } catch {
             showError(
                 title: "プロジェクトを保存できませんでした",
@@ -492,9 +499,9 @@ final class PreviewViewModel: ObservableObject {
         do {
             let data = try Data(contentsOf: url)
             let document = try JSONDecoder().decode(ProjectDocument.self, from: data)
-            await restoreProject(document, sourceName: url.lastPathComponent)
+            let didRefreshBookmarks = await restoreProject(document, sourceName: url.lastPathComponent)
             projectURL = url
-            isProjectEdited = false
+            isProjectEdited = didRefreshBookmarks
         } catch {
             showError(
                 title: "プロジェクトを読み込めませんでした",
@@ -504,16 +511,21 @@ final class PreviewViewModel: ObservableObject {
         }
     }
 
-    private func restoreProject(_ document: ProjectDocument, sourceName: String) async {
+    private func restoreProject(_ document: ProjectDocument, sourceName: String) async -> Bool {
         resetProjectState()
 
         var warnings: [String] = []
+        var didRefreshStaleBookmarks = false
         if document.version > ProjectDocument.currentVersion {
             warnings.append("新しいプロジェクト形式です")
         }
 
         if let fitFile = document.fitFile {
-            if let url = resolveProjectFile(fitFile, warnings: &warnings) {
+            if let url = resolveProjectFile(
+                fitFile,
+                warnings: &warnings,
+                didRefreshStaleBookmarks: &didRefreshStaleBookmarks
+            ) {
                 loadFITFile(url: url)
                 if !fitLoaded {
                     warnings.append("FITを読み込めません: \(url.lastPathComponent)")
@@ -526,7 +538,11 @@ final class PreviewViewModel: ObservableObject {
 
         let reader = VideoMetadataReader()
         for (index, file) in document.videoFiles.enumerated() {
-            guard let url = resolveProjectFile(file, warnings: &warnings) else { continue }
+            guard let url = resolveProjectFile(
+                file,
+                warnings: &warnings,
+                didRefreshStaleBookmarks: &didRefreshStaleBookmarks
+            ) else { continue }
             loadingMessage = "動画を読み込み中... \(index + 1) / \(document.videoFiles.count)"
 
             do {
@@ -566,6 +582,7 @@ final class PreviewViewModel: ObservableObject {
         didApplyDefaultFITStartAlignment = true
         projectWarningMessage = warningMessage(from: warnings)
         statusMessage = "プロジェクト読み込み完了: \(sourceName)"
+        return didRefreshStaleBookmarks
     }
 
     private func resetProjectState() {
@@ -599,6 +616,7 @@ final class PreviewViewModel: ObservableObject {
         projectURL = nil
         isProjectEdited = false
         didApplyDefaultFITStartAlignment = false
+        refreshedProjectFileReferencesByPath.removeAll()
     }
 
     private func confirmDiscardCurrentProject() -> Bool {
@@ -611,7 +629,11 @@ final class PreviewViewModel: ObservableObject {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
-    private func resolveProjectFile(_ reference: ProjectFileReference, warnings: inout [String]) -> URL? {
+    private func resolveProjectFile(
+        _ reference: ProjectFileReference,
+        warnings: inout [String],
+        didRefreshStaleBookmarks: inout Bool
+    ) -> URL? {
         let resolved = reference.resolve()
         if resolved.isStale {
             warnings.append("参照情報が古くなっています: \(resolved.url.lastPathComponent)")
@@ -625,7 +647,26 @@ final class PreviewViewModel: ObservableObject {
             warnings.append("見つかりません: \(reference.displayName)")
             return nil
         }
+        if resolved.isStale,
+           let refreshedReference = ProjectFileReference.refreshedBookmarkReference(
+               for: resolved.url,
+               warnings: &warnings
+           ) {
+            refreshedProjectFileReferencesByPath[resolved.url.path] = refreshedReference
+            didRefreshStaleBookmarks = true
+            warnings.append("参照情報を更新しました: \(resolved.url.lastPathComponent)")
+        }
         return resolved.url
+    }
+
+    private func projectFileReference(for url: URL, warnings: inout [String]) -> ProjectFileReference {
+        var reference = ProjectFileReference(url: url, warnings: &warnings)
+        if reference.bookmarkData == nil,
+           let refreshedReference = refreshedProjectFileReferencesByPath[url.path],
+           refreshedReference.bookmarkData != nil {
+            reference.bookmarkData = refreshedReference.bookmarkData
+        }
+        return reference
     }
 
     private func stopAccessingProjectResources() {
@@ -1468,14 +1509,24 @@ private struct ProjectFileReference: Codable {
     var bookmarkData: String?
 
     init(url: URL) {
+        var warnings: [String] = []
+        self.init(url: url, warnings: &warnings)
+    }
+
+    init(url: URL, warnings: inout [String]) {
         path = url.path
-        if let data = try? url.bookmarkData(
-            options: [.withSecurityScope],
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
-        ) {
+        do {
+            let data = try Self.makeBookmarkData(for: url)
             bookmarkData = data.base64EncodedString()
+        } catch {
+            Self.logBookmarkCreationFailure(url: url, error: error)
+            warnings.append("参照情報を保存できません: \(url.lastPathComponent)")
         }
+    }
+
+    private init(path: String, bookmarkData: String?) {
+        self.path = path
+        self.bookmarkData = bookmarkData
     }
 
     var displayName: String {
@@ -1500,6 +1551,33 @@ private struct ProjectFileReference: Codable {
             url: URL(fileURLWithPath: path),
             isStale: false,
             usesSecurityScope: false
+        )
+    }
+
+    static func refreshedBookmarkReference(for url: URL, warnings: inout [String]) -> ProjectFileReference? {
+        do {
+            let data = try makeBookmarkData(for: url)
+            return ProjectFileReference(path: url.path, bookmarkData: data.base64EncodedString())
+        } catch {
+            logBookmarkCreationFailure(url: url, error: error)
+            warnings.append("参照情報を更新できません: \(url.lastPathComponent)")
+            return nil
+        }
+    }
+
+    private static func makeBookmarkData(for url: URL) throws -> Data {
+        try url.bookmarkData(
+            options: [.withSecurityScope],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+    }
+
+    private static func logBookmarkCreationFailure(url: URL, error: Error) {
+        NSLog(
+            "ActivityVideoStudio: failed to create security-scoped bookmark for %@: %@",
+            url.path,
+            error.localizedDescription
         )
     }
 }
