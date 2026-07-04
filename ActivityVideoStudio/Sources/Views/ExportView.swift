@@ -57,9 +57,6 @@ struct ExportView: View {
                 .textFieldStyle(.roundedBorder)
                 .focused(isTextFocused)
 
-            if viewModel.videoCount > 1 {
-                Toggle("複数動画を結合", isOn: $viewModel.concatenateVideos)
-            }
             Toggle("完了後アプリ終了", isOn: $viewModel.quitWhenDone)
             Toggle("完了までスリープさせない", isOn: $viewModel.preventSleepDuringExport)
 

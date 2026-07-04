@@ -49,7 +49,6 @@ final class ExportViewModel: ObservableObject, Identifiable {
 
     @Published var resolution: Resolution = .r1080p
     @Published var quality: Quality = .high
-    @Published var concatenateVideos = true
     @Published var quitWhenDone = false
     @Published var preventSleepDuringExport = true {
         didSet {
@@ -79,7 +78,6 @@ final class ExportViewModel: ObservableObject, Identifiable {
     var overlayRenderer: OverlayRenderer?
     var onDismiss: (() -> Void)?
 
-    var videoCount: Int { videoURLs.count }
     var canExport: Bool {
         hasRequiredExportInputs && !isExporting && !isCancelling && !isChoosingExportDirectory
     }
@@ -133,8 +131,7 @@ final class ExportViewModel: ObservableObject, Identifiable {
     private func startExport(in directoryURL: URL) {
         guard hasRequiredExportInputs,
               let timeSync = timeSync,
-              let renderer = overlayRenderer,
-              let firstVideoURL = videoURLs.first
+              let renderer = overlayRenderer
         else {
             presentExportReadinessError()
             return
@@ -162,7 +159,6 @@ final class ExportViewModel: ObservableObject, Identifiable {
             bitRate: quality.bitRate
         )
 
-        let concatenateVideos = self.concatenateVideos
         let videoURLs = self.videoURLs
         let trimSettings = self.trimSettings
         Task.detached(priority: .userInitiated) { [weak self] in
@@ -172,40 +168,24 @@ final class ExportViewModel: ObservableObject, Identifiable {
             }
 
             do {
-                if concatenateVideos && videoURLs.count > 1 {
-                    try await exporter.exportConcatenated(
-                        videoURLs: videoURLs,
-                        trimSettings: trimSettings,
-                        timeSync: timeSync,
-                        overlayRenderer: renderer,
-                        config: config,
-                        onStatus: { [weak self] msg in
-                            Task { @MainActor in
-                                self?.statusMessage = msg
-                            }
-                        },
-                        progress: { [weak self] fraction, remaining in
-                            Task { @MainActor in
-                                self?.progress = fraction
-                                self?.estimatedRemaining = remaining
-                            }
+                try await exporter.exportConcatenated(
+                    videoURLs: videoURLs,
+                    trimSettings: trimSettings,
+                    timeSync: timeSync,
+                    overlayRenderer: renderer,
+                    config: config,
+                    onStatus: { [weak self] msg in
+                        Task { @MainActor in
+                            self?.statusMessage = msg
                         }
-                    )
-                } else {
-                    try await exporter.exportSingleVideo(
-                        videoURL: firstVideoURL,
-                        timeSync: timeSync,
-                        segmentIndex: 0,
-                        trimSettings: trimSettings.first ?? TrimSettings(),
-                        overlayRenderer: renderer,
-                        config: config
-                    ) { [weak self] fraction, remaining in
+                    },
+                    progress: { [weak self] fraction, remaining in
                         Task { @MainActor in
                             self?.progress = fraction
                             self?.estimatedRemaining = remaining
                         }
                     }
-                }
+                )
 
                 if isAccessingDirectory {
                     directoryURL.stopAccessingSecurityScopedResource()
