@@ -12,10 +12,15 @@ final class OverlayRenderer {
     var allDataPoints: [FITDataPoint] = [] {
         didSet {
             hasDistanceData = allDataPoints.contains { $0.distance != nil }
+            invalidateElevationProfileCache()
         }
     }
     var textOverlays: [TextOverlay] = []
-    var trackCoordinates: [CLLocationCoordinate2D] = []
+    var trackCoordinates: [CLLocationCoordinate2D] = [] {
+        didSet {
+            invalidateTrackCache()
+        }
+    }
     var fitRecordingActive = true
     private var hasDistanceData = false
 
@@ -23,6 +28,13 @@ final class OverlayRenderer {
 
     // Elevation gain cache
     private var elevationGainCache: [Double] = []
+    private var renderContextCache: BitmapContextCache?
+    private var opacityContextCache: BitmapContextCache?
+    private var fontCache: [FontCacheKey: CTFont] = [:]
+    private var trackSourceCache: (key: CoordinateSignature, source: RendererTrackSource?)?
+    private var trackDrawingCache: (key: RendererTrackDrawingKey, drawing: RendererTrackDrawing)?
+    private var elevationSourceCache: (key: DataPointSignature, source: RendererElevationSource?)?
+    private var elevationDrawingCache: (key: RendererElevationDrawingKey, drawing: RendererElevationDrawing)?
 
     func buildElevationGainCache() {
         elevationGainCache = []
@@ -86,8 +98,9 @@ final class OverlayRenderer {
         fitRecordingActive: Bool? = nil
     ) -> CGImage? {
         let w = Int(videoSize.width), h = Int(videoSize.height)
-        guard let ctx = Self.makeBitmapContext(width: w, height: h) else { return nil }
+        guard let ctx = Self.bitmapContext(width: w, height: h, cache: &renderContextCache) else { return nil }
 
+        Self.prepareBitmapContext(ctx, width: w, height: h)
         ctx.textMatrix = .identity
         ctx.setShadow(offset: CGSize(width: 1.5 * scale, height: -1.5 * scale), blur: 3 * scale, color: shadowColor)
 
@@ -276,11 +289,37 @@ final class OverlayRenderer {
         )
     }
 
+    private static func bitmapContext(
+        width: Int,
+        height: Int,
+        cache: inout BitmapContextCache?
+    ) -> CGContext? {
+        if let cached = cache, cached.width == width, cached.height == height {
+            return cached.context
+        }
+
+        guard let context = Self.makeBitmapContext(width: width, height: height) else { return nil }
+        cache = BitmapContextCache(width: width, height: height, context: context)
+        return context
+    }
+
+    private static func prepareBitmapContext(_ context: CGContext, width: Int, height: Int) {
+        let rect = CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height))
+        context.setBlendMode(.normal)
+        context.setAlpha(1)
+        context.clear(rect)
+        context.setLineWidth(1)
+        context.setLineCap(.butt)
+        context.setLineJoin(.miter)
+        context.textMatrix = .identity
+    }
+
     private func imageByApplyingOverlayOpacity(_ image: CGImage, width: Int, height: Int) -> CGImage {
         let opacity = CGFloat(settings.effectiveOverlayOpacity)
         guard opacity < 1 else { return image }
-        guard let ctx = Self.makeBitmapContext(width: width, height: height) else { return image }
+        guard let ctx = Self.bitmapContext(width: width, height: height, cache: &opacityContextCache) else { return image }
 
+        Self.prepareBitmapContext(ctx, width: width, height: height)
         ctx.setAlpha(opacity)
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
         return ctx.makeImage() ?? image
@@ -313,9 +352,7 @@ final class OverlayRenderer {
     /// bottom and the top of the right metrics block (`metricsTopY`), so the graph
     /// never overlaps the map above it or the metrics below it.
     private func drawElevationProfile(ctx: CGContext, currentPoint: FITDataPoint, metricsTopY: CGFloat?) {
-        guard let profileData = elevationProfileData() else { return }
-        let altitudes = profileData.samples.map(\.altitude)
-        guard let minAlt = altitudes.min(), let maxAlt = altitudes.max(), maxAlt > minAlt else { return }
+        guard let profileData = elevationProfileSource() else { return }
 
         let style = renderStyle
         let mapRect = self.mapRect()
@@ -341,44 +378,29 @@ final class OverlayRenderer {
             width: mapRect.width,
             height: availableHeight
         )
+        guard let drawing = elevationDrawing(source: profileData, profileRect: profileRect) else { return }
 
         // Semi-transparent background
         ctx.saveGState()
         ctx.setShadow(offset: .zero, blur: 0)
         ctx.setFillColor(style.panelBackgroundColor)
-        let bgPath = CGPath(roundedRect: profileRect, cornerWidth: style.profileCornerRadius * scale, cornerHeight: style.profileCornerRadius * scale, transform: nil)
-        ctx.addPath(bgPath)
+        ctx.addPath(drawing.backgroundPath)
         ctx.fillPath()
         ctx.restoreGState()
 
         // Elevation line
-        let range = maxAlt - minAlt
         ctx.saveGState()
         ctx.setShadow(offset: .zero, blur: 0)
 
         // Fill under the line
-        ctx.beginPath()
-        ctx.move(to: CGPoint(x: profileRect.minX, y: profileRect.minY))
-        for (i, sample) in profileData.samples.enumerated() {
-            let x = profileRect.minX + sample.distanceRatio * profileRect.width
-            let y = profileRect.minY + ((sample.altitude - minAlt) / range) * Double(profileRect.height)
-            if i == 0 { ctx.move(to: CGPoint(x: x, y: profileRect.minY)); ctx.addLine(to: CGPoint(x: x, y: y)) }
-            else { ctx.addLine(to: CGPoint(x: x, y: y)) }
-        }
-        ctx.addLine(to: CGPoint(x: profileRect.maxX, y: profileRect.minY))
-        ctx.closePath()
+        ctx.addPath(drawing.fillPath)
         ctx.setFillColor(style.elevationFillColor)
         ctx.fillPath()
 
         // Stroke the line
         ctx.setStrokeColor(style.elevationLineColor)
         ctx.setLineWidth(2 * scale)
-        ctx.beginPath()
-        for (i, sample) in profileData.samples.enumerated() {
-            let x = profileRect.minX + sample.distanceRatio * profileRect.width
-            let y = profileRect.minY + ((sample.altitude - minAlt) / range) * Double(profileRect.height)
-            if i == 0 { ctx.move(to: CGPoint(x: x, y: y)) } else { ctx.addLine(to: CGPoint(x: x, y: y)) }
-        }
+        ctx.addPath(drawing.linePath)
         ctx.strokePath()
 
         // Current position marker
@@ -394,7 +416,7 @@ final class OverlayRenderer {
 
             // Dot at current altitude
             if let alt = currentPoint.altitude {
-                let dotY = profileRect.minY + ((alt - minAlt) / range) * Double(profileRect.height)
+                let dotY = drawing.y(forAltitude: alt)
                 ctx.setFillColor(white)
                 ctx.fillEllipse(in: CGRect(x: mx - 4 * scale, y: CGFloat(dotY) - 4 * scale, width: 8 * scale, height: 8 * scale))
             }
@@ -403,78 +425,143 @@ final class OverlayRenderer {
         ctx.restoreGState()
     }
 
-    private struct ElevationProfileSample {
-        let distanceRatio: CGFloat
-        let altitude: Double
-    }
-
-    private func elevationProfileData() -> (samples: [ElevationProfileSample], totalDistance: Double)? {
-        let totalDistance = allDataPoints.compactMap(\.distance).max() ?? 0
-        guard totalDistance > 0 else { return nil }
-
-        let samples = allDataPoints.compactMap { point -> ElevationProfileSample? in
-            guard let altitude = point.altitude, let distance = point.distance else { return nil }
-            let ratio = min(max(distance / totalDistance, 0), 1)
-            return ElevationProfileSample(distanceRatio: CGFloat(ratio), altitude: altitude)
+    private func elevationProfileSource() -> RendererElevationSource? {
+        let key = DataPointSignature(dataPoints: allDataPoints)
+        if let cached = elevationSourceCache, cached.key == key {
+            return cached.source
         }
 
-        guard samples.count >= 2 else { return nil }
-        return (samples, totalDistance)
+        let source = Self.makeElevationSource(dataPoints: allDataPoints, key: key)
+        elevationSourceCache = (key, source)
+        elevationDrawingCache = nil
+        return source
+    }
+
+    private func elevationDrawing(
+        source: RendererElevationSource,
+        profileRect: CGRect
+    ) -> RendererElevationDrawing? {
+        let cornerRadius = renderStyle.profileCornerRadius * scale
+        let key = RendererElevationDrawingKey(
+            sourceKey: source.key,
+            profileRect: profileRect,
+            cornerRadius: cornerRadius
+        )
+        if let cached = elevationDrawingCache, cached.key == key {
+            return cached.drawing
+        }
+
+        guard let drawing = Self.makeElevationDrawing(
+            source: source,
+            profileRect: profileRect,
+            cornerRadius: cornerRadius
+        ) else {
+            elevationDrawingCache = nil
+            return nil
+        }
+
+        elevationDrawingCache = (key, drawing)
+        return drawing
+    }
+
+    private static func makeElevationSource(
+        dataPoints: [FITDataPoint],
+        key: DataPointSignature
+    ) -> RendererElevationSource? {
+        var rawSamples: [(distance: Double, altitude: Double)] = []
+        rawSamples.reserveCapacity(dataPoints.count)
+
+        var totalDistance = 0.0
+        var minAltitude = Double.greatestFiniteMagnitude
+        var maxAltitude = -Double.greatestFiniteMagnitude
+
+        for point in dataPoints {
+            guard let altitude = point.altitude, let distance = point.distance else { continue }
+            rawSamples.append((distance, altitude))
+            totalDistance = max(totalDistance, distance)
+            minAltitude = min(minAltitude, altitude)
+            maxAltitude = max(maxAltitude, altitude)
+        }
+
+        guard rawSamples.count >= 2, totalDistance > 0, maxAltitude > minAltitude else { return nil }
+
+        let samples = rawSamples.map { sample in
+            ElevationProfileSample(
+                distanceRatio: CGFloat(min(max(sample.distance / totalDistance, 0), 1)),
+                altitude: sample.altitude
+            )
+        }
+
+        return RendererElevationSource(
+            key: key,
+            samples: samples,
+            totalDistance: totalDistance,
+            minAltitude: minAltitude,
+            maxAltitude: maxAltitude
+        )
+    }
+
+    private static func makeElevationDrawing(
+        source: RendererElevationSource,
+        profileRect: CGRect,
+        cornerRadius: CGFloat
+    ) -> RendererElevationDrawing? {
+        let range = source.maxAltitude - source.minAltitude
+        guard range > 0, let first = source.samples.first else { return nil }
+
+        func point(for sample: ElevationProfileSample) -> CGPoint {
+            CGPoint(
+                x: profileRect.minX + sample.distanceRatio * profileRect.width,
+                y: profileRect.minY + CGFloat((sample.altitude - source.minAltitude) / range) * profileRect.height
+            )
+        }
+
+        let fillPath = CGMutablePath()
+        let linePath = CGMutablePath()
+        let firstPoint = point(for: first)
+
+        fillPath.move(to: CGPoint(x: firstPoint.x, y: profileRect.minY))
+        fillPath.addLine(to: firstPoint)
+        linePath.move(to: firstPoint)
+
+        for sample in source.samples.dropFirst() {
+            let p = point(for: sample)
+            fillPath.addLine(to: p)
+            linePath.addLine(to: p)
+        }
+
+        fillPath.addLine(to: CGPoint(x: profileRect.maxX, y: profileRect.minY))
+        fillPath.closeSubpath()
+
+        return RendererElevationDrawing(
+            backgroundPath: CGPath(
+                roundedRect: profileRect,
+                cornerWidth: cornerRadius,
+                cornerHeight: cornerRadius,
+                transform: nil
+            ),
+            fillPath: fillPath,
+            linePath: linePath,
+            profileRect: profileRect,
+            minAltitude: source.minAltitude,
+            maxAltitude: source.maxAltitude
+        )
     }
 
     // MARK: - GPS Track (top-right mini-map)
 
     private func drawGPSTrack(ctx: CGContext, currentPoint: FITDataPoint) {
-        guard let projection = trackProjection(for: trackCoordinates) else { return }
+        guard let drawing = trackDrawing() else { return }
 
         let style = renderStyle
-        let mapRect = self.mapRect()
 
         // Background: semi-transparent black, 8pt corner radius
         ctx.saveGState()
         ctx.setShadow(offset: .zero, blur: 0)
         ctx.setFillColor(style.mapBackgroundColor)
-        let bgPath = CGPath(
-            roundedRect: mapRect,
-            cornerWidth: style.mapCornerRadius * scale,
-            cornerHeight: style.mapCornerRadius * scale,
-            transform: nil
-        )
-        ctx.addPath(bgPath)
+        ctx.addPath(drawing.backgroundPath)
         ctx.fillPath()
         ctx.restoreGState()
-
-        // Preserve aspect ratio inside the map area with an inset.
-        let inset = 10 * scale
-        let drawRect = mapRect.insetBy(dx: inset, dy: inset)
-
-        // Guard against divide-by-zero when all points share a lat or lon.
-        let safeLatRange = projection.latRange > 0 ? projection.latRange : 1e-9
-        let safeLonRange = projection.lonRange > 0 ? projection.lonRange : 1e-9
-
-        // Fit: compute scale that fits both axes, keeping aspect ratio.
-        let sx = drawRect.width / CGFloat(safeLonRange)
-        let sy = drawRect.height / CGFloat(safeLatRange)
-        let fitScale = min(sx, sy)
-        let usedWidth = CGFloat(safeLonRange) * fitScale
-        let usedHeight = CGFloat(safeLatRange) * fitScale
-        let originX = drawRect.midX - usedWidth / 2
-        let originY = drawRect.midY - usedHeight / 2
-
-        // Lon → X (east = +X). Lat → Y with north = top.
-        // CGContext origin is bottom-left, so latitude maps directly (higher lat = higher Y).
-        func project(_ coord: CLLocationCoordinate2D) -> CGPoint {
-            let x = originX + CGFloat(projection.projectedLongitude(coord) - projection.minProjectedLon) * fitScale
-            let y = originY + CGFloat(coord.latitude - projection.minLat) * fitScale
-            return CGPoint(x: x, y: y)
-        }
-
-        // Build polyline path once.
-        let polyline = CGMutablePath()
-        polyline.move(to: project(projection.coordinates[0]))
-        for c in projection.coordinates.dropFirst() {
-            polyline.addLine(to: project(c))
-        }
 
         ctx.saveGState()
         ctx.setShadow(offset: .zero, blur: 0)
@@ -482,24 +569,24 @@ final class OverlayRenderer {
         ctx.setLineCap(.round)
 
         // Clip to rounded map rect so the polyline never escapes the frame.
-        ctx.addPath(bgPath)
+        ctx.addPath(drawing.backgroundPath)
         ctx.clip()
 
         // Outline (black, alpha 0.5, 5pt)
-        ctx.addPath(polyline)
+        ctx.addPath(drawing.polylinePath)
         ctx.setStrokeColor(style.trackOutlineColor)
         ctx.setLineWidth(5 * scale)
         ctx.strokePath()
 
         // Foreground (cyan, 3pt)
-        ctx.addPath(polyline)
+        ctx.addPath(drawing.polylinePath)
         ctx.setStrokeColor(style.trackLineColor)
         ctx.setLineWidth(3 * scale)
         ctx.strokePath()
 
         // Current position dot (red with white stroke) — only when we have a coord.
         if let current = currentPoint.coordinate, CLLocationCoordinate2DIsValid(current) {
-            let p = project(current)
+            let p = drawing.project(current)
             let dotDiameter = 12 * scale
             let dotRect = CGRect(
                 x: p.x - dotDiameter / 2,
@@ -517,52 +604,143 @@ final class OverlayRenderer {
         ctx.restoreGState()
     }
 
-    private struct TrackProjection {
-        let coordinates: [CLLocationCoordinate2D]
-        let minLat: Double
-        let maxLat: Double
-        let minProjectedLon: Double
-        let maxProjectedLon: Double
-        let lonScale: Double
-
-        var latRange: Double { maxLat - minLat }
-        var lonRange: Double { maxProjectedLon - minProjectedLon }
-
-        func projectedLongitude(_ coord: CLLocationCoordinate2D) -> Double {
-            coord.longitude * lonScale
+    private func trackSource() -> RendererTrackSource? {
+        let key = CoordinateSignature(coordinates: trackCoordinates)
+        if let cached = trackSourceCache, cached.key == key {
+            return cached.source
         }
+
+        let source = Self.makeTrackSource(coordinates: trackCoordinates, key: key)
+        trackSourceCache = (key, source)
+        trackDrawingCache = nil
+        return source
     }
 
-    private func trackProjection(for coordinates: [CLLocationCoordinate2D]) -> TrackProjection? {
-        let validCoordinates = coordinates.filter(CLLocationCoordinate2DIsValid)
-        guard validCoordinates.count >= 2 else { return nil }
+    private func trackDrawing() -> RendererTrackDrawing? {
+        guard let source = trackSource() else { return nil }
 
-        let latitudes = validCoordinates.map(\.latitude)
-        let longitudes = validCoordinates.map(\.longitude)
-        guard let minLat = latitudes.min(), let maxLat = latitudes.max(),
-              let minLon = longitudes.min(), let maxLon = longitudes.max() else {
+        let mapRect = self.mapRect()
+        let cornerRadius = renderStyle.mapCornerRadius * scale
+        let key = RendererTrackDrawingKey(
+            sourceKey: source.key,
+            mapRect: mapRect,
+            scale: scale,
+            cornerRadius: cornerRadius
+        )
+        if let cached = trackDrawingCache, cached.key == key {
+            return cached.drawing
+        }
+
+        guard let drawing = Self.makeTrackDrawing(
+            source: source,
+            mapRect: mapRect,
+            scale: scale,
+            cornerRadius: cornerRadius
+        ) else {
+            trackDrawingCache = nil
             return nil
         }
+
+        trackDrawingCache = (key, drawing)
+        return drawing
+    }
+
+    private static func makeTrackSource(
+        coordinates: [CLLocationCoordinate2D],
+        key: CoordinateSignature
+    ) -> RendererTrackSource? {
+        var validCoordinates: [CLLocationCoordinate2D] = []
+        validCoordinates.reserveCapacity(coordinates.count)
+
+        var minLat = Double.greatestFiniteMagnitude
+        var maxLat = -Double.greatestFiniteMagnitude
+
+        for coordinate in coordinates where CLLocationCoordinate2DIsValid(coordinate) {
+            validCoordinates.append(coordinate)
+            minLat = min(minLat, coordinate.latitude)
+            maxLat = max(maxLat, coordinate.latitude)
+        }
+
+        guard validCoordinates.count >= 2 else { return nil }
 
         let centerLatitude = (minLat + maxLat) / 2
         let lonScale = max(abs(cos(centerLatitude * .pi / 180)), 1e-9)
-        let projectedLongitudes = validCoordinates.map { $0.longitude * lonScale }
-        guard let minProjectedLon = projectedLongitudes.min(),
-              let maxProjectedLon = projectedLongitudes.max() else {
-            return nil
+        var minProjectedLon = Double.greatestFiniteMagnitude
+        var maxProjectedLon = -Double.greatestFiniteMagnitude
+
+        for coordinate in validCoordinates {
+            let projectedLongitude = coordinate.longitude * lonScale
+            minProjectedLon = min(minProjectedLon, projectedLongitude)
+            maxProjectedLon = max(maxProjectedLon, projectedLongitude)
         }
 
         let latRange = maxLat - minLat
-        let lonRange = (maxLon - minLon) * lonScale
+        let lonRange = maxProjectedLon - minProjectedLon
         guard latRange > 0 || lonRange > 0 else { return nil }
 
-        return TrackProjection(
+        return RendererTrackSource(
+            key: key,
             coordinates: validCoordinates,
             minLat: minLat,
             maxLat: maxLat,
             minProjectedLon: minProjectedLon,
             maxProjectedLon: maxProjectedLon,
             lonScale: lonScale
+        )
+    }
+
+    private static func makeTrackDrawing(
+        source: RendererTrackSource,
+        mapRect: CGRect,
+        scale: CGFloat,
+        cornerRadius: CGFloat
+    ) -> RendererTrackDrawing? {
+        guard let first = source.coordinates.first else { return nil }
+
+        // Preserve aspect ratio inside the map area with an inset.
+        let inset = 10 * scale
+        let drawRect = mapRect.insetBy(dx: inset, dy: inset)
+
+        // Guard against divide-by-zero when all points share a lat or lon.
+        let safeLatRange = source.latRange > 0 ? source.latRange : 1e-9
+        let safeLonRange = source.lonRange > 0 ? source.lonRange : 1e-9
+
+        // Fit: compute scale that fits both axes, keeping aspect ratio.
+        let sx = drawRect.width / CGFloat(safeLonRange)
+        let sy = drawRect.height / CGFloat(safeLatRange)
+        let fitScale = min(sx, sy)
+        let usedWidth = CGFloat(safeLonRange) * fitScale
+        let usedHeight = CGFloat(safeLatRange) * fitScale
+        let originX = drawRect.midX - usedWidth / 2
+        let originY = drawRect.midY - usedHeight / 2
+
+        func project(_ coordinate: CLLocationCoordinate2D) -> CGPoint {
+            CGPoint(
+                x: originX + CGFloat(source.projectedLongitude(coordinate) - source.minProjectedLon) * fitScale,
+                y: originY + CGFloat(coordinate.latitude - source.minLat) * fitScale
+            )
+        }
+
+        let polyline = CGMutablePath()
+        polyline.move(to: project(first))
+        for coordinate in source.coordinates.dropFirst() {
+            polyline.addLine(to: project(coordinate))
+        }
+
+        return RendererTrackDrawing(
+            backgroundPath: CGPath(
+                roundedRect: mapRect,
+                cornerWidth: cornerRadius,
+                cornerHeight: cornerRadius,
+                transform: nil
+            ),
+            polylinePath: polyline,
+            originX: originX,
+            originY: originY,
+            fitScale: fitScale,
+            minLat: source.minLat,
+            minProjectedLon: source.minProjectedLon,
+            lonScale: source.lonScale
         )
     }
 
@@ -588,6 +766,182 @@ final class OverlayRenderer {
         )
     }
 
+    private func invalidateTrackCache() {
+        trackSourceCache = nil
+        trackDrawingCache = nil
+    }
+
+    private func invalidateElevationProfileCache() {
+        elevationSourceCache = nil
+        elevationDrawingCache = nil
+    }
+
+    private struct BitmapContextCache {
+        let width: Int
+        let height: Int
+        let context: CGContext
+    }
+
+    private struct ElevationProfileSample {
+        let distanceRatio: CGFloat
+        let altitude: Double
+    }
+
+    private struct RendererElevationSource {
+        let key: DataPointSignature
+        let samples: [ElevationProfileSample]
+        let totalDistance: Double
+        let minAltitude: Double
+        let maxAltitude: Double
+    }
+
+    private struct RendererElevationDrawing {
+        let backgroundPath: CGPath
+        let fillPath: CGPath
+        let linePath: CGPath
+        let profileRect: CGRect
+        let minAltitude: Double
+        let maxAltitude: Double
+
+        func y(forAltitude altitude: Double) -> CGFloat {
+            profileRect.minY + CGFloat((altitude - minAltitude) / (maxAltitude - minAltitude)) * profileRect.height
+        }
+    }
+
+    private struct RendererTrackSource {
+        let key: CoordinateSignature
+        let coordinates: [CLLocationCoordinate2D]
+        let minLat: Double
+        let maxLat: Double
+        let minProjectedLon: Double
+        let maxProjectedLon: Double
+        let lonScale: Double
+
+        var latRange: Double { maxLat - minLat }
+        var lonRange: Double { maxProjectedLon - minProjectedLon }
+
+        func projectedLongitude(_ coordinate: CLLocationCoordinate2D) -> Double {
+            coordinate.longitude * lonScale
+        }
+    }
+
+    private struct RendererTrackDrawing {
+        let backgroundPath: CGPath
+        let polylinePath: CGPath
+        let originX: CGFloat
+        let originY: CGFloat
+        let fitScale: CGFloat
+        let minLat: Double
+        let minProjectedLon: Double
+        let lonScale: Double
+
+        func project(_ coordinate: CLLocationCoordinate2D) -> CGPoint {
+            CGPoint(
+                x: originX + CGFloat(coordinate.longitude * lonScale - minProjectedLon) * fitScale,
+                y: originY + CGFloat(coordinate.latitude - minLat) * fitScale
+            )
+        }
+    }
+
+    private struct RendererElevationDrawingKey: Hashable {
+        let sourceKey: DataPointSignature
+        let rect: GeometryRectKey
+        let cornerRadius: Int64
+
+        init(sourceKey: DataPointSignature, profileRect: CGRect, cornerRadius: CGFloat) {
+            self.sourceKey = sourceKey
+            rect = GeometryRectKey(profileRect)
+            self.cornerRadius = quantized(cornerRadius, scale: 1_000)
+        }
+    }
+
+    private struct RendererTrackDrawingKey: Hashable {
+        let sourceKey: CoordinateSignature
+        let rect: GeometryRectKey
+        let scale: Int64
+        let cornerRadius: Int64
+
+        init(sourceKey: CoordinateSignature, mapRect: CGRect, scale: CGFloat, cornerRadius: CGFloat) {
+            self.sourceKey = sourceKey
+            rect = GeometryRectKey(mapRect)
+            self.scale = quantized(scale, scale: 1_000_000)
+            self.cornerRadius = quantized(cornerRadius, scale: 1_000)
+        }
+    }
+
+    private struct GeometryRectKey: Hashable {
+        let minX: Int64
+        let minY: Int64
+        let width: Int64
+        let height: Int64
+
+        init(_ rect: CGRect) {
+            minX = quantized(rect.minX, scale: 1_000)
+            minY = quantized(rect.minY, scale: 1_000)
+            width = quantized(rect.width, scale: 1_000)
+            height = quantized(rect.height, scale: 1_000)
+        }
+    }
+
+    private struct CoordinateSignature: Hashable {
+        let count: Int
+        let firstLatitude: Int64
+        let firstLongitude: Int64
+        let middleLatitude: Int64
+        let middleLongitude: Int64
+        let lastLatitude: Int64
+        let lastLongitude: Int64
+
+        init(coordinates: [CLLocationCoordinate2D]) {
+            count = coordinates.count
+            let first = coordinates.first
+            let middle = coordinates.isEmpty ? nil : coordinates[coordinates.count / 2]
+            let last = coordinates.last
+            firstLatitude = quantizedCoordinate(first?.latitude)
+            firstLongitude = quantizedCoordinate(first?.longitude)
+            middleLatitude = quantizedCoordinate(middle?.latitude)
+            middleLongitude = quantizedCoordinate(middle?.longitude)
+            lastLatitude = quantizedCoordinate(last?.latitude)
+            lastLongitude = quantizedCoordinate(last?.longitude)
+        }
+    }
+
+    private struct DataPointSignature: Hashable {
+        let count: Int
+        let first: DataPointSignatureComponent
+        let middle: DataPointSignatureComponent
+        let last: DataPointSignatureComponent
+
+        init(dataPoints: [FITDataPoint]) {
+            count = dataPoints.count
+            first = DataPointSignatureComponent(dataPoints.first)
+            middle = DataPointSignatureComponent(dataPoints.isEmpty ? nil : dataPoints[dataPoints.count / 2])
+            last = DataPointSignatureComponent(dataPoints.last)
+        }
+    }
+
+    private struct DataPointSignatureComponent: Hashable {
+        let timestamp: Int64
+        let distance: Int64
+        let altitude: Int64
+
+        init(_ dataPoint: FITDataPoint?) {
+            timestamp = quantized(dataPoint?.timestamp.timeIntervalSinceReferenceDate, scale: 1_000)
+            distance = quantized(dataPoint?.distance, scale: 1_000)
+            altitude = quantized(dataPoint?.altitude, scale: 1_000)
+        }
+    }
+
+    private struct FontCacheKey: Hashable {
+        let name: String
+        let size: Int64
+
+        init(name: String, size: CGFloat) {
+            self.name = name
+            self.size = quantized(size, scale: 1_000)
+        }
+    }
+
     // MARK: - Text helpers
 
     private func drawLabelValue(
@@ -609,7 +963,9 @@ final class OverlayRenderer {
 
     private func drawText(ctx: CGContext, text: String, x: CGFloat, y: CGFloat, fontSize: CGFloat, color: CGColor, bold: Bool = false) {
         let fontName = bold ? "Helvetica-Bold" : "Helvetica"
-        let font = CTFontCreateWithName(fontName as CFString, fontSize, nil)
+        let font = cachedFont(name: fontName, size: fontSize) {
+            CTFontCreateWithName(fontName as CFString, fontSize, nil)
+        }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: NSColor(cgColor: color) ?? NSColor.white
@@ -742,15 +1098,28 @@ final class OverlayRenderer {
     }
 
     private func textOverlayFont(for overlay: TextOverlay, size: CGFloat) -> CTFont {
-        let fallback = NSFont.systemFont(ofSize: size, weight: overlay.fontWeight.nsFontWeight)
-        let nsFont = NSFontManager.shared.font(
-            withFamily: overlay.fontFamily,
-            traits: [],
-            weight: overlay.fontWeight.nsFontManagerWeight,
-            size: size
-        ) ?? fallback
+        cachedFont(name: "TextOverlay:\(overlay.fontFamily):\(overlay.fontWeight.rawValue)", size: size) {
+            let fallback = NSFont.systemFont(ofSize: size, weight: overlay.fontWeight.nsFontWeight)
+            let nsFont = NSFontManager.shared.font(
+                withFamily: overlay.fontFamily,
+                traits: [],
+                weight: overlay.fontWeight.nsFontManagerWeight,
+                size: size
+            ) ?? fallback
 
-        return CTFontCreateWithName(nsFont.fontName as CFString, size, nil)
+            return CTFontCreateWithName(nsFont.fontName as CFString, size, nil)
+        }
+    }
+
+    private func cachedFont(name: String, size: CGFloat, make: () -> CTFont) -> CTFont {
+        let key = FontCacheKey(name: name, size: size)
+        if let cached = fontCache[key] {
+            return cached
+        }
+
+        let font = make()
+        fontCache[key] = font
+        return font
     }
 
     private func nsColor(_ color: CGColor, applyingOpacity opacity: Double, fallback: NSColor) -> NSColor {
@@ -765,7 +1134,11 @@ final class OverlayRenderer {
     // MARK: - Waiting indicator
 
     private func drawWaitingIndicator(ctx: CGContext) {
-        let font = CTFontCreateWithName("Helvetica" as CFString, 16 * scale, nil)
+        let fontName = "Helvetica"
+        let fontSize = 16 * scale
+        let font = cachedFont(name: fontName, size: fontSize) {
+            CTFontCreateWithName(fontName as CFString, fontSize, nil)
+        }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: NSColor(white: 0.6, alpha: 0.8)
@@ -793,6 +1166,27 @@ final class OverlayRenderer {
         else if temp >= 38.0 { return CGColor(red: 1, green: 0.8, blue: 0, alpha: 1) }
         else { return CGColor(red: 0.3, green: 0.8, blue: 0.3, alpha: 1) }
     }
+}
+
+private func quantizedCoordinate(_ value: Double?) -> Int64 {
+    quantized(value, scale: 100_000_000)
+}
+
+private func quantized(_ value: CGFloat, scale: Double) -> Int64 {
+    quantized(Double(value), scale: scale)
+}
+
+private func quantized(_ value: Double?, scale: Double) -> Int64 {
+    guard let value else { return Int64.min }
+    return quantized(value, scale: scale)
+}
+
+private func quantized(_ value: Double, scale: Double) -> Int64 {
+    guard value.isFinite, scale.isFinite, scale > 0 else { return Int64.min }
+    let scaled = (value * scale).rounded()
+    if scaled >= Double(Int64.max) { return Int64.max }
+    if scaled <= Double(Int64.min) { return Int64.min }
+    return Int64(scaled)
 }
 
 enum OverlayMapPlacement: String, Codable {

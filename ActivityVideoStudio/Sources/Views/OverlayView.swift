@@ -11,6 +11,7 @@ struct LivePreviewOverlayView: View {
     let allDataPoints: [FITDataPoint]
     let trackCoordinates: [CLLocationCoordinate2D]
     let textOverlays: [TextOverlay]
+    @StateObject private var geometryCache = LivePreviewOverlayGeometryCache()
 
     var body: some View {
         GeometryReader { geometry in
@@ -26,7 +27,8 @@ struct LivePreviewOverlayView: View {
                         allDataPoints: allDataPoints,
                         trackCoordinates: trackCoordinates,
                         size: size,
-                        scale: scale
+                        scale: scale,
+                        geometryCache: geometryCache
                     )
                 }
 
@@ -52,6 +54,7 @@ private struct LiveActivityDataLayer: View {
     let trackCoordinates: [CLLocationCoordinate2D]
     let size: CGSize
     let scale: CGFloat
+    @ObservedObject var geometryCache: LivePreviewOverlayGeometryCache
 
     private var style: OverlayPresetRenderStyle {
         settings.selectedRenderStyle
@@ -87,7 +90,8 @@ private struct LiveActivityDataLayer: View {
                     dataPoints: allDataPoints,
                     currentPoint: frame.dataPoint,
                     style: style,
-                    scale: scale
+                    scale: scale,
+                    geometryCache: geometryCache
                 )
                 .frame(width: displayRect.width, height: displayRect.height)
                 .offset(x: displayRect.minX, y: displayRect.minY)
@@ -99,7 +103,8 @@ private struct LiveActivityDataLayer: View {
                     trackCoordinates: trackCoordinates,
                     currentCoordinate: frame.dataPoint.coordinate,
                     style: style,
-                    scale: scale
+                    scale: scale,
+                    geometryCache: geometryCache
                 )
                 .frame(width: displayRect.width, height: displayRect.height)
                 .offset(x: displayRect.minX, y: displayRect.minY)
@@ -348,9 +353,7 @@ private struct LiveActivityDataLayer: View {
     }
 
     private func elevationProfileRect(metricsTopY: CGFloat?) -> CGRect? {
-        guard let profileData = elevationProfileData(for: allDataPoints) else { return nil }
-        let altitudes = profileData.samples.map(\.altitude)
-        guard let minAlt = altitudes.min(), let maxAlt = altitudes.max(), maxAlt > minAlt else { return nil }
+        guard geometryCache.hasDrawableElevationProfile(for: allDataPoints) else { return nil }
 
         let mapRect = mapRect()
         let topY = mapRect.minY - style.profileGap * scale
@@ -369,7 +372,7 @@ private struct LiveActivityDataLayer: View {
     }
 
     private var hasDrawableTrack: Bool {
-        trackProjection(for: trackCoordinates) != nil
+        geometryCache.hasDrawableTrack(for: trackCoordinates)
     }
 
     private func topForBaseline(_ baselineY: CGFloat, fontSize: CGFloat) -> CGFloat {
@@ -416,50 +419,30 @@ private struct LiveGPSTrackMapView: View {
     let currentCoordinate: CLLocationCoordinate2D?
     let style: OverlayPresetRenderStyle
     let scale: CGFloat
+    @ObservedObject var geometryCache: LivePreviewOverlayGeometryCache
 
     var body: some View {
-        if trackProjection(for: trackCoordinates) != nil {
+        if geometryCache.hasDrawableTrack(for: trackCoordinates) {
             Canvas { context, size in
-                guard let projection = trackProjection(for: trackCoordinates) else { return }
-
-                let inset = 10 * scale
-                let drawRect = CGRect(origin: .zero, size: size).insetBy(dx: inset, dy: inset)
-                let safeLatRange = projection.latRange > 0 ? projection.latRange : 1e-9
-                let safeLonRange = projection.lonRange > 0 ? projection.lonRange : 1e-9
-                let sx = drawRect.width / CGFloat(safeLonRange)
-                let sy = drawRect.height / CGFloat(safeLatRange)
-                let fitScale = min(sx, sy)
-                let usedWidth = CGFloat(safeLonRange) * fitScale
-                let usedHeight = CGFloat(safeLatRange) * fitScale
-                let originX = drawRect.midX - usedWidth / 2
-                let originY = drawRect.midY - usedHeight / 2
-
-                func project(_ coord: CLLocationCoordinate2D) -> CGPoint {
-                    CGPoint(
-                        x: originX + CGFloat(projection.projectedLongitude(coord) - projection.minProjectedLon) * fitScale,
-                        y: originY + CGFloat(projection.maxLat - coord.latitude) * fitScale
-                    )
-                }
-
-                var path = Path()
-                path.move(to: project(projection.coordinates[0]))
-                for coord in projection.coordinates.dropFirst() {
-                    path.addLine(to: project(coord))
-                }
+                guard let drawing = geometryCache.trackDrawing(
+                    for: trackCoordinates,
+                    size: size,
+                    scale: scale
+                ) else { return }
 
                 context.stroke(
-                    path,
+                    drawing.path,
                     with: .color(color(style.trackOutlineColor)),
                     style: StrokeStyle(lineWidth: 5 * scale, lineCap: .round, lineJoin: .round)
                 )
                 context.stroke(
-                    path,
+                    drawing.path,
                     with: .color(color(style.trackLineColor)),
                     style: StrokeStyle(lineWidth: 3 * scale, lineCap: .round, lineJoin: .round)
                 )
 
                 if let currentCoordinate, CLLocationCoordinate2DIsValid(currentCoordinate) {
-                    let p = project(currentCoordinate)
+                    let p = drawing.project(currentCoordinate)
                     let dot = 12 * scale
                     let dotRect = CGRect(x: p.x - dot / 2, y: p.y - dot / 2, width: dot, height: dot)
                     context.fill(Path(ellipseIn: dotRect), with: .color(color(style.mapDotColor)))
@@ -477,45 +460,24 @@ private struct LiveElevationProfileView: View {
     let currentPoint: FITDataPoint
     let style: OverlayPresetRenderStyle
     let scale: CGFloat
+    @ObservedObject var geometryCache: LivePreviewOverlayGeometryCache
 
     var body: some View {
         Canvas { context, size in
-            guard let profileData = elevationProfileData(for: dataPoints) else { return }
-            let altitudes = profileData.samples.map(\.altitude)
-            guard let minAlt = altitudes.min(), let maxAlt = altitudes.max(), maxAlt > minAlt else { return }
+            guard let drawing = geometryCache.elevationDrawing(for: dataPoints, size: size) else { return }
 
-            let range = maxAlt - minAlt
-            var fillPath = Path()
-            var linePath = Path()
+            context.fill(drawing.fillPath, with: .color(color(style.elevationFillColor)))
+            context.stroke(drawing.linePath, with: .color(color(style.elevationLineColor)), lineWidth: 2 * scale)
 
-            for (index, sample) in profileData.samples.enumerated() {
-                let x = sample.distanceRatio * size.width
-                let y = size.height - CGFloat((sample.altitude - minAlt) / range) * size.height
-
-                if index == 0 {
-                    fillPath.move(to: CGPoint(x: x, y: size.height))
-                    fillPath.addLine(to: CGPoint(x: x, y: y))
-                    linePath.move(to: CGPoint(x: x, y: y))
-                } else {
-                    fillPath.addLine(to: CGPoint(x: x, y: y))
-                    linePath.addLine(to: CGPoint(x: x, y: y))
-                }
-            }
-
-            fillPath.addLine(to: CGPoint(x: size.width, y: size.height))
-            fillPath.closeSubpath()
-            context.fill(fillPath, with: .color(color(style.elevationFillColor)))
-            context.stroke(linePath, with: .color(color(style.elevationLineColor)), lineWidth: 2 * scale)
-
-            if let currentDistance = currentPoint.distance, profileData.totalDistance > 0 {
-                let markerX = CGFloat(min(max(currentDistance / profileData.totalDistance, 0), 1)) * size.width
+            if let currentDistance = currentPoint.distance, drawing.totalDistance > 0 {
+                let markerX = CGFloat(min(max(currentDistance / drawing.totalDistance, 0), 1)) * size.width
                 var marker = Path()
                 marker.move(to: CGPoint(x: markerX, y: 0))
                 marker.addLine(to: CGPoint(x: markerX, y: size.height))
                 context.stroke(marker, with: .color(color(style.accentRed)), lineWidth: 2.5 * scale)
 
                 if let altitude = currentPoint.altitude {
-                    let y = size.height - CGFloat((altitude - minAlt) / range) * size.height
+                    let y = drawing.y(forAltitude: altitude, in: size)
                     let dotRect = CGRect(x: markerX - 4 * scale, y: y - 4 * scale, width: 8 * scale, height: 8 * scale)
                     context.fill(Path(ellipseIn: dotRect), with: .color(.white))
                 }
@@ -664,26 +626,255 @@ private struct LiveTextOverlayView: View {
     }
 }
 
+private final class LivePreviewOverlayGeometryCache: ObservableObject {
+    private static let maxPreviewTrackPoints = 2_000
+    private static let maxPreviewElevationSamples = 2_000
+
+    private var trackSourceCache: (key: CoordinateSignature, source: PreviewTrackSource?)?
+    private var trackDrawingCache: (key: PreviewTrackDrawingKey, drawing: PreviewTrackDrawing)?
+    private var elevationSourceCache: (key: DataPointSignature, source: PreviewElevationSource?)?
+    private var elevationDrawingCache: (key: PreviewElevationDrawingKey, drawing: PreviewElevationDrawing)?
+
+    func hasDrawableTrack(for coordinates: [CLLocationCoordinate2D]) -> Bool {
+        trackSource(for: coordinates) != nil
+    }
+
+    func trackDrawing(
+        for coordinates: [CLLocationCoordinate2D],
+        size: CGSize,
+        scale: CGFloat
+    ) -> PreviewTrackDrawing? {
+        guard let source = trackSource(for: coordinates) else { return nil }
+        let key = PreviewTrackDrawingKey(sourceKey: source.key, size: size, scale: scale)
+        if let cached = trackDrawingCache, cached.key == key {
+            return cached.drawing
+        }
+
+        guard let drawing = Self.makeTrackDrawing(source: source, size: size, scale: scale) else {
+            trackDrawingCache = nil
+            return nil
+        }
+        trackDrawingCache = (key, drawing)
+        return drawing
+    }
+
+    func hasDrawableElevationProfile(for dataPoints: [FITDataPoint]) -> Bool {
+        elevationSource(for: dataPoints) != nil
+    }
+
+    func elevationDrawing(for dataPoints: [FITDataPoint], size: CGSize) -> PreviewElevationDrawing? {
+        guard let source = elevationSource(for: dataPoints) else { return nil }
+        let key = PreviewElevationDrawingKey(sourceKey: source.key, size: size)
+        if let cached = elevationDrawingCache, cached.key == key {
+            return cached.drawing
+        }
+
+        let drawing = Self.makeElevationDrawing(source: source, size: size)
+        elevationDrawingCache = (key, drawing)
+        return drawing
+    }
+
+    private func trackSource(for coordinates: [CLLocationCoordinate2D]) -> PreviewTrackSource? {
+        let key = CoordinateSignature(coordinates)
+        if let cached = trackSourceCache, cached.key == key {
+            return cached.source
+        }
+
+        let source = Self.makeTrackSource(coordinates: coordinates, key: key)
+        trackSourceCache = (key, source)
+        trackDrawingCache = nil
+        return source
+    }
+
+    private func elevationSource(for dataPoints: [FITDataPoint]) -> PreviewElevationSource? {
+        let key = DataPointSignature(dataPoints)
+        if let cached = elevationSourceCache, cached.key == key {
+            return cached.source
+        }
+
+        let source = Self.makeElevationSource(dataPoints: dataPoints, key: key)
+        elevationSourceCache = (key, source)
+        elevationDrawingCache = nil
+        return source
+    }
+
+    private static func makeTrackSource(
+        coordinates: [CLLocationCoordinate2D],
+        key: CoordinateSignature
+    ) -> PreviewTrackSource? {
+        var validCoordinates: [CLLocationCoordinate2D] = []
+        validCoordinates.reserveCapacity(coordinates.count)
+
+        var minLat = Double.greatestFiniteMagnitude
+        var maxLat = -Double.greatestFiniteMagnitude
+
+        for coordinate in coordinates where CLLocationCoordinate2DIsValid(coordinate) {
+            validCoordinates.append(coordinate)
+            minLat = min(minLat, coordinate.latitude)
+            maxLat = max(maxLat, coordinate.latitude)
+        }
+
+        guard validCoordinates.count >= 2 else { return nil }
+
+        let centerLatitude = (minLat + maxLat) / 2
+        let lonScale = max(abs(cos(centerLatitude * .pi / 180)), 1e-9)
+        var minProjectedLon = Double.greatestFiniteMagnitude
+        var maxProjectedLon = -Double.greatestFiniteMagnitude
+
+        for coordinate in validCoordinates {
+            let projectedLongitude = coordinate.longitude * lonScale
+            minProjectedLon = min(minProjectedLon, projectedLongitude)
+            maxProjectedLon = max(maxProjectedLon, projectedLongitude)
+        }
+
+        let latRange = maxLat - minLat
+        let lonRange = maxProjectedLon - minProjectedLon
+        guard latRange > 0 || lonRange > 0 else { return nil }
+
+        return PreviewTrackSource(
+            key: key,
+            coordinates: downsampled(validCoordinates, maxCount: maxPreviewTrackPoints),
+            minLat: minLat,
+            maxLat: maxLat,
+            minProjectedLon: minProjectedLon,
+            maxProjectedLon: maxProjectedLon,
+            lonScale: lonScale
+        )
+    }
+
+    private static func makeTrackDrawing(
+        source: PreviewTrackSource,
+        size: CGSize,
+        scale: CGFloat
+    ) -> PreviewTrackDrawing? {
+        guard size.width > 0, size.height > 0, let first = source.coordinates.first else { return nil }
+
+        let inset = 10 * scale
+        let drawRect = CGRect(origin: .zero, size: size).insetBy(dx: inset, dy: inset)
+        let safeLatRange = source.latRange > 0 ? source.latRange : 1e-9
+        let safeLonRange = source.lonRange > 0 ? source.lonRange : 1e-9
+        let sx = drawRect.width / CGFloat(safeLonRange)
+        let sy = drawRect.height / CGFloat(safeLatRange)
+        let fitScale = min(sx, sy)
+        let usedWidth = CGFloat(safeLonRange) * fitScale
+        let usedHeight = CGFloat(safeLatRange) * fitScale
+        let originX = drawRect.midX - usedWidth / 2
+        let originY = drawRect.midY - usedHeight / 2
+
+        func project(_ coordinate: CLLocationCoordinate2D) -> CGPoint {
+            CGPoint(
+                x: originX + CGFloat(source.projectedLongitude(coordinate) - source.minProjectedLon) * fitScale,
+                y: originY + CGFloat(source.maxLat - coordinate.latitude) * fitScale
+            )
+        }
+
+        var path = Path()
+        path.move(to: project(first))
+        for coordinate in source.coordinates.dropFirst() {
+            path.addLine(to: project(coordinate))
+        }
+
+        return PreviewTrackDrawing(
+            path: path,
+            originX: originX,
+            originY: originY,
+            fitScale: fitScale,
+            minProjectedLon: source.minProjectedLon,
+            maxLat: source.maxLat,
+            lonScale: source.lonScale
+        )
+    }
+
+    private static func makeElevationSource(
+        dataPoints: [FITDataPoint],
+        key: DataPointSignature
+    ) -> PreviewElevationSource? {
+        var rawSamples: [(distance: Double, altitude: Double)] = []
+        rawSamples.reserveCapacity(dataPoints.count)
+
+        var totalDistance = 0.0
+        var minAltitude = Double.greatestFiniteMagnitude
+        var maxAltitude = -Double.greatestFiniteMagnitude
+
+        for point in dataPoints {
+            guard let altitude = point.altitude, let distance = point.distance else { continue }
+            rawSamples.append((distance, altitude))
+            totalDistance = max(totalDistance, distance)
+            minAltitude = min(minAltitude, altitude)
+            maxAltitude = max(maxAltitude, altitude)
+        }
+
+        guard rawSamples.count >= 2, totalDistance > 0, maxAltitude > minAltitude else { return nil }
+
+        let samples = rawSamples.map { sample in
+            ElevationProfileSample(
+                distanceRatio: CGFloat(min(max(sample.distance / totalDistance, 0), 1)),
+                altitude: sample.altitude
+            )
+        }
+
+        return PreviewElevationSource(
+            key: key,
+            samples: downsampled(samples, maxCount: maxPreviewElevationSamples),
+            totalDistance: totalDistance,
+            minAltitude: minAltitude,
+            maxAltitude: maxAltitude
+        )
+    }
+
+    private static func makeElevationDrawing(
+        source: PreviewElevationSource,
+        size: CGSize
+    ) -> PreviewElevationDrawing {
+        let range = source.maxAltitude - source.minAltitude
+        var fillPath = Path()
+        var linePath = Path()
+
+        for (index, sample) in source.samples.enumerated() {
+            let x = sample.distanceRatio * size.width
+            let y = size.height - CGFloat((sample.altitude - source.minAltitude) / range) * size.height
+
+            if index == 0 {
+                fillPath.move(to: CGPoint(x: x, y: size.height))
+                fillPath.addLine(to: CGPoint(x: x, y: y))
+                linePath.move(to: CGPoint(x: x, y: y))
+            } else {
+                fillPath.addLine(to: CGPoint(x: x, y: y))
+                linePath.addLine(to: CGPoint(x: x, y: y))
+            }
+        }
+
+        fillPath.addLine(to: CGPoint(x: size.width, y: size.height))
+        fillPath.closeSubpath()
+
+        return PreviewElevationDrawing(
+            fillPath: fillPath,
+            linePath: linePath,
+            totalDistance: source.totalDistance,
+            minAltitude: source.minAltitude,
+            maxAltitude: source.maxAltitude
+        )
+    }
+
+    private static func downsampled<T>(_ values: [T], maxCount: Int) -> [T] {
+        guard values.count > maxCount, maxCount >= 2 else { return values }
+
+        let lastSourceIndex = values.count - 1
+        let lastTargetIndex = maxCount - 1
+        return (0..<maxCount).map { index in
+            let sourceIndex = Int((Double(index) * Double(lastSourceIndex) / Double(lastTargetIndex)).rounded())
+            return values[min(sourceIndex, lastSourceIndex)]
+        }
+    }
+}
+
 private struct ElevationProfileSample {
     let distanceRatio: CGFloat
     let altitude: Double
 }
 
-private func elevationProfileData(for dataPoints: [FITDataPoint]) -> (samples: [ElevationProfileSample], totalDistance: Double)? {
-    let totalDistance = dataPoints.compactMap(\.distance).max() ?? 0
-    guard totalDistance > 0 else { return nil }
-
-    let samples = dataPoints.compactMap { point -> ElevationProfileSample? in
-        guard let altitude = point.altitude, let distance = point.distance else { return nil }
-        let ratio = min(max(distance / totalDistance, 0), 1)
-        return ElevationProfileSample(distanceRatio: CGFloat(ratio), altitude: altitude)
-    }
-
-    guard samples.count >= 2 else { return nil }
-    return (samples, totalDistance)
-}
-
-private struct TrackProjection {
+private struct PreviewTrackSource {
+    let key: CoordinateSignature
     let coordinates: [CLLocationCoordinate2D]
     let minLat: Double
     let maxLat: Double
@@ -694,42 +885,143 @@ private struct TrackProjection {
     var latRange: Double { maxLat - minLat }
     var lonRange: Double { maxProjectedLon - minProjectedLon }
 
-    func projectedLongitude(_ coord: CLLocationCoordinate2D) -> Double {
-        coord.longitude * lonScale
+    func projectedLongitude(_ coordinate: CLLocationCoordinate2D) -> Double {
+        coordinate.longitude * lonScale
     }
 }
 
-private func trackProjection(for coordinates: [CLLocationCoordinate2D]) -> TrackProjection? {
-    let validCoordinates = coordinates.filter(CLLocationCoordinate2DIsValid)
-    guard validCoordinates.count >= 2 else { return nil }
+private struct PreviewTrackDrawing {
+    let path: Path
+    let originX: CGFloat
+    let originY: CGFloat
+    let fitScale: CGFloat
+    let minProjectedLon: Double
+    let maxLat: Double
+    let lonScale: Double
 
-    let latitudes = validCoordinates.map(\.latitude)
-    let longitudes = validCoordinates.map(\.longitude)
-    guard let minLat = latitudes.min(), let maxLat = latitudes.max(),
-          let minLon = longitudes.min(), let maxLon = longitudes.max() else {
-        return nil
+    func project(_ coordinate: CLLocationCoordinate2D) -> CGPoint {
+        CGPoint(
+            x: originX + CGFloat(coordinate.longitude * lonScale - minProjectedLon) * fitScale,
+            y: originY + CGFloat(maxLat - coordinate.latitude) * fitScale
+        )
     }
+}
 
-    let centerLatitude = (minLat + maxLat) / 2
-    let lonScale = max(abs(cos(centerLatitude * .pi / 180)), 1e-9)
-    let projectedLongitudes = validCoordinates.map { $0.longitude * lonScale }
-    guard let minProjectedLon = projectedLongitudes.min(),
-          let maxProjectedLon = projectedLongitudes.max() else {
-        return nil
+private struct PreviewElevationSource {
+    let key: DataPointSignature
+    let samples: [ElevationProfileSample]
+    let totalDistance: Double
+    let minAltitude: Double
+    let maxAltitude: Double
+}
+
+private struct PreviewElevationDrawing {
+    let fillPath: Path
+    let linePath: Path
+    let totalDistance: Double
+    let minAltitude: Double
+    let maxAltitude: Double
+
+    func y(forAltitude altitude: Double, in size: CGSize) -> CGFloat {
+        let range = maxAltitude - minAltitude
+        return size.height - CGFloat((altitude - minAltitude) / range) * size.height
     }
+}
 
-    let latRange = maxLat - minLat
-    let lonRange = (maxLon - minLon) * lonScale
-    guard latRange > 0 || lonRange > 0 else { return nil }
+private struct PreviewTrackDrawingKey: Hashable {
+    let sourceKey: CoordinateSignature
+    let width: Int64
+    let height: Int64
+    let scale: Int64
 
-    return TrackProjection(
-        coordinates: validCoordinates,
-        minLat: minLat,
-        maxLat: maxLat,
-        minProjectedLon: minProjectedLon,
-        maxProjectedLon: maxProjectedLon,
-        lonScale: lonScale
-    )
+    init(sourceKey: CoordinateSignature, size: CGSize, scale: CGFloat) {
+        self.sourceKey = sourceKey
+        width = quantized(size.width, scale: 1_000)
+        height = quantized(size.height, scale: 1_000)
+        self.scale = quantized(scale, scale: 1_000_000)
+    }
+}
+
+private struct PreviewElevationDrawingKey: Hashable {
+    let sourceKey: DataPointSignature
+    let width: Int64
+    let height: Int64
+
+    init(sourceKey: DataPointSignature, size: CGSize) {
+        self.sourceKey = sourceKey
+        width = quantized(size.width, scale: 1_000)
+        height = quantized(size.height, scale: 1_000)
+    }
+}
+
+private struct CoordinateSignature: Hashable {
+    let count: Int
+    let firstLatitude: Int64
+    let firstLongitude: Int64
+    let middleLatitude: Int64
+    let middleLongitude: Int64
+    let lastLatitude: Int64
+    let lastLongitude: Int64
+
+    init(_ coordinates: [CLLocationCoordinate2D]) {
+        count = coordinates.count
+        let first = coordinates.first
+        let middle = coordinates.isEmpty ? nil : coordinates[coordinates.count / 2]
+        let last = coordinates.last
+        firstLatitude = quantizedCoordinate(first?.latitude)
+        firstLongitude = quantizedCoordinate(first?.longitude)
+        middleLatitude = quantizedCoordinate(middle?.latitude)
+        middleLongitude = quantizedCoordinate(middle?.longitude)
+        lastLatitude = quantizedCoordinate(last?.latitude)
+        lastLongitude = quantizedCoordinate(last?.longitude)
+    }
+}
+
+private struct DataPointSignature: Hashable {
+    let count: Int
+    let first: DataPointSignatureComponent
+    let middle: DataPointSignatureComponent
+    let last: DataPointSignatureComponent
+
+    init(_ dataPoints: [FITDataPoint]) {
+        count = dataPoints.count
+        first = DataPointSignatureComponent(dataPoints.first)
+        middle = DataPointSignatureComponent(dataPoints.isEmpty ? nil : dataPoints[dataPoints.count / 2])
+        last = DataPointSignatureComponent(dataPoints.last)
+    }
+}
+
+private struct DataPointSignatureComponent: Hashable {
+    let timestamp: Int64
+    let distance: Int64
+    let altitude: Int64
+
+    init(_ dataPoint: FITDataPoint?) {
+        timestamp = quantized(dataPoint?.timestamp.timeIntervalSinceReferenceDate, scale: 1_000)
+        distance = quantized(dataPoint?.distance, scale: 1_000)
+        altitude = quantized(dataPoint?.altitude, scale: 1_000)
+    }
+}
+
+private func quantizedCoordinate(_ value: Double?) -> Int64 {
+    quantized(value, scale: 100_000_000)
+}
+
+private func quantized(_ value: CGFloat, scale: Double) -> Int64 {
+    quantized(Double(value), scale: scale)
+}
+
+private func quantized(_ value: Double?, scale: Double) -> Int64 {
+    guard let value else { return Int64.min }
+    return quantized(value, scale: scale)
+}
+
+private func quantized(_ value: Double, scale: Double) -> Int64 {
+    guard value.isFinite, scale.isFinite, scale > 0 else { return Int64.min }
+    let scaled = (value * scale).rounded()
+    if scaled >= Double(Int64.max) { return Int64.max }
+    if scaled <= Double(Int64.min) { return Int64.min }
+    return Int64(scaled)
 }
 
 private func liveScale(for size: CGSize) -> CGFloat {

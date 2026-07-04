@@ -127,20 +127,24 @@ final class VideoExporter: @unchecked Sendable {
                 return cached.ciImage
             }
 
-            guard let cgImage = renderer.render(
-                dataPoint: dataPoint,
-                elapsedTime: elapsedTime,
-                globalPlaybackTime: globalPlaybackTime,
-                fitRecordingActive: fitRecordingActive
-            ) else {
-                return nil
-            }
+            return locked(lock) {
+                if let cached = entry, cached.key == key {
+                    return cached.ciImage
+                }
 
-            let ciImage = CIImage(cgImage: cgImage)
-            locked(lock) {
+                guard let cgImage = renderer.render(
+                    dataPoint: dataPoint,
+                    elapsedTime: elapsedTime,
+                    globalPlaybackTime: globalPlaybackTime,
+                    fitRecordingActive: fitRecordingActive
+                ) else {
+                    return nil
+                }
+
+                let ciImage = CIImage(cgImage: cgImage)
                 entry = Entry(key: key, cgImage: cgImage, ciImage: ciImage)
+                return ciImage
             }
-            return ciImage
         }
 
         private func cacheKey(
