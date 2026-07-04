@@ -28,24 +28,6 @@ private func locked<T>(_ lock: NSLock, _ body: () throws -> T) rethrows -> T {
     return try body()
 }
 
-private extension TextOverlay {
-    func isOpacityAnimating(at time: TimeInterval) -> Bool {
-        let relativeTime = time - startTime
-        guard relativeTime >= 0, relativeTime <= duration else { return false }
-
-        if fadeInDuration > 0, relativeTime < fadeInDuration {
-            return true
-        }
-
-        if fadeOutDuration > 0 {
-            let fadeOutStart = duration - fadeOutDuration
-            return relativeTime > fadeOutStart
-        }
-
-        return false
-    }
-}
-
 // MARK: - VideoExporter
 
 /// Exports video with overlay composited using AVVideoComposition + AVAssetExportSession.
@@ -104,9 +86,10 @@ final class VideoExporter: @unchecked Sendable {
         private let textOverlays: [TextOverlay]
         private var entry: Entry?
 
-        init(quantum: TimeInterval, frameRate: Int, textOverlays: [TextOverlay]) {
+        init(quantum: TimeInterval, sourceFrameRate: TimeInterval, textOverlays: [TextOverlay]) {
             baseQuantum = Swift.max(quantum, 1.0 / 60.0)
-            frameQuantum = 1.0 / TimeInterval(Swift.max(frameRate, 1))
+            let fps = sourceFrameRate.isFinite ? sourceFrameRate : 0
+            frameQuantum = 1.0 / Swift.max(fps, 1)
             self.textOverlays = textOverlays
         }
 
@@ -402,6 +385,10 @@ final class VideoExporter: @unchecked Sendable {
             throw ExportError.noVideos
         }
         let audioTrack   = tracks.first(where: { $0.mediaType == .audio })
+        let sourceFrameRate = await Self.sourceFrameRate(
+            for: videoTrack,
+            fallback: TimeInterval(config.frameRate)
+        )
         let totalSeconds = CMTimeGetSeconds(assetDuration)
         exportLog("asset loaded: \(String(format: "%.1f", totalSeconds))s hasAudio=\(audioTrack != nil)")
 
@@ -439,7 +426,7 @@ final class VideoExporter: @unchecked Sendable {
         let capturedOutputOffset = outputTimeOffset
         let overlayCache = OverlayFrameCache(
             quantum: config.overlayCacheQuantum,
-            frameRate: config.frameRate,
+            sourceFrameRate: sourceFrameRate,
             textOverlays: overlayRenderer.textOverlays
         )
 
@@ -538,6 +525,14 @@ final class VideoExporter: @unchecked Sendable {
 
         progress(1.0, 0)
         exportLog("DONE seg=\(segmentIndex)")
+    }
+
+    private static func sourceFrameRate(for track: AVAssetTrack, fallback: TimeInterval) async -> TimeInterval {
+        let nominalFrameRate = (try? await track.load(.nominalFrameRate)).map { TimeInterval($0) } ?? 0
+        if nominalFrameRate.isFinite, nominalFrameRate > 0 {
+            return nominalFrameRate
+        }
+        return fallback.isFinite && fallback > 0 ? fallback : 30
     }
 
     private func exportSingleVideoInRanges(

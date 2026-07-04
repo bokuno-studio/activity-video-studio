@@ -11,13 +11,14 @@ struct LivePreviewOverlayView: View {
     let allDataPoints: [FITDataPoint]
     let trackCoordinates: [CLLocationCoordinate2D]
     let textOverlays: [TextOverlay]
+    let textPlaybackTime: TimeInterval
     @StateObject private var geometryCache = LivePreviewOverlayGeometryCache()
 
     var body: some View {
         GeometryReader { geometry in
             let size = geometry.size
             let scale = liveScale(for: size)
-            let playbackTime = frame?.globalPlaybackTime ?? 0
+            let playbackTime = frame?.globalPlaybackTime ?? textPlaybackTime
 
             ZStack(alignment: .topLeading) {
                 if let frame {

@@ -181,21 +181,80 @@ struct TextOverlay: Identifiable, Codable {
         relativeY = min(max(relativeY, 0), 1)
     }
 
+    mutating func clampTiming(videoDuration: TimeInterval) {
+        startTime = Self.finiteNonnegative(startTime)
+        duration = Self.finiteNonnegative(duration)
+
+        if videoDuration.isFinite, videoDuration > 0 {
+            startTime = min(startTime, videoDuration)
+            duration = min(duration, max(videoDuration - startTime, 0))
+        }
+
+        clampFadeDurations()
+    }
+
+    mutating func clampFadeDurations() {
+        let fades = effectiveFadeDurations()
+        fadeInDuration = fades.fadeIn
+        fadeOutDuration = fades.fadeOut
+    }
+
+    func effectiveFadeDurations() -> (fadeIn: TimeInterval, fadeOut: TimeInterval) {
+        let displayDuration = Self.finiteNonnegative(duration)
+        guard displayDuration > 0 else { return (0, 0) }
+
+        var fadeIn = min(Self.finiteNonnegative(fadeInDuration), displayDuration)
+        var fadeOut = min(Self.finiteNonnegative(fadeOutDuration), displayDuration)
+        let totalFade = fadeIn + fadeOut
+        if totalFade > displayDuration, totalFade > 0 {
+            let scale = displayDuration / totalFade
+            fadeIn *= scale
+            fadeOut *= scale
+        }
+
+        return (fadeIn, fadeOut)
+    }
+
+    func isOpacityAnimating(at time: TimeInterval) -> Bool {
+        let displayDuration = Self.finiteNonnegative(duration)
+        let overlayStart = startTime.isFinite ? startTime : 0
+        let relativeTime = time - overlayStart
+        guard displayDuration > 0,
+              relativeTime >= 0,
+              relativeTime <= displayDuration else { return false }
+
+        let fades = effectiveFadeDurations()
+        if fades.fadeIn > 0, relativeTime < fades.fadeIn {
+            return true
+        }
+        if fades.fadeOut > 0, relativeTime > displayDuration - fades.fadeOut {
+            return true
+        }
+        return false
+    }
+
     /// Opacity at a given playback time (handles fade in/out).
     func opacity(at time: TimeInterval) -> Double {
-        let relativeTime = time - startTime
-        guard relativeTime >= 0, relativeTime <= duration else { return 0 }
+        let displayDuration = Self.finiteNonnegative(duration)
+        let overlayStart = startTime.isFinite ? startTime : 0
+        let relativeTime = time - overlayStart
+        guard displayDuration > 0,
+              relativeTime >= 0,
+              relativeTime <= displayDuration else { return 0 }
 
-        // Fade in
-        if relativeTime < fadeInDuration {
-            return relativeTime / fadeInDuration
+        let fades = effectiveFadeDurations()
+        if fades.fadeIn > 0, relativeTime < fades.fadeIn {
+            return min(max(relativeTime / fades.fadeIn, 0), 1)
         }
-        // Fade out
-        let fadeOutStart = duration - fadeOutDuration
-        if relativeTime > fadeOutStart {
-            return (duration - relativeTime) / fadeOutDuration
+        let fadeOutStart = displayDuration - fades.fadeOut
+        if fades.fadeOut > 0, relativeTime > fadeOutStart {
+            return min(max((displayDuration - relativeTime) / fades.fadeOut, 0), 1)
         }
         return 1.0
+    }
+
+    private static func finiteNonnegative(_ value: TimeInterval) -> TimeInterval {
+        value.isFinite ? max(value, 0) : 0
     }
 }
 

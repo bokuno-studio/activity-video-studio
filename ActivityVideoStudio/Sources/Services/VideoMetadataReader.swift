@@ -4,6 +4,10 @@ import CoreGraphics
 
 /// Reads metadata from GoPro MP4 files.
 final class VideoMetadataReader {
+    struct ReadResult {
+        let url: URL
+        let result: Result<VideoMetadata, Error>
+    }
 
     enum ReadError: Error, LocalizedError {
         case cannotLoadMetadata
@@ -50,23 +54,23 @@ final class VideoMetadataReader {
     }
 
     /// Read metadata from multiple video files.
-    func read(urls: [URL]) async throws -> [VideoMetadata] {
-        try await withThrowingTaskGroup(of: VideoMetadata.self) { group in
-            for url in urls {
+    func read(urls: [URL]) async -> [ReadResult] {
+        await withTaskGroup(of: (Int, ReadResult).self) { group in
+            for (index, url) in urls.enumerated() {
                 group.addTask {
-                    try await self.read(url: url)
+                    do {
+                        let metadata = try await self.read(url: url)
+                        return (index, ReadResult(url: url, result: .success(metadata)))
+                    } catch {
+                        return (index, ReadResult(url: url, result: .failure(error)))
+                    }
                 }
             }
-            var results: [VideoMetadata] = []
-            for try await metadata in group {
-                results.append(metadata)
+            var indexedResults: [(Int, ReadResult)] = []
+            for await result in group {
+                indexedResults.append(result)
             }
-            // Sort by creation date
-            return results.sorted { a, b in
-                guard let dateA = a.creationDate else { return false }
-                guard let dateB = b.creationDate else { return true }
-                return dateA < dateB
-            }
+            return indexedResults.sorted { $0.0 < $1.0 }.map(\.1)
         }
     }
 

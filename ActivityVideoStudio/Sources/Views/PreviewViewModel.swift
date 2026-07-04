@@ -1831,6 +1831,35 @@ final class PreviewViewModel: ObservableObject {
         overlayRenderer?.textOverlays = textOverlays
     }
 
+    func registerTextOverlayMoveUndo(
+        id: TextOverlay.ID,
+        originalRelativeX: CGFloat,
+        originalRelativeY: CGFloat,
+        undoManager: UndoManager?
+    ) {
+        guard let overlay = textOverlays.first(where: { $0.id == id }),
+              abs(overlay.relativeX - originalRelativeX) > 0.0001 ||
+                abs(overlay.relativeY - originalRelativeY) > 0.0001 else { return }
+
+        undoManager?.registerUndo(withTarget: self) { target in
+            target.restoreTextOverlayPosition(
+                id: id,
+                relativeX: originalRelativeX,
+                relativeY: originalRelativeY
+            )
+        }
+        undoManager?.setActionName("テキスト移動")
+    }
+
+    private func restoreTextOverlayPosition(id: TextOverlay.ID, relativeX: CGFloat, relativeY: CGFloat) {
+        guard let index = textOverlays.firstIndex(where: { $0.id == id }) else { return }
+        textOverlays[index].relativeX = relativeX
+        textOverlays[index].relativeY = relativeY
+        textOverlays[index].clampRelativePosition()
+        refreshOverlayAfterEdit()
+        markProjectEdited()
+    }
+
     private func setupTimeObserver() {
         let interval = CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600)
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
@@ -1905,28 +1934,42 @@ final class PreviewViewModel: ObservableObject {
     // MARK: - Trim helpers
 
     struct TrimRange {
-        let startFrac: CGFloat  // fraction of total duration trimmed from start
-        let endFrac: CGFloat    // fraction of total duration trimmed from end
+        let startFrac: CGFloat
+        let widthFrac: CGFloat
     }
 
     /// Get trim ranges mapped to the combined timeline for seekbar display.
     func trimRangesForSeekbar() -> [TrimRange] {
         guard duration > 0 else { return [] }
 
-        var totalStartTrim: TimeInterval = 0
-        var totalEndTrim: TimeInterval = 0
+        var ranges: [TrimRange] = []
+        var segmentStart: TimeInterval = 0
 
-        for i in segmentDurations.indices {
-            if i < trimSettings.count {
-                totalStartTrim += min(max(trimSettings[i].startTrim, 0), segmentDurations[i])
-                totalEndTrim += min(max(trimSettings[i].endTrim, 0), segmentDurations[i])
+        for index in segmentDurations.indices {
+            let segmentDuration = max(segmentDurations[index], 0)
+            defer { segmentStart += segmentDuration }
+            guard segmentDuration > 0 else { continue }
+
+            let trim = index < trimSettings.count ? trimSettings[index] : TrimSettings()
+            let startTrim = min(max(trim.startTrim, 0), segmentDuration)
+            let remainingAfterStart = max(segmentDuration - startTrim, 0)
+            let endTrim = min(max(trim.endTrim, 0), remainingAfterStart)
+
+            if startTrim > 0 {
+                ranges.append(TrimRange(
+                    startFrac: CGFloat(segmentStart / duration),
+                    widthFrac: CGFloat(startTrim / duration)
+                ))
+            }
+            if endTrim > 0 {
+                ranges.append(TrimRange(
+                    startFrac: CGFloat((segmentStart + segmentDuration - endTrim) / duration),
+                    widthFrac: CGFloat(endTrim / duration)
+                ))
             }
         }
 
-        return [TrimRange(
-            startFrac: CGFloat(totalStartTrim / duration),
-            endFrac: CGFloat(totalEndTrim / duration)
-        )]
+        return ranges
     }
 
     /// Total duration after trimming.

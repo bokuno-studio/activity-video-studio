@@ -19,7 +19,7 @@ struct TextOverlayEditView: View {
                     let overlay = TextOverlay(
                         text: "タイトル",
                         startTime: 0,
-                        duration: 15
+                        duration: defaultOverlayDuration
                     )
                     overlays.append(overlay)
                     selectedOverlayID = overlay.id
@@ -41,9 +41,15 @@ struct TextOverlayEditView: View {
             }
         }
         .padding()
-        .onAppear(perform: repairSelection)
+        .onAppear {
+            clampAllOverlayTiming()
+            repairSelection()
+        }
         .onChange(of: overlays.map(\.id)) { _, _ in
             repairSelection()
+        }
+        .onChange(of: videoDuration) { _, _ in
+            clampAllOverlayTiming()
         }
     }
 
@@ -105,7 +111,7 @@ struct TextOverlayEditView: View {
                     Text("開始 (秒)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    TextField("0", value: overlay.startTime, format: .number)
+                    TextField("0", value: startTimeBinding(overlay), format: .number)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 80)
                         .focused(isTextFocused)
@@ -115,7 +121,7 @@ struct TextOverlayEditView: View {
                     Text("表示時間 (秒)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    TextField("5", value: overlay.duration, format: .number)
+                    TextField("5", value: durationBinding(overlay), format: .number)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 80)
                         .focused(isTextFocused)
@@ -311,6 +317,34 @@ struct TextOverlayEditView: View {
         )
     }
 
+    private var defaultOverlayDuration: TimeInterval {
+        videoDuration.isFinite && videoDuration > 0 ? min(15, videoDuration) : 15
+    }
+
+    private func startTimeBinding(_ overlay: Binding<TextOverlay>) -> Binding<TimeInterval> {
+        Binding(
+            get: { overlay.wrappedValue.startTime },
+            set: { newValue in
+                var value = overlay.wrappedValue
+                value.startTime = newValue
+                value.clampTiming(videoDuration: videoDuration)
+                overlay.wrappedValue = value
+            }
+        )
+    }
+
+    private func durationBinding(_ overlay: Binding<TextOverlay>) -> Binding<TimeInterval> {
+        Binding(
+            get: { overlay.wrappedValue.duration },
+            set: { newValue in
+                var value = overlay.wrappedValue
+                value.duration = newValue
+                value.clampTiming(videoDuration: videoDuration)
+                overlay.wrappedValue = value
+            }
+        )
+    }
+
     private func relativeBinding(_ overlay: Binding<TextOverlay>, keyPath: WritableKeyPath<TextOverlay, CGFloat>) -> Binding<Double> {
         Binding(
             get: { Double(overlay.wrappedValue[keyPath: keyPath]) },
@@ -367,6 +401,23 @@ struct TextOverlayEditView: View {
             return
         }
         selectedOverlayID = overlays.first?.id
+    }
+
+    private func clampAllOverlayTiming() {
+        for index in overlays.indices {
+            var value = overlays[index]
+            value.clampTiming(videoDuration: videoDuration)
+            if timingFieldsChanged(from: overlays[index], to: value) {
+                overlays[index] = value
+            }
+        }
+    }
+
+    private func timingFieldsChanged(from oldValue: TextOverlay, to newValue: TextOverlay) -> Bool {
+        oldValue.startTime != newValue.startTime ||
+            oldValue.duration != newValue.duration ||
+            oldValue.fadeInDuration != newValue.fadeInDuration ||
+            oldValue.fadeOutDuration != newValue.fadeOutDuration
     }
 
     private static func availableFontFamilies() -> [String] {

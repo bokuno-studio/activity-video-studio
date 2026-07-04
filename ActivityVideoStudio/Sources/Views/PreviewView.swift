@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import AVFoundation
+import CoreText
 import UniformTypeIdentifiers
 
 /// Main preview screen: video + overlay + minimap + controls.
@@ -19,6 +20,11 @@ struct PreviewView: View {
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.undoManager) private var undoManager
+
+    private static let supportedDropContentTypes: [UTType] = ["fit", "zip", "mp4", "mov", "m4v"]
+        .compactMap { UTType(filenameExtension: $0) }
+    private static let supportedFITExtensions: Set<String> = ["fit", "zip"]
+    private static let supportedVideoExtensions: Set<String> = ["mp4", "mov", "m4v"]
 
     enum RightPanelTab: String, CaseIterable {
         case trim = "トリム"
@@ -40,7 +46,7 @@ struct PreviewView: View {
         .inspector(isPresented: $showRightPanel) {
             inspectorPanel
         }
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+        .onDrop(of: Self.supportedDropContentTypes, isTargeted: nil) { providers in
             handleDrop(providers: providers)
             return true
         }
@@ -193,7 +199,8 @@ struct PreviewView: View {
                             settings: viewModel.overlaySettings,
                             allDataPoints: viewModel.fitDataPoints,
                             trackCoordinates: viewModel.trackCoordinates,
-                            textOverlays: viewModel.textOverlays
+                            textOverlays: viewModel.textOverlays,
+                            textPlaybackTime: viewModel.trimmedPlaybackTime()
                         )
                         .frame(width: videoDisplayRect.width, height: videoDisplayRect.height)
                         .offset(x: videoDisplayRect.minX, y: videoDisplayRect.minY)
@@ -205,7 +212,15 @@ struct PreviewView: View {
                     if rightPanelTab == .textOverlay, videoDisplayRect.isDrawableVideoRect {
                         TextOverlayPlacementLayer(
                             overlays: $viewModel.textOverlays,
-                            selectedOverlayID: $selectedTextOverlayID
+                            selectedOverlayID: $selectedTextOverlayID,
+                            onMoveCompleted: { id, originalX, originalY in
+                                viewModel.registerTextOverlayMoveUndo(
+                                    id: id,
+                                    originalRelativeX: originalX,
+                                    originalRelativeY: originalY,
+                                    undoManager: undoManager
+                                )
+                            }
                         )
                             .frame(width: videoDisplayRect.width, height: videoDisplayRect.height)
                             .offset(x: videoDisplayRect.minX, y: videoDisplayRect.minY)
@@ -391,17 +406,11 @@ struct PreviewView: View {
                     GeometryReader { geo in
                         let trimInfo = viewModel.trimRangesForSeekbar()
                         ForEach(Array(trimInfo.enumerated()), id: \.offset) { _, range in
-                            if range.startFrac > 0 {
+                            if range.widthFrac > 0 {
                                 Rectangle()
                                     .fill(Color.red.opacity(0.3))
-                                    .frame(width: geo.size.width * range.startFrac)
-                                    .allowsHitTesting(false)
-                            }
-                            if range.endFrac > 0 {
-                                Rectangle()
-                                    .fill(Color.red.opacity(0.3))
-                                    .frame(width: geo.size.width * range.endFrac)
-                                    .offset(x: geo.size.width * (1 - range.endFrac))
+                                    .frame(width: geo.size.width * range.widthFrac)
+                                    .offset(x: geo.size.width * range.startFrac)
                                     .allowsHitTesting(false)
                             }
                         }
@@ -674,15 +683,34 @@ struct PreviewView: View {
 
             var videoURLs: [URL] = []
             var unsupportedNames: [String] = []
+            var duplicateNames: [String] = []
+            var seenDropKeys = Set<String>()
+            let existingVideoKeys = Set(viewModel.videoURLs.map { resolvedFileKey(for: $0) })
+            let existingFITKey = viewModel.fitURL.map { resolvedFileKey(for: $0) }
 
             for url in droppedFiles.urls {
-                let ext = url.pathExtension.lowercased()
-                if ext == "fit" || ext == "zip" {
-                    viewModel.loadFITFile(url: url)
-                } else if ["mp4", "mov", "m4v"].contains(ext) {
-                    videoURLs.append(url)
-                } else {
-                    unsupportedNames.append(url.lastPathComponent)
+                let resolvedURL = resolvedFileURL(for: url)
+                let key = resolvedFileKey(for: resolvedURL)
+                guard seenDropKeys.insert(key).inserted else {
+                    duplicateNames.append(resolvedURL.lastPathComponent)
+                    continue
+                }
+
+                switch droppedFileKind(for: resolvedURL) {
+                case .fit:
+                    if existingFITKey == key {
+                        duplicateNames.append(resolvedURL.lastPathComponent)
+                    } else {
+                        viewModel.loadFITFile(url: resolvedURL)
+                    }
+                case .video:
+                    if existingVideoKeys.contains(key) {
+                        duplicateNames.append(resolvedURL.lastPathComponent)
+                    } else {
+                        videoURLs.append(resolvedURL)
+                    }
+                case nil:
+                    unsupportedNames.append(resolvedURL.lastPathComponent)
                 }
             }
 
@@ -690,18 +718,49 @@ struct PreviewView: View {
                 await viewModel.loadVideos(urls: videoURLs)
             }
 
+            var messages: [String] = []
             if droppedFiles.failedCount > 0 {
+                messages.append("ドロップされた項目のうち \(droppedFiles.failedCount) 件のファイルURLを取得できませんでした。")
+            }
+            if !unsupportedNames.isEmpty {
+                messages.append("\(unsupportedNames.joined(separator: ", ")) は読み込めません。対応形式は .fit / .zip / .mp4 / .mov / .m4v です。")
+            }
+            if !duplicateNames.isEmpty {
+                messages.append("\(duplicateNames.joined(separator: ", ")) はすでに追加済みのためスキップしました。")
+            }
+
+            if !messages.isEmpty {
                 viewModel.showError(
-                    title: "ファイルを読み込めませんでした",
-                    message: "ドロップされた項目のうち \(droppedFiles.failedCount) 件のファイルURLを取得できませんでした。"
-                )
-            } else if !unsupportedNames.isEmpty {
-                viewModel.showError(
-                    title: "対応していないファイル形式です",
-                    message: "\(unsupportedNames.joined(separator: ", ")) は読み込めません。対応形式は .fit / .zip / .mp4 / .mov / .m4v です。"
+                    title: "一部のファイルを読み込めませんでした",
+                    message: messages.joined(separator: "\n")
                 )
             }
         }
+    }
+
+    private enum DroppedFileKind {
+        case fit
+        case video
+    }
+
+    private func droppedFileKind(for url: URL) -> DroppedFileKind? {
+        guard url.isFileURL, !url.hasDirectoryPath else { return nil }
+        let ext = url.pathExtension.lowercased()
+        if Self.supportedFITExtensions.contains(ext) {
+            return .fit
+        }
+        if Self.supportedVideoExtensions.contains(ext) {
+            return .video
+        }
+        return nil
+    }
+
+    private func resolvedFileURL(for url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    private func resolvedFileKey(for url: URL) -> String {
+        resolvedFileURL(for: url).path
     }
 
     private func droppedFileURLs(from providers: [NSItemProvider]) async -> (urls: [URL], failedCount: Int) {
@@ -793,22 +852,71 @@ struct PreviewView: View {
 private struct TextOverlayPlacementLayer: View {
     @Binding var overlays: [TextOverlay]
     @Binding var selectedOverlayID: TextOverlay.ID?
+    var onMoveCompleted: (TextOverlay.ID, CGFloat, CGFloat) -> Void
 
     private static let coordinateSpaceName = "TextOverlayPlacementLayer"
+    @State private var activeDrag: ActiveDrag?
+
+    private struct ActiveDrag {
+        let id: TextOverlay.ID
+        let originalRelativeX: CGFloat
+        let originalRelativeY: CGFloat
+        let grabOffset: CGSize
+    }
 
     var body: some View {
         GeometryReader { geometry in
             Color.clear
                 .contentShape(Rectangle())
                 .gesture(
-                    DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.coordinateSpaceName))
+                    DragGesture(minimumDistance: 3, coordinateSpace: .named(Self.coordinateSpaceName))
                         .onChanged { value in
-                            guard let selectedOverlayID else { return }
-                            moveOverlay(id: selectedOverlayID, to: value.location, in: geometry.size)
+                            guard let drag = activeDrag ?? beginDrag(value: value, in: geometry.size) else { return }
+                            let target = CGPoint(
+                                x: value.location.x - drag.grabOffset.width,
+                                y: value.location.y - drag.grabOffset.height
+                            )
+                            moveOverlay(id: drag.id, to: target, in: geometry.size)
+                        }
+                        .onEnded { _ in
+                            guard let drag = activeDrag,
+                                  let overlay = overlays.first(where: { $0.id == drag.id }) else {
+                                activeDrag = nil
+                                return
+                            }
+                            activeDrag = nil
+                            if abs(overlay.relativeX - drag.originalRelativeX) > 0.0001 ||
+                                abs(overlay.relativeY - drag.originalRelativeY) > 0.0001 {
+                                onMoveCompleted(drag.id, drag.originalRelativeX, drag.originalRelativeY)
+                            }
                         }
                 )
                 .coordinateSpace(name: Self.coordinateSpaceName)
         }
+    }
+
+    private func beginDrag(value: DragGesture.Value, in size: CGSize) -> ActiveDrag? {
+        guard activeDrag == nil,
+              let selectedOverlayID,
+              let overlay = overlays.first(where: { $0.id == selectedOverlayID }),
+              let hitRect = hitRect(for: overlay, in: size),
+              hitRect.contains(value.startLocation) else { return nil }
+
+        let center = CGPoint(
+            x: min(max(overlay.relativeX, 0), 1) * size.width,
+            y: min(max(overlay.relativeY, 0), 1) * size.height
+        )
+        let drag = ActiveDrag(
+            id: overlay.id,
+            originalRelativeX: overlay.relativeX,
+            originalRelativeY: overlay.relativeY,
+            grabOffset: CGSize(
+                width: value.startLocation.x - center.x,
+                height: value.startLocation.y - center.y
+            )
+        )
+        activeDrag = drag
+        return drag
     }
 
     private func moveOverlay(id: TextOverlay.ID, to point: CGPoint, in size: CGSize) {
@@ -818,6 +926,70 @@ private struct TextOverlayPlacementLayer: View {
         overlays[index].relativeX = min(max(point.x / size.width, 0), 1)
         overlays[index].relativeY = min(max(point.y / size.height, 0), 1)
         overlays[index].clampRelativePosition()
+    }
+
+    private func hitRect(for overlay: TextOverlay, in size: CGSize) -> CGRect? {
+        guard size.width > 0, size.height > 0 else { return nil }
+
+        let scale = max(size.width, 1) / 1920
+        let fontSize = max(1, overlay.fontSize * scale)
+        let font = textOverlayFont(for: overlay, size: fontSize)
+        let lineHeight = max(CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font), fontSize * 1.2)
+        let lines = overlay.text.components(separatedBy: "\n")
+        let maxWidth = lines
+            .map { lineText -> CGFloat in
+                let attrStr = NSAttributedString(string: lineText, attributes: [.font: font])
+                let line = CTLineCreateWithAttributedString(attrStr)
+                return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+            }
+            .max() ?? fontSize
+
+        let totalHeight = lineHeight * CGFloat(max(lines.count, 1))
+        let padding = 30 * scale
+        let strokeWidth = max(0, overlay.strokeWidth) * scale
+        let centerX = min(max(overlay.relativeX, 0), 1) * size.width
+        let centerY = min(max(overlay.relativeY, 0), 1) * size.height
+
+        return CGRect(
+            x: centerX - maxWidth / 2 - padding - strokeWidth,
+            y: centerY - totalHeight / 2 - padding / 2 - strokeWidth,
+            width: maxWidth + padding * 2 + strokeWidth * 2,
+            height: totalHeight + padding + strokeWidth * 2
+        )
+    }
+
+    private func textOverlayFont(for overlay: TextOverlay, size: CGFloat) -> CTFont {
+        let fallback = NSFont.systemFont(ofSize: size, weight: overlay.fontWeight.placementNSFontWeight)
+        let nsFont = NSFontManager.shared.font(
+            withFamily: overlay.fontFamily,
+            traits: [],
+            weight: overlay.fontWeight.placementNSFontManagerWeight,
+            size: size
+        ) ?? fallback
+
+        return CTFontCreateWithName(nsFont.fontName as CFString, size, nil)
+    }
+}
+
+private extension TextOverlay.FontWeight {
+    var placementNSFontWeight: NSFont.Weight {
+        switch self {
+        case .regular: return .regular
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        case .heavy: return .heavy
+        }
+    }
+
+    var placementNSFontManagerWeight: Int {
+        switch self {
+        case .regular: return 5
+        case .medium: return 6
+        case .semibold: return 8
+        case .bold: return 9
+        case .heavy: return 10
+        }
     }
 }
 
