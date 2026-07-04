@@ -141,12 +141,12 @@ struct PreviewView: View {
         }
         // Keyboard shortcuts (disabled when editing text or a front modal is open)
         .onKeyPress(.leftArrow) {
-            guard !previewShortcutsSuspended else { return .ignored }
+            guard !previewShortcutsSuspended, viewModel.canControlPlayback else { return .ignored }
             viewModel.skipBackward()
             return .handled
         }
         .onKeyPress(.rightArrow) {
-            guard !previewShortcutsSuspended else { return .ignored }
+            guard !previewShortcutsSuspended, viewModel.canControlPlayback else { return .ignored }
             viewModel.skipForward()
             return .handled
         }
@@ -184,7 +184,7 @@ struct PreviewView: View {
         VStack(spacing: 0) {
             // Video with overlays
             VideoPlayerView(player: viewModel.player, videoRect: $videoDisplayRect) { delta in
-                viewModel.seekBy(delta)
+                viewModel.scrollSeekBy(delta)
             }
                 .overlay(alignment: .topLeading) {
                     if videoDisplayRect.isDrawableVideoRect {
@@ -309,6 +309,7 @@ struct PreviewView: View {
         PreviewCommandContext(
             canSaveProject: viewModel.canSaveProject,
             canExport: canPresentExport,
+            canControlPlayback: viewModel.canControlPlayback,
             isPlaying: viewModel.isPlaying,
             shortcutsSuspended: previewShortcutsSuspended,
             openProject: { viewModel.presentOpenProjectPanel() },
@@ -361,6 +362,7 @@ struct PreviewView: View {
 
     private var controlsBar: some View {
         let totalDuration = max(viewModel.duration, 1)
+        let playbackControlsDisabled = !viewModel.canControlPlayback || frontModalPresented
 
         return VStack(spacing: 4) {
             // Seek bar with trim indicators (absolute time axis)
@@ -382,6 +384,7 @@ struct PreviewView: View {
                         }
                     }
                     .controlSize(.small)
+                    .disabled(playbackControlsDisabled)
                     .accessibilityLabel("再生位置")
                     .accessibilityValue("\(formatTime(viewModel.currentTime)) / \(formatTime(totalDuration))")
 
@@ -433,6 +436,7 @@ struct PreviewView: View {
                 .buttonStyle(.borderless)
                 .frame(minWidth: 28, minHeight: 28)
                 .contentShape(Rectangle())
+                .disabled(playbackControlsDisabled)
                 .help("トリム先頭に戻る")
                 .accessibilityLabel("トリム先頭に移動")
 
@@ -444,6 +448,7 @@ struct PreviewView: View {
                 .buttonStyle(.borderless)
                 .frame(minWidth: 28, minHeight: 28)
                 .contentShape(Rectangle())
+                .disabled(playbackControlsDisabled)
                 .help("5秒戻る")
                 .accessibilityLabel("5秒戻る")
 
@@ -456,7 +461,7 @@ struct PreviewView: View {
                 .frame(minWidth: 32, minHeight: 28)
                 .contentShape(Rectangle())
                 .keyboardShortcut(.space, modifiers: [])
-                .disabled(frontModalPresented)
+                .disabled(playbackControlsDisabled)
                 .help(viewModel.isPlaying ? "一時停止" : "再生")
                 .accessibilityLabel(viewModel.isPlaying ? "一時停止" : "再生")
                 .accessibilityValue(viewModel.isPlaying ? "再生中" : "停止中")
@@ -469,6 +474,7 @@ struct PreviewView: View {
                 .buttonStyle(.borderless)
                 .frame(minWidth: 28, minHeight: 28)
                 .contentShape(Rectangle())
+                .disabled(playbackControlsDisabled)
                 .help("5秒進む")
                 .accessibilityLabel("5秒進む")
 
@@ -480,6 +486,7 @@ struct PreviewView: View {
                 .pickerStyle(.menu)
                 .controlSize(.small)
                 .labelsHidden()
+                .disabled(playbackControlsDisabled)
                 .help("再生速度")
                 .accessibilityLabel("再生速度")
                 .accessibilityValue("\(formatPlaybackRate(viewModel.playbackRate))倍")

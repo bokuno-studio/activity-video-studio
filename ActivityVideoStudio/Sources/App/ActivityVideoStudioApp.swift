@@ -141,6 +141,7 @@ struct ActivityVideoStudioApp: App {
 struct PreviewCommandContext {
     var canSaveProject: Bool
     var canExport: Bool
+    var canControlPlayback: Bool
     var isPlaying: Bool
     var shortcutsSuspended: Bool
     var openProject: () -> Void
@@ -258,7 +259,9 @@ struct ActivityVideoStudioCommands: Commands {
     }
 
     private var playbackCommandsDisabled: Bool {
-        context == nil || (context?.shortcutsSuspended ?? true)
+        context == nil ||
+            (context?.shortcutsSuspended ?? true) ||
+            !(context?.canControlPlayback ?? false)
     }
 }
 

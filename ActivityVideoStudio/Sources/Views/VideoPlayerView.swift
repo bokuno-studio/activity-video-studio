@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import QuartzCore
 
 /// AVPlayer wrapper for SwiftUI.
 struct VideoPlayerView: NSViewRepresentable {
@@ -74,7 +75,10 @@ class AVPlayerView: NSView {
 
     override func layout() {
         super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         layer?.frame = bounds
+        CATransaction.commit()
         publishVideoRect()
     }
 
@@ -122,6 +126,7 @@ class AVPlayerView: NSView {
     private static func makePlayerLayer() -> AVPlayerLayer {
         let layer = AVPlayerLayer()
         layer.videoGravity = .resizeAspect
+        layer.needsDisplayOnBoundsChange = true
         return layer
     }
 

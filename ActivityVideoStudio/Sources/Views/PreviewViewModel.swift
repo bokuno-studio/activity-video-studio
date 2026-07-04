@@ -79,6 +79,10 @@ final class PreviewViewModel: ObservableObject {
             overlaySettings.selectedThemeID != OverlayPreset.defaultPreset.themeID
     }
 
+    var canControlPlayback: Bool {
+        videoLoaded && duration > 0 && player.currentItem != nil
+    }
+
     var windowTitle: String {
         projectURL?.deletingPathExtension().lastPathComponent ?? "無題"
     }
@@ -125,7 +129,14 @@ final class PreviewViewModel: ObservableObject {
     private(set) var timeSync: TimeSync?
     private var overlayRenderer: OverlayRenderer?
     private var timeObserver: Any?
+    private var playbackEndObserver: NSObjectProtocol?
     private var trimPreviewSeekTask: Task<Void, Never>?
+    private var scrollSeekCoarseTask: Task<Void, Never>?
+    private var scrollSeekExactTask: Task<Void, Never>?
+    private var pendingScrollSeekTarget: TimeInterval?
+    private var seekSequence: UInt64 = 0
+    private var compositionRebuildTask: Task<Bool, Never>?
+    private var compositionRebuildGeneration: UInt64 = 0
     private var didApplyDefaultFITStartAlignment = false
     private var projectSecurityScopedURLs: [URL] = []
     private var refreshedProjectFileReferencesByPath: [String: ProjectFileReference] = [:]
@@ -140,6 +151,10 @@ final class PreviewViewModel: ObservableObject {
 
     private static let timelineComparisonEpsilon: TimeInterval = 0.001
     private static let chapterMarkerTimelineWarningPrefix = "動画タイムライン変更により"
+    private static let playbackEndEpsilon: TimeInterval = 0.05
+    private static let scrollSeekCoarseDelayNanoseconds: UInt64 = 50_000_000
+    private static let scrollSeekExactDelayNanoseconds: UInt64 = 180_000_000
+    private static let scrollSeekTolerance = CMTime(seconds: 0.5, preferredTimescale: 600)
 
     private struct TimelineSegmentSnapshot {
         let identity: String
@@ -341,6 +356,12 @@ final class PreviewViewModel: ObservableObject {
 
     deinit {
         trimPreviewSeekTask?.cancel()
+        scrollSeekCoarseTask?.cancel()
+        scrollSeekExactTask?.cancel()
+        compositionRebuildTask?.cancel()
+        if let playbackEndObserver {
+            NotificationCenter.default.removeObserver(playbackEndObserver)
+        }
         for url in projectSecurityScopedURLs {
             url.stopAccessingSecurityScopedResource()
         }
@@ -622,10 +643,11 @@ final class PreviewViewModel: ObservableObject {
     }
 
     private func resetProjectState() {
-        trimPreviewSeekTask?.cancel()
-        trimPreviewSeekTask = nil
+        cancelPendingSeekTasks()
+        cancelCurrentRebuild()
         stopAccessingProjectResources()
         player.pause()
+        observePlaybackEnd(for: nil)
         player.replaceCurrentItem(with: nil)
         isPlaying = false
         currentTime = 0
@@ -1073,6 +1095,13 @@ final class PreviewViewModel: ObservableObject {
     /// Remove a video at the given index.
     func removeVideo(at index: Int, undoManager: UndoManager? = nil) {
         guard index < videoURLs.count else { return }
+        cancelPendingSeekTasks()
+        cancelCurrentRebuild()
+        player.pause()
+        isPlaying = false
+        observePlaybackEnd(for: nil)
+        player.replaceCurrentItem(with: nil)
+
         let markerTimelineBeforeRemoval = makeTimelineSnapshot()
         let chapterMarkersBeforeRemoval = chapterMarkers
         let removedURL = videoURLs.remove(at: index)
@@ -1092,6 +1121,8 @@ final class PreviewViewModel: ObservableObject {
         undoManager?.setActionName("動画削除")
 
         segmentDurations = videoMetadatas.map { $0.duration }
+        duration = segmentDurations.reduce(0, +)
+        currentTime = min(currentTime, duration)
         videoLoaded = !videoURLs.isEmpty
         remapChapterMarkers(from: markerTimelineBeforeRemoval)
         if !videoLoaded {
@@ -1102,7 +1133,6 @@ final class PreviewViewModel: ObservableObject {
         if videoLoaded {
             Task { await rebuildComposition() }
         } else {
-            player.replaceCurrentItem(with: nil)
             duration = 0
             currentTime = 0
             liveOverlayFrame = nil
@@ -1118,12 +1148,14 @@ final class PreviewViewModel: ObservableObject {
         at index: Int,
         restoringChapterMarkers restoredChapterMarkers: [ChapterMarker]? = nil
     ) {
+        cancelPendingSeekTasks()
         let markerTimelineBeforeInsertion = makeTimelineSnapshot()
         let insertionIndex = min(max(index, 0), videoURLs.count)
         videoURLs.insert(url, at: insertionIndex)
         videoMetadatas.insert(metadata, at: insertionIndex)
         trimSettings.insert(trim, at: insertionIndex)
         segmentDurations = videoMetadatas.map { $0.duration }
+        duration = segmentDurations.reduce(0, +)
         videoLoaded = true
         if let restoredChapterMarkers {
             chapterMarkers = restoredChapterMarkers.sorted { $0.time < $1.time }
@@ -1145,22 +1177,66 @@ final class PreviewViewModel: ObservableObject {
     /// Build or rebuild AVMutableComposition from all loaded videos.
     @discardableResult
     private func rebuildComposition() async -> Bool {
+        compositionRebuildTask?.cancel()
+        compositionRebuildGeneration &+= 1
+        let generation = compositionRebuildGeneration
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return false }
+            return await self.buildComposition(generation: generation)
+        }
+        compositionRebuildTask = task
+        let result = await task.value
+        if compositionRebuildGeneration == generation {
+            compositionRebuildTask = nil
+        }
+        return result
+    }
+
+    private func cancelCurrentRebuild() {
+        compositionRebuildTask?.cancel()
+        compositionRebuildTask = nil
+        compositionRebuildGeneration &+= 1
+    }
+
+    private func buildComposition(generation: UInt64) async -> Bool {
+        let urls = videoURLs
+        let durations = segmentDurations
+        let dataPoints = fitDataPoints
+        let coordinates = trackCoordinates
+
+        guard !urls.isEmpty else {
+            guard isCurrentRebuild(generation) else { return false }
+            observePlaybackEnd(for: nil)
+            player.replaceCurrentItem(with: nil)
+            duration = 0
+            overlayRenderer = nil
+            return true
+        }
+
         do {
-            if videoURLs.count == 1 {
+            if urls.count == 1 {
                 // Single video: play directly
-                let url = videoURLs[0]
+                let url = urls[0]
                 let item = AVPlayerItem(url: url)
-                player.replaceCurrentItem(with: item)
-                duration = segmentDurations[0]
 
                 let tracks = try await AVURLAsset(url: url).load(.tracks)
+                try Task.checkCancellation()
+                var videoSize: CGSize?
                 if let videoTrack = tracks.first(where: { $0.mediaType == .video }) {
-                    let size = try await videoTrack.load(.naturalSize)
-                    overlayRenderer = OverlayRenderer(videoSize: size, settings: overlaySettings)
-                    overlayRenderer?.allDataPoints = fitDataPoints
-                    overlayRenderer?.trackCoordinates = trackCoordinates
-                    overlayRenderer?.buildElevationGainCache()
+                    videoSize = try await videoTrack.load(.naturalSize)
                 }
+                try Task.checkCancellation()
+                guard isCurrentRebuild(generation) else { return false }
+
+                player.replaceCurrentItem(with: item)
+                observePlaybackEnd(for: item)
+                duration = durations.first ?? 0
+                currentTime = min(currentTime, duration)
+                configureOverlayRenderer(
+                    videoSize: videoSize,
+                    dataPoints: dataPoints,
+                    coordinates: coordinates
+                )
             } else {
                 // Multiple videos: compose into one timeline
                 let composition = AVMutableComposition()
@@ -1174,7 +1250,8 @@ final class PreviewViewModel: ObservableObject {
                 var insertTime = CMTime.zero
                 var firstVideoSize: CGSize?
 
-                for url in videoURLs {
+                for url in urls {
+                    try Task.checkCancellation()
                     let asset = AVURLAsset(url: url)
                     let tracks = try await asset.load(.tracks)
                     let assetDuration = try await asset.load(.duration)
@@ -1191,20 +1268,27 @@ final class PreviewViewModel: ObservableObject {
                     }
                     insertTime = CMTimeAdd(insertTime, assetDuration)
                 }
+                try Task.checkCancellation()
 
                 let item = AVPlayerItem(asset: composition)
-                player.replaceCurrentItem(with: item)
-                duration = CMTimeGetSeconds(insertTime)
+                guard isCurrentRebuild(generation) else { return false }
 
-                if let size = firstVideoSize {
-                    overlayRenderer = OverlayRenderer(videoSize: size, settings: overlaySettings)
-                    overlayRenderer?.allDataPoints = fitDataPoints
-                    overlayRenderer?.trackCoordinates = trackCoordinates
-                    overlayRenderer?.buildElevationGainCache()
-                }
+                player.replaceCurrentItem(with: item)
+                observePlaybackEnd(for: item)
+                duration = CMTimeGetSeconds(insertTime)
+                currentTime = min(currentTime, duration)
+
+                configureOverlayRenderer(
+                    videoSize: firstVideoSize,
+                    dataPoints: dataPoints,
+                    coordinates: coordinates
+                )
             }
             return true
+        } catch is CancellationError {
+            return false
         } catch {
+            guard isCurrentRebuild(generation) else { return false }
             showError(
                 title: "動画タイムラインを作成できませんでした",
                 error: error,
@@ -1212,6 +1296,26 @@ final class PreviewViewModel: ObservableObject {
             )
             return false
         }
+    }
+
+    private func isCurrentRebuild(_ generation: UInt64) -> Bool {
+        !Task.isCancelled && compositionRebuildGeneration == generation
+    }
+
+    private func configureOverlayRenderer(
+        videoSize: CGSize?,
+        dataPoints: [FITDataPoint],
+        coordinates: [CLLocationCoordinate2D]
+    ) {
+        guard let videoSize else {
+            overlayRenderer = nil
+            return
+        }
+
+        overlayRenderer = OverlayRenderer(videoSize: videoSize, settings: overlaySettings)
+        overlayRenderer?.allDataPoints = dataPoints
+        overlayRenderer?.trackCoordinates = coordinates
+        overlayRenderer?.buildElevationGainCache()
     }
 
     // MARK: - Playback controls
@@ -1223,27 +1327,90 @@ final class PreviewViewModel: ObservableObject {
 
     func togglePlayback() {
         if isPlaying {
-            player.pause()
-        } else {
-            // Clear any stale seeking state so the periodic time observer resumes
-            // driving overlay updates the moment playback starts.
-            isSeeking = false
-            player.rate = playbackRate
+            pausePlayback()
+            return
         }
-        isPlaying.toggle()
+
+        guard canControlPlayback, player.currentItem != nil else {
+            isPlaying = false
+            return
+        }
+
+        if isAtPlaybackEnd {
+            performSeek(
+                to: trimmedTimelineStart(),
+                tolerance: .zero,
+                finishSeeking: true,
+                resumePlaybackAfterSeek: true
+            )
+            return
+        }
+
+        startPlayback()
+    }
+
+    private func startPlayback() {
+        guard canControlPlayback, player.currentItem != nil else {
+            isPlaying = false
+            return
+        }
+
+        // Clear only stale/manual seeking here. In-flight seeks keep observer
+        // updates suppressed until their completion callback runs.
+        if !isSeeking {
+            currentTime = clampedSeekTime(currentTime)
+        }
+        player.rate = playbackRate
+        isPlaying = true
+    }
+
+    private var isAtPlaybackEnd: Bool {
+        guard duration > 0 else { return false }
+        let playerSeconds = CMTimeGetSeconds(player.currentTime())
+        let observedTime = playerSeconds.isFinite ? max(currentTime, playerSeconds) : currentTime
+        return observedTime >= duration - Self.playbackEndEpsilon
+    }
+
+    private func observePlaybackEnd(for item: AVPlayerItem?) {
+        if let playbackEndObserver {
+            NotificationCenter.default.removeObserver(playbackEndObserver)
+            self.playbackEndObserver = nil
+        }
+
+        guard let item else { return }
+        playbackEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handlePlaybackEnded()
+            }
+        }
+    }
+
+    private func handlePlaybackEnded() {
+        guard videoLoaded else { return }
+        player.pause()
+        isPlaying = false
+        seek(to: trimmedTimelineStart())
     }
 
     func beginSeeking() {
+        guard canControlPlayback else { return }
+        cancelPendingSeekTasks()
         isSeeking = true
     }
 
     func seek(to time: TimeInterval) {
-        trimPreviewSeekTask?.cancel()
-        trimPreviewSeekTask = nil
+        cancelPendingSeekTasks()
         performSeek(to: time, tolerance: .zero, finishSeeking: true)
     }
 
     func previewTrimSeek(to time: TimeInterval) {
+        guard canControlPlayback, player.currentItem != nil else { return }
+        cancelScrollSeekTasks()
+        seekSequence &+= 1
         let target = clampedSeekTime(time)
         currentTime = target
         isSeeking = true
@@ -1273,8 +1440,7 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func commitTrimSeek(to time: TimeInterval) {
-        trimPreviewSeekTask?.cancel()
-        trimPreviewSeekTask = nil
+        cancelPendingSeekTasks()
         performSeek(to: time, tolerance: .zero, finishSeeking: true)
     }
 
@@ -1284,6 +1450,74 @@ final class PreviewViewModel: ObservableObject {
 
     func seekBy(_ seconds: TimeInterval) {
         seek(to: currentTime + seconds)
+    }
+
+    func scrollSeekBy(_ seconds: TimeInterval) {
+        guard canControlPlayback, player.currentItem != nil, seconds != 0 else { return }
+        trimPreviewSeekTask?.cancel()
+        trimPreviewSeekTask = nil
+        seekSequence &+= 1
+
+        let base = pendingScrollSeekTarget ?? currentTime
+        let target = clampedSeekTime(base + seconds)
+        pendingScrollSeekTarget = target
+        currentTime = target
+        isSeeking = true
+        updateOverlay()
+        scheduleScrollSeek(to: target)
+    }
+
+    private func scheduleScrollSeek(to target: TimeInterval) {
+        scrollSeekCoarseTask?.cancel()
+        scrollSeekCoarseTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.scrollSeekCoarseDelayNanoseconds)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self,
+                      self.pendingScrollSeekTarget == target else {
+                    return
+                }
+                self.performSeek(
+                    to: target,
+                    tolerance: Self.scrollSeekTolerance,
+                    finishSeeking: false
+                )
+                self.scrollSeekCoarseTask = nil
+            }
+        }
+
+        scrollSeekExactTask?.cancel()
+        scrollSeekExactTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.scrollSeekExactDelayNanoseconds)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self,
+                      let finalTarget = self.pendingScrollSeekTarget else {
+                    return
+                }
+                self.pendingScrollSeekTarget = nil
+                self.scrollSeekCoarseTask?.cancel()
+                self.scrollSeekCoarseTask = nil
+                self.scrollSeekExactTask = nil
+                self.performSeek(to: finalTarget, tolerance: .zero, finishSeeking: true)
+            }
+        }
+    }
+
+    private func cancelPendingSeekTasks() {
+        trimPreviewSeekTask?.cancel()
+        trimPreviewSeekTask = nil
+        cancelScrollSeekTasks()
+        seekSequence &+= 1
+        isSeeking = false
+    }
+
+    private func cancelScrollSeekTasks() {
+        scrollSeekCoarseTask?.cancel()
+        scrollSeekCoarseTask = nil
+        scrollSeekExactTask?.cancel()
+        scrollSeekExactTask = nil
+        pendingScrollSeekTarget = nil
     }
 
     func skipForward(_ seconds: TimeInterval = 5) {
@@ -1309,8 +1543,11 @@ final class PreviewViewModel: ObservableObject {
 
     /// Seek to the start of trimmed content.
     func seekToTrimStart() {
-        let startTrim = trimSettings.first?.startTrim ?? 0
-        seek(to: startTrim)
+        seek(to: trimmedTimelineStart())
+    }
+
+    private func trimmedTimelineStart() -> TimeInterval {
+        absoluteTime(forTrimmed: 0)
     }
 
     private func clampedSeekTime(_ time: TimeInterval) -> TimeInterval {
@@ -1318,15 +1555,42 @@ final class PreviewViewModel: ObservableObject {
         return min(max(time, 0), duration)
     }
 
-    private func performSeek(to time: TimeInterval, tolerance: CMTime, finishSeeking: Bool) {
+    private func performSeek(
+        to time: TimeInterval,
+        tolerance: CMTime,
+        finishSeeking: Bool,
+        resumePlaybackAfterSeek: Bool = false
+    ) {
+        guard canControlPlayback, player.currentItem != nil else {
+            currentTime = 0
+            isSeeking = false
+            isPlaying = false
+            liveOverlayFrame = nil
+            currentCoordinate = nil
+            return
+        }
+
         let target = clampedSeekTime(time)
         currentTime = target
+        isSeeking = true
+        seekSequence &+= 1
+        let sequence = seekSequence
         let cmTime = CMTime(seconds: target, preferredTimescale: 600)
-        player.seek(to: cmTime, toleranceBefore: tolerance, toleranceAfter: tolerance)
-        if finishSeeking {
-            isSeeking = false
-        }
         updateOverlay()
+
+        player.seek(to: cmTime, toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self] finished in
+            Task { @MainActor in
+                guard let self, self.seekSequence == sequence else { return }
+                self.currentTime = target
+                if finishSeeking {
+                    self.isSeeking = false
+                }
+                self.updateOverlay()
+                if resumePlaybackAfterSeek && finished {
+                    self.startPlayback()
+                }
+            }
+        }
     }
 
     func updateSyncOffset(_ offset: Double) {
