@@ -697,8 +697,12 @@ final class PreviewViewModel: ObservableObject {
 
     func loadFITFile(url: URL) {
         do {
+            let isReplacingFIT = fitURL != nil || fitLoaded || !fitDataPoints.isEmpty
             let parser = FITParser()
             let result = try parser.parse(url: url)
+            if isReplacingFIT {
+                resetSyncOffsetForAutomaticAlignment()
+            }
             guard !result.dataPoints.isEmpty else {
                 fitDataPoints = []
                 fitLoaded = false
@@ -887,6 +891,9 @@ final class PreviewViewModel: ObservableObject {
 
         segmentDurations = videoMetadatas.map { $0.duration }
         videoLoaded = !videoURLs.isEmpty
+        if !videoLoaded {
+            resetSyncOffsetForAutomaticAlignment()
+        }
         updateNativeVideoWidth()
         setupTimeSync()
         if videoLoaded {
@@ -910,7 +917,10 @@ final class PreviewViewModel: ObservableObject {
         videoLoaded = true
         updateNativeVideoWidth()
         setupTimeSync()
-        Task { await rebuildComposition() }
+        Task {
+            guard await rebuildComposition() else { return }
+            applyDefaultFITStartAlignmentIfPossible()
+        }
         markProjectEdited()
     }
 
@@ -1158,6 +1168,11 @@ final class PreviewViewModel: ObservableObject {
         }
 
         updateSyncOffset(fitStart.timeIntervalSince(videoTimeline.start))
+    }
+
+    private func resetSyncOffsetForAutomaticAlignment() {
+        syncOffset = 0
+        didApplyDefaultFITStartAlignment = false
     }
 
     private func videoTimelineRange() -> (start: Date, end: Date)? {
