@@ -99,40 +99,6 @@ final class YouTubeDescriptionGenerator {
         return lines.joined(separator: "\n")
     }
 
-    /// Generate auto chapters from FIT data (every N km).
-    static func autoChapters(
-        dataPoints: [FITDataPoint],
-        videoStartDate: Date,
-        intervalKm: Double = 1.0
-    ) -> [(time: TimeInterval, label: String)] {
-        var chapters: [(TimeInterval, String)] = []
-        var nextKm = intervalKm
-        let startDate = videoStartDate
-
-        chapters.append((0, "スタート"))
-
-        for dp in dataPoints {
-            guard let dist = dp.distance else { continue }
-            let distKm = dist / 1000
-            if distKm >= nextKm {
-                let time = dp.timestamp.timeIntervalSince(startDate)
-                if time >= 0 {
-                    chapters.append((time, String(format: "%.0f km 地点", nextKm)))
-                }
-                nextKm += intervalKm
-            }
-        }
-
-        if let last = dataPoints.last, let dist = last.distance {
-            let time = last.timestamp.timeIntervalSince(startDate)
-            if time >= 0 {
-                chapters.append((time, String(format: "ゴール (%.2f km)", dist / 1000)))
-            }
-        }
-
-        return chapters
-    }
-
     // MARK: - Formatting
 
     private static func formatDuration(_ seconds: TimeInterval) -> String {

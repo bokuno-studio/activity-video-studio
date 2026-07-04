@@ -253,7 +253,6 @@ struct PreviewView: View {
                 case .youtube:
                     YouTubeDescriptionView(
                         dataPoints: viewModel.fitDataPoints,
-                        videoStartDate: viewModel.videoMetadatas.first?.creationDate,
                         chapterMarkers: viewModel.chapterMarkers,
                         trimmedTime: viewModel.trimmedTime(for:)
                     )

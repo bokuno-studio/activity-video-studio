@@ -4,7 +4,6 @@ import AppKit
 /// View showing the generated YouTube description with copy button.
 struct YouTubeDescriptionView: View {
     let dataPoints: [FITDataPoint]
-    let videoStartDate: Date?
     let chapterMarkers: [ChapterMarker]
     let trimmedTime: (TimeInterval) -> TimeInterval
     @State private var description: String = ""
