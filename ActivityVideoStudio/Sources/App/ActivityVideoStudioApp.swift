@@ -1,13 +1,129 @@
 import SwiftUI
+import AppKit
 import AVFoundation
 import CoreLocation
 import CoreGraphics
+
+@MainActor
+final class AppTerminationCoordinator {
+    static let shared = AppTerminationCoordinator()
+
+    private var ownerID: UUID?
+    private var shouldTerminate: (() -> Bool)?
+
+    private init() {}
+
+    func register(ownerID: UUID, shouldTerminate: @escaping () -> Bool) {
+        self.ownerID = ownerID
+        self.shouldTerminate = shouldTerminate
+    }
+
+    func unregister(ownerID: UUID) {
+        guard self.ownerID == ownerID else { return }
+        self.ownerID = nil
+        shouldTerminate = nil
+    }
+
+    func canTerminate() -> Bool {
+        shouldTerminate?() ?? true
+    }
+}
+
+@MainActor
+final class AppFileOpenCoordinator {
+    static let shared = AppFileOpenCoordinator()
+
+    private var ownerID: UUID?
+    private var handler: (([URL]) -> Void)?
+    private var pendingURLs: [URL] = []
+    private var recentOpenTimesByKey: [String: Date] = [:]
+    private let duplicateInterval: TimeInterval = 1
+
+    private init() {}
+
+    func register(ownerID: UUID, handler: @escaping ([URL]) -> Void) {
+        self.ownerID = ownerID
+        self.handler = handler
+        flushPendingURLs()
+    }
+
+    func unregister(ownerID: UUID) {
+        guard self.ownerID == ownerID else { return }
+        self.ownerID = nil
+        handler = nil
+    }
+
+    func open(_ urls: [URL]) {
+        let urls = uniqueURLs(from: urls)
+        guard !urls.isEmpty else { return }
+
+        if let handler {
+            handler(urls)
+        } else {
+            pendingURLs.append(contentsOf: urls)
+        }
+    }
+
+    private func flushPendingURLs() {
+        guard let handler, !pendingURLs.isEmpty else { return }
+        let urls = pendingURLs
+        pendingURLs.removeAll()
+        handler(urls)
+    }
+
+    private func uniqueURLs(from urls: [URL]) -> [URL] {
+        let now = Date()
+        recentOpenTimesByKey = recentOpenTimesByKey.filter { _, openedAt in
+            now.timeIntervalSince(openedAt) < duplicateInterval
+        }
+
+        var uniqueURLs: [URL] = []
+        for url in urls {
+            let key = openKey(for: url)
+            guard recentOpenTimesByKey[key] == nil else { continue }
+            recentOpenTimesByKey[key] = now
+            uniqueURLs.append(url)
+        }
+        return uniqueURLs
+    }
+
+    private func openKey(for url: URL) -> String {
+        if url.isFileURL {
+            return url.standardizedFileURL.path
+        }
+        return url.absoluteString
+    }
+}
+
+@MainActor
+final class ActivityVideoStudioAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        AppTerminationCoordinator.shared.canTerminate() ? .terminateNow : .terminateCancel
+    }
+
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        AppFileOpenCoordinator.shared.open([URL(fileURLWithPath: filename)])
+        return true
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        let urls = filenames.map { URL(fileURLWithPath: $0) }
+        AppFileOpenCoordinator.shared.open(urls)
+        sender.reply(toOpenOrPrint: .success)
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        AppFileOpenCoordinator.shared.open(urls)
+    }
+}
 
 struct ActivityVideoStudioApp: App {
     /// Stable identifier so the main window can be reopened from the menu after
     /// the user closes it (App Store Guideline 4 — a closed window must be
     /// reachable again via a menu item).
     static let mainWindowID = "main"
+
+    @NSApplicationDelegateAdaptor(ActivityVideoStudioAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup(id: ActivityVideoStudioApp.mainWindowID) {

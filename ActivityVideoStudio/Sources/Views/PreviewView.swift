@@ -14,6 +14,7 @@ struct PreviewView: View {
     @FocusState private var focusedChapterMarkerID: ChapterMarker.ID?
     @State private var trimFieldEditing = false
     @State private var selectedTextOverlayID: TextOverlay.ID?
+    @State private var appLifecycleOwnerID = UUID()
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.undoManager) private var undoManager
@@ -64,11 +65,31 @@ struct PreviewView: View {
                 dismissButton: .default(Text("閉じる"))
             )
         }
+        .onAppear {
+            AppTerminationCoordinator.shared.register(ownerID: appLifecycleOwnerID) {
+                viewModel.confirmCloseEditedProject()
+            }
+            AppFileOpenCoordinator.shared.register(ownerID: appLifecycleOwnerID) { urls in
+                Task { @MainActor in
+                    await viewModel.openExternalFiles(urls)
+                }
+            }
+        }
+        .onDisappear {
+            AppTerminationCoordinator.shared.unregister(ownerID: appLifecycleOwnerID)
+            AppFileOpenCoordinator.shared.unregister(ownerID: appLifecycleOwnerID)
+        }
+        .onOpenURL { url in
+            AppFileOpenCoordinator.shared.open([url])
+        }
         .background {
             WindowDocumentBridge(
                 title: viewModel.windowTitle,
                 representedURL: viewModel.projectURL,
-                isDocumentEdited: viewModel.isProjectEdited
+                isDocumentEdited: viewModel.isProjectEdited,
+                shouldClose: {
+                    viewModel.confirmCloseEditedProject()
+                }
             )
             .frame(width: 0, height: 0)
         }
@@ -790,6 +811,7 @@ private struct WindowDocumentBridge: NSViewRepresentable {
     var title: String
     var representedURL: URL?
     var isDocumentEdited: Bool
+    var shouldClose: () -> Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -814,18 +836,25 @@ private struct WindowDocumentBridge: NSViewRepresentable {
         coordinator.title = title
         coordinator.representedURL = representedURL
         coordinator.isDocumentEdited = isDocumentEdited
+        coordinator.shouldClose = shouldClose
     }
 
-    final class Coordinator {
+    final class Coordinator: NSObject, NSWindowDelegate {
         var title = ""
         var representedURL: URL?
         var isDocumentEdited = false
+        var shouldClose: () -> Bool = { true }
 
         func apply(to window: NSWindow?) {
             guard let window else { return }
             window.title = title
             window.representedURL = representedURL
             window.isDocumentEdited = isDocumentEdited
+            window.delegate = self
+        }
+
+        func windowShouldClose(_ sender: NSWindow) -> Bool {
+            shouldClose()
         }
     }
 

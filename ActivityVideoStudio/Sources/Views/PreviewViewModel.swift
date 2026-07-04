@@ -352,13 +352,7 @@ final class PreviewViewModel: ObservableObject {
     // MARK: - Project save/load
 
     func presentSaveProjectPanel() {
-        let panel = NSSavePanel()
-        panel.title = "プロジェクトを保存"
-        panel.allowedContentTypes = [Self.projectFileType]
-        panel.canCreateDirectories = true
-        panel.nameFieldStringValue = defaultProjectFileName()
-        panel.message = "編集状態をプロジェクトとして保存"
-        panel.prompt = "保存"
+        let panel = makeProjectSavePanel()
 
         panel.begin { [weak self] response in
             Task { @MainActor in
@@ -369,7 +363,7 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func presentOpenProjectPanel() {
-        if canSaveProject, !confirmDiscardCurrentProject() {
+        if !confirmReplaceEditedProject() {
             return
         }
 
@@ -386,6 +380,23 @@ final class PreviewViewModel: ObservableObject {
             Task { @MainActor in
                 guard response == .OK, let url = panel.url else { return }
                 await self?.loadProject(from: url)
+            }
+        }
+    }
+
+    func openExternalFiles(_ urls: [URL]) async {
+        for url in urls {
+            switch url.pathExtension.lowercased() {
+            case "avsproj":
+                guard confirmReplaceEditedProject() else { return }
+                await loadProject(from: url)
+            case "avstheme":
+                loadOverlayTheme(from: url)
+            default:
+                showError(
+                    title: "対応していないファイル形式です",
+                    message: "\(url.lastPathComponent) は読み込めません。対応形式は .avsproj / .avstheme です。"
+                )
             }
         }
     }
@@ -469,7 +480,8 @@ final class PreviewViewModel: ObservableObject {
         }
     }
 
-    func saveProject(to url: URL) {
+    @discardableResult
+    func saveProject(to url: URL) -> Bool {
         let access = url.startAccessingSecurityScopedResource()
         defer {
             if access { url.stopAccessingSecurityScopedResource() }
@@ -500,12 +512,14 @@ final class PreviewViewModel: ObservableObject {
             statusMessage = bookmarkWarnings.isEmpty
                 ? "プロジェクト保存完了: \(url.lastPathComponent)"
                 : "プロジェクト保存完了（警告あり）: \(url.lastPathComponent)"
+            return true
         } catch {
             showError(
                 title: "プロジェクトを保存できませんでした",
                 error: error,
                 recovery: "保存先の空き容量とアクセス権を確認して、もう一度保存してください。"
             )
+            return false
         }
     }
 
@@ -643,14 +657,59 @@ final class PreviewViewModel: ObservableObject {
         refreshedProjectFileReferencesByPath.removeAll()
     }
 
-    private func confirmDiscardCurrentProject() -> Bool {
+    func confirmCloseEditedProject() -> Bool {
+        confirmSaveDiscardOrCancelEditedProject(clearsEditedStateOnDiscard: true)
+    }
+
+    private func confirmReplaceEditedProject() -> Bool {
+        confirmSaveDiscardOrCancelEditedProject(clearsEditedStateOnDiscard: false)
+    }
+
+    private func confirmSaveDiscardOrCancelEditedProject(clearsEditedStateOnDiscard: Bool) -> Bool {
+        guard isProjectEdited else { return true }
+
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "現在の編集内容を破棄して開きますか？"
-        alert.informativeText = "プロジェクトを開くと、読み込み済みファイル、同期、トリム、テキスト、チャプターの現在の編集状態が置き換わります。必要なら先に保存してください。"
-        alert.addButton(withTitle: "開く")
+        alert.messageText = "変更内容を保存しますか？"
+        alert.informativeText = "保存していない編集内容があります。保存しない場合、変更は破棄されます。"
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "破棄")
         alert.addButton(withTitle: "キャンセル")
-        return alert.runModal() == .alertFirstButtonReturn
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return saveProjectToExistingURLOrPrompt()
+        case .alertSecondButtonReturn:
+            if clearsEditedStateOnDiscard {
+                isProjectEdited = false
+            }
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func saveProjectToExistingURLOrPrompt() -> Bool {
+        if let projectURL {
+            return saveProject(to: projectURL)
+        }
+
+        let panel = makeProjectSavePanel()
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return false
+        }
+        return saveProject(to: url)
+    }
+
+    private func makeProjectSavePanel() -> NSSavePanel {
+        let panel = NSSavePanel()
+        panel.title = "プロジェクトを保存"
+        panel.allowedContentTypes = [Self.projectFileType]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = defaultProjectFileName()
+        panel.message = "編集状態をプロジェクトとして保存"
+        panel.prompt = "保存"
+        return panel
     }
 
     private func resolveProjectFile(
