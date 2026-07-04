@@ -14,6 +14,7 @@ struct PreviewView: View {
     @FocusState private var focusedChapterMarkerID: ChapterMarker.ID?
     @State private var trimFieldEditing = false
     @State private var selectedTextOverlayID: TextOverlay.ID?
+    @State private var videoDisplayRect: CGRect = .zero
     @State private var appLifecycleOwnerID = UUID()
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -182,26 +183,32 @@ struct PreviewView: View {
     private var mainContent: some View {
         VStack(spacing: 0) {
             // Video with overlays
-            VideoPlayerView(player: viewModel.player) { delta in
+            VideoPlayerView(player: viewModel.player, videoRect: $videoDisplayRect) { delta in
                 viewModel.seekBy(delta)
             }
-                .aspectRatio(16/9, contentMode: .fit)
-                .overlay {
-                    LivePreviewOverlayView(
-                        frame: viewModel.liveOverlayFrame,
-                        settings: viewModel.overlaySettings,
-                        allDataPoints: viewModel.fitDataPoints,
-                        trackCoordinates: viewModel.trackCoordinates,
-                        textOverlays: viewModel.textOverlays
-                    )
+                .overlay(alignment: .topLeading) {
+                    if videoDisplayRect.isDrawableVideoRect {
+                        LivePreviewOverlayView(
+                            frame: viewModel.liveOverlayFrame,
+                            settings: viewModel.overlaySettings,
+                            allDataPoints: viewModel.fitDataPoints,
+                            trackCoordinates: viewModel.trackCoordinates,
+                            textOverlays: viewModel.textOverlays
+                        )
+                        .frame(width: videoDisplayRect.width, height: videoDisplayRect.height)
+                        .offset(x: videoDisplayRect.minX, y: videoDisplayRect.minY)
+                        .clipped()
                         .allowsHitTesting(false)
+                    }
                 }
-                .overlay {
-                    if rightPanelTab == .textOverlay {
+                .overlay(alignment: .topLeading) {
+                    if rightPanelTab == .textOverlay, videoDisplayRect.isDrawableVideoRect {
                         TextOverlayPlacementLayer(
                             overlays: $viewModel.textOverlays,
                             selectedOverlayID: $selectedTextOverlayID
                         )
+                            .frame(width: videoDisplayRect.width, height: videoDisplayRect.height)
+                            .offset(x: videoDisplayRect.minX, y: videoDisplayRect.minY)
                     }
                 }
                 .background(Color.black)
@@ -804,6 +811,18 @@ private struct TextOverlayPlacementLayer: View {
         overlays[index].relativeX = min(max(point.x / size.width, 0), 1)
         overlays[index].relativeY = min(max(point.y / size.height, 0), 1)
         overlays[index].clampRelativePosition()
+    }
+}
+
+private extension CGRect {
+    var isDrawableVideoRect: Bool {
+        !isNull &&
+            origin.x.isFinite &&
+            origin.y.isFinite &&
+            size.width.isFinite &&
+            size.height.isFinite &&
+            width > 0 &&
+            height > 0
     }
 }
 
