@@ -402,6 +402,7 @@ enum HeadlessExporter {
             let adj = VideoMetadata(
                 url: m.url,
                 creationDate: m.creationDate?.addingTimeInterval(cumulative),
+                quickTimeCreationDate: m.quickTimeCreationDate?.addingTimeInterval(cumulative),
                 duration: m.duration,
                 naturalSize: m.naturalSize
             )

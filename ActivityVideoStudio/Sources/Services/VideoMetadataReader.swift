@@ -41,13 +41,16 @@ final class VideoMetadataReader {
             preferredTransform: preferredTransform
         )
 
-        // Load creation date
+        // Prefer the timezone-bearing QuickTime creation date when available.
+        let quickTimeCreationDate = await Self.quickTimeCreationDate(from: asset)
         let creationDate = try? await asset.load(.creationDate)
-        let date = try? await creationDate?.load(.dateValue)
+        let fallbackDate = try? await creationDate?.load(.dateValue)
+        let date = quickTimeCreationDate ?? fallbackDate
 
         return VideoMetadata(
             url: url,
             creationDate: date,
+            quickTimeCreationDate: quickTimeCreationDate,
             duration: durationSeconds,
             naturalSize: displaySize
         )
@@ -89,5 +92,65 @@ final class VideoMetadataReader {
             width: abs(transformed.width),
             height: abs(transformed.height)
         )
+    }
+
+    private static func quickTimeCreationDate(from asset: AVURLAsset) async -> Date? {
+        guard let metadata = try? await asset.load(.metadata) else { return nil }
+        let creationDateItems = AVMetadataItem.metadataItems(
+            from: metadata,
+            filteredByIdentifier: .quickTimeMetadataCreationDate
+        )
+
+        for item in creationDateItems {
+            guard let stringValue = try? await item.load(.stringValue),
+                  let date = parseOffsetCreationDate(stringValue) else {
+                continue
+            }
+            return date
+        }
+
+        return nil
+    }
+
+    private static func parseOffsetCreationDate(_ value: String) -> Date? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard hasUTCOffset(trimmed) else { return nil }
+
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = isoFormatter.date(from: trimmed) {
+            return date
+        }
+
+        isoFormatter.formatOptions = [.withInternetDateTime]
+        if let date = isoFormatter.date(from: trimmed) {
+            return date
+        }
+
+        for format in [
+            "yyyy-MM-dd'T'HH:mm:ss.SSSXXXXX",
+            "yyyy-MM-dd'T'HH:mm:ssXXXXX",
+            "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
+            "yyyy-MM-dd'T'HH:mm:ssZ",
+            "yyyy-MM-dd HH:mm:ss.SSSZ",
+            "yyyy-MM-dd HH:mm:ssZ"
+        ] {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.dateFormat = format
+            if let date = formatter.date(from: trimmed) {
+                return date
+            }
+        }
+
+        return nil
+    }
+
+    private static func hasUTCOffset(_ value: String) -> Bool {
+        value.range(
+            of: #"([zZ]|[+-]\d{2}:?\d{2})$"#,
+            options: .regularExpression
+        ) != nil
     }
 }

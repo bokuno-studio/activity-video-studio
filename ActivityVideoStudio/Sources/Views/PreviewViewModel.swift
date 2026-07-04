@@ -1708,6 +1708,22 @@ final class PreviewViewModel: ObservableObject {
         return Self.videoStartFormatter.string(from: date)
     }
 
+    var timeZoneCorrectionCandidateLabel: String? {
+        guard let candidate = firstTimeZoneCorrectionCandidate else { return nil }
+        return "TZ補正 \(formatSignedTimeZoneOffset(candidate.offsetSeconds))"
+    }
+
+    func applyTimeZoneCorrectionCandidate() {
+        guard let candidate = firstTimeZoneCorrectionCandidate else { return }
+        let label = formatSignedTimeZoneOffset(candidate.offsetSeconds)
+        updateSyncOffset(syncOffset + candidate.offsetSeconds)
+        statusMessage = "タイムゾーン補正を適用: \(label)"
+    }
+
+    private var firstTimeZoneCorrectionCandidate: TimeSync.TimeZoneCorrectionCandidate? {
+        timeSync?.segments.compactMap(\.timeZoneCorrectionCandidate).first
+    }
+
     private static let videoStartFormatter: DateFormatter = {
         let f = DateFormatter()
         // Tenths so a ±0.5s fine nudge is visible in the readout.
@@ -1808,6 +1824,7 @@ final class PreviewViewModel: ObservableObject {
             let adjustedMetadata = VideoMetadata(
                 url: metadata.url,
                 creationDate: metadata.creationDate?.addingTimeInterval(cumulativeOffset),
+                quickTimeCreationDate: metadata.quickTimeCreationDate?.addingTimeInterval(cumulativeOffset),
                 duration: metadata.duration,
                 naturalSize: metadata.naturalSize
             )
@@ -1953,6 +1970,17 @@ final class PreviewViewModel: ObservableObject {
             return String(format: "%d:%02d:%02d", h, m, s)
         }
         return String(format: "%02d:%02d", m, s)
+    }
+
+    private func formatSignedTimeZoneOffset(_ seconds: TimeInterval) -> String {
+        let sign = seconds < 0 ? "-" : "+"
+        let totalMinutes = Int((abs(seconds) / 60).rounded())
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        if minutes == 0 {
+            return "\(sign)\(hours)h"
+        }
+        return String(format: "%@%d:%02d", sign, hours, minutes)
     }
 
     // MARK: - Trim helpers

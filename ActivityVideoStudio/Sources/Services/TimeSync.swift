@@ -11,10 +11,19 @@ final class TimeSync {
         let fitStartTime: Date?      // FIT time when this video starts
         let fitEndTime: Date?        // FIT time when this video ends
         let offsetSeconds: Double    // Manual sync offset (positive = FIT data delayed)
+        let timeZoneCorrectionCandidate: TimeZoneCorrectionCandidate?
 
         var isSynced: Bool {
             fitStartTime != nil && fitEndTime != nil
         }
+    }
+
+    /// A timezone-sized offset that would improve overlap with the FIT activity window.
+    struct TimeZoneCorrectionCandidate {
+        let offsetSeconds: TimeInterval
+        let correctedStartTime: Date
+        let correctedEndTime: Date
+        let overlapSeconds: TimeInterval
     }
 
     private let dataPoints: [FITDataPoint]
@@ -40,19 +49,26 @@ final class TimeSync {
                 metadata: metadata,
                 fitStartTime: nil,
                 fitEndTime: nil,
-                offsetSeconds: offsetSeconds
+                offsetSeconds: offsetSeconds,
+                timeZoneCorrectionCandidate: nil
             ))
             return
         }
 
         let adjustedStart = creationDate.addingTimeInterval(offsetSeconds)
         let adjustedEnd = adjustedStart.addingTimeInterval(metadata.duration)
+        let correctionCandidate = timeZoneCorrectionCandidate(
+            for: metadata,
+            currentStart: adjustedStart,
+            currentEnd: adjustedEnd
+        )
 
         let segment = VideoSegment(
             metadata: metadata,
             fitStartTime: adjustedStart,
             fitEndTime: adjustedEnd,
-            offsetSeconds: offsetSeconds
+            offsetSeconds: offsetSeconds,
+            timeZoneCorrectionCandidate: correctionCandidate
         )
         segments.append(segment)
     }
@@ -66,19 +82,26 @@ final class TimeSync {
                 metadata: old.metadata,
                 fitStartTime: nil,
                 fitEndTime: nil,
-                offsetSeconds: offsetSeconds
+                offsetSeconds: offsetSeconds,
+                timeZoneCorrectionCandidate: nil
             )
             return
         }
 
         let adjustedStart = creationDate.addingTimeInterval(offsetSeconds)
         let adjustedEnd = adjustedStart.addingTimeInterval(old.metadata.duration)
+        let correctionCandidate = timeZoneCorrectionCandidate(
+            for: old.metadata,
+            currentStart: adjustedStart,
+            currentEnd: adjustedEnd
+        )
 
         segments[segmentIndex] = VideoSegment(
             metadata: old.metadata,
             fitStartTime: adjustedStart,
             fitEndTime: adjustedEnd,
-            offsetSeconds: offsetSeconds
+            offsetSeconds: offsetSeconds,
+            timeZoneCorrectionCandidate: correctionCandidate
         )
     }
 
@@ -222,5 +245,86 @@ final class TimeSync {
     private func lerpOptional(_ a: Double?, _ b: Double?, _ t: Double) -> Double? {
         guard let a = a, let b = b else { return a ?? b }
         return a + t * (b - a)
+    }
+
+    private func timeZoneCorrectionCandidate(
+        for metadata: VideoMetadata,
+        currentStart: Date,
+        currentEnd: Date
+    ) -> TimeZoneCorrectionCandidate? {
+        guard !metadata.usesQuickTimeCreationDate,
+              let fitStart = dataPoints.first?.timestamp,
+              let fitEnd = dataPoints.last?.timestamp else {
+            return nil
+        }
+
+        let videoDuration = currentEnd.timeIntervalSince(currentStart)
+        let fitDuration = fitEnd.timeIntervalSince(fitStart)
+        guard videoDuration > 0, fitDuration > 0 else { return nil }
+
+        let currentOverlap = Self.overlapSeconds(
+            currentStart,
+            currentEnd,
+            fitStart,
+            fitEnd
+        )
+        let maximumPossibleOverlap = min(videoDuration, fitDuration)
+        let minimumCandidateOverlap = max(1, maximumPossibleOverlap * 0.5)
+        let minimumImprovement = max(1, min(60, maximumPossibleOverlap * 0.05))
+
+        var bestCandidate: TimeZoneCorrectionCandidate?
+        for offset in Self.timeZoneCorrectionOffsets(for: fitStart) {
+            let correctedStart = currentStart.addingTimeInterval(offset)
+            let correctedEnd = currentEnd.addingTimeInterval(offset)
+            let overlap = Self.overlapSeconds(correctedStart, correctedEnd, fitStart, fitEnd)
+            guard overlap >= minimumCandidateOverlap,
+                  overlap >= currentOverlap + minimumImprovement else {
+                continue
+            }
+
+            let candidate = TimeZoneCorrectionCandidate(
+                offsetSeconds: offset,
+                correctedStartTime: correctedStart,
+                correctedEndTime: correctedEnd,
+                overlapSeconds: overlap
+            )
+
+            guard let existing = bestCandidate else {
+                bestCandidate = candidate
+                continue
+            }
+
+            if overlap > existing.overlapSeconds ||
+                (overlap == existing.overlapSeconds && abs(offset) < abs(existing.offsetSeconds)) {
+                bestCandidate = candidate
+            }
+        }
+
+        return bestCandidate
+    }
+
+    private static func timeZoneCorrectionOffsets(for date: Date) -> [TimeInterval] {
+        let offsets = Set(TimeZone.knownTimeZoneIdentifiers.compactMap { identifier -> Int? in
+            TimeZone(identifier: identifier)?.secondsFromGMT(for: date)
+        })
+
+        return offsets
+            .filter { $0 != 0 }
+            .map { TimeInterval(-$0) }
+            .sorted {
+                if abs($0) == abs($1) { return $0 < $1 }
+                return abs($0) < abs($1)
+            }
+    }
+
+    private static func overlapSeconds(
+        _ lhsStart: Date,
+        _ lhsEnd: Date,
+        _ rhsStart: Date,
+        _ rhsEnd: Date
+    ) -> TimeInterval {
+        let start = max(lhsStart.timeIntervalSince1970, rhsStart.timeIntervalSince1970)
+        let end = min(lhsEnd.timeIntervalSince1970, rhsEnd.timeIntervalSince1970)
+        return max(0, end - start)
     }
 }

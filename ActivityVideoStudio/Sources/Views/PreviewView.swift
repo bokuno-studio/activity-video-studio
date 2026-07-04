@@ -555,6 +555,19 @@ struct PreviewView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
+                if let candidateLabel = viewModel.timeZoneCorrectionCandidateLabel {
+                    Button {
+                        viewModel.applyTimeZoneCorrectionCandidate()
+                    } label: {
+                        Label(candidateLabel, systemImage: "clock.arrow.circlepath")
+                            .font(.caption2.weight(.medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("FITの時間範囲に合うタイムゾーン補正候補を同期オフセットに適用")
+                    .accessibilityLabel(candidateLabel)
+                }
+
                 syncNudgeButton("−1m", delta: -60)
                 syncNudgeButton("−10s", delta: -10)
                 syncNudgeButton("−", delta: -0.5)
