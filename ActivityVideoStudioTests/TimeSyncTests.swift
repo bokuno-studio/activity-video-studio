@@ -29,6 +29,31 @@ final class TimeSyncTests: XCTestCase {
         XCTAssertEqual(sync.segments.first?.offsetSeconds, 0)
     }
 
+    @MainActor
+    func testExportCopyIsIndependentOfLaterOffsetUpdates() throws {
+        let sync = TimeSync(dataPoints: [
+            point(seconds: 0, speed: 1),
+            point(seconds: 4, speed: 5),
+            point(seconds: 20, speed: 20)
+        ])
+        sync.addVideo(VideoMetadata(
+            url: URL(fileURLWithPath: "/tmp/video.mov"),
+            creationDate: date(seconds: 0),
+            duration: 30,
+            naturalSize: nil
+        ))
+
+        let snapshot = sync.makeExportCopy()
+        sync.updateOffset(segmentIndex: 0, offsetSeconds: 20)
+
+        let snapshotPoint = try XCTUnwrap(snapshot.dataPoint(segmentIndex: 0, playbackTime: 2))
+        let livePoint = try XCTUnwrap(sync.dataPoint(segmentIndex: 0, playbackTime: 2))
+        XCTAssertEqual(snapshotPoint.speed ?? 0, 3, accuracy: 0.001)
+        XCTAssertEqual(livePoint.speed, 20)
+        XCTAssertEqual(snapshot.elapsedTime(segmentIndex: 0, playbackTime: 2), 2)
+        XCTAssertEqual(sync.elapsedTime(segmentIndex: 0, playbackTime: 2), 22)
+    }
+
     func testLargeGapReturnsPreviousPointWithoutSmoothInterpolation() throws {
         let sync = TimeSync(dataPoints: [
             point(seconds: 0, speed: 1, distance: 0),

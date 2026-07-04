@@ -30,6 +30,38 @@ final class TimeSync {
     private(set) var segments: [VideoSegment] = []
     private static let maximumInterpolationGap: TimeInterval = 5
 
+    struct ExportSnapshot: @unchecked Sendable {
+        private let dataPoints: [FITDataPoint]
+        private let segments: [VideoSegment]
+
+        fileprivate init(dataPoints: [FITDataPoint], segments: [VideoSegment]) {
+            self.dataPoints = dataPoints
+            self.segments = segments
+        }
+
+        func dataPoint(segmentIndex: Int, playbackTime: TimeInterval) -> FITDataPoint? {
+            TimeSync.dataPoint(
+                segmentIndex: segmentIndex,
+                playbackTime: playbackTime,
+                dataPoints: dataPoints,
+                segments: segments
+            )
+        }
+
+        func elapsedTime(segmentIndex: Int, playbackTime: TimeInterval) -> TimeInterval? {
+            TimeSync.elapsedTime(
+                segmentIndex: segmentIndex,
+                playbackTime: playbackTime,
+                dataPoints: dataPoints,
+                segments: segments
+            )
+        }
+
+        func interpolatedDataPoint(at date: Date) -> FITDataPoint? {
+            TimeSync.interpolatedDataPoint(at: date, dataPoints: dataPoints)
+        }
+    }
+
     /// Activity start time from the first FIT data point.
     var activityStartTime: Date? { dataPoints.first?.timestamp }
 
@@ -39,6 +71,11 @@ final class TimeSync {
 
     init(dataPoints: [FITDataPoint]) {
         self.dataPoints = dataPoints.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    @MainActor
+    func makeExportCopy() -> ExportSnapshot {
+        ExportSnapshot(dataPoints: dataPoints, segments: segments)
     }
 
     // MARK: - Setup
@@ -114,16 +151,34 @@ final class TimeSync {
     ///   - playbackTime: Playback position in seconds from video start
     /// - Returns: Interpolated data point, or nil if no data available
     func dataPoint(segmentIndex: Int, playbackTime: TimeInterval) -> FITDataPoint? {
+        Self.dataPoint(
+            segmentIndex: segmentIndex,
+            playbackTime: playbackTime,
+            dataPoints: dataPoints,
+            segments: segments
+        )
+    }
+
+    /// Get interpolated FIT data for an absolute FIT timestamp.
+    func interpolatedDataPoint(at date: Date) -> FITDataPoint? {
+        Self.interpolatedDataPoint(at: date, dataPoints: dataPoints)
+    }
+
+    private static func dataPoint(
+        segmentIndex: Int,
+        playbackTime: TimeInterval,
+        dataPoints: [FITDataPoint],
+        segments: [VideoSegment]
+    ) -> FITDataPoint? {
         guard segments.indices.contains(segmentIndex) else { return nil }
         let segment = segments[segmentIndex]
         guard let fitStartTime = segment.fitStartTime else { return nil }
 
         let fitTime = fitStartTime.addingTimeInterval(playbackTime)
-        return interpolatedDataPoint(at: fitTime)
+        return interpolatedDataPoint(at: fitTime, dataPoints: dataPoints)
     }
 
-    /// Get interpolated FIT data for an absolute FIT timestamp.
-    func interpolatedDataPoint(at date: Date) -> FITDataPoint? {
+    private static func interpolatedDataPoint(at date: Date, dataPoints: [FITDataPoint]) -> FITDataPoint? {
         guard !dataPoints.isEmpty else { return nil }
 
         // Binary search for the closest data points
@@ -166,7 +221,7 @@ final class TimeSync {
 
         // Compute grade from altitude if not present in FIT data
         if result.grade == nil, lo > 0 {
-            result = computeGrade(result: result, index: lo)
+            result = computeGrade(result: result, index: lo, dataPoints: dataPoints)
         }
 
         return result
@@ -174,8 +229,22 @@ final class TimeSync {
 
     /// Elapsed time from activity start for a given playback position.
     func elapsedTime(segmentIndex: Int, playbackTime: TimeInterval) -> TimeInterval? {
+        Self.elapsedTime(
+            segmentIndex: segmentIndex,
+            playbackTime: playbackTime,
+            dataPoints: dataPoints,
+            segments: segments
+        )
+    }
+
+    private static func elapsedTime(
+        segmentIndex: Int,
+        playbackTime: TimeInterval,
+        dataPoints: [FITDataPoint],
+        segments: [VideoSegment]
+    ) -> TimeInterval? {
         guard segments.indices.contains(segmentIndex),
-              let start = activityStartTime else { return nil }
+              let start = dataPoints.first?.timestamp else { return nil }
         let segment = segments[segmentIndex]
         guard let fitStartTime = segment.fitStartTime else { return nil }
         let fitTime = fitStartTime.addingTimeInterval(playbackTime)
@@ -184,7 +253,7 @@ final class TimeSync {
 
     // MARK: - Interpolation
 
-    private func interpolate(before: FITDataPoint, after: FITDataPoint, fraction: Double) -> FITDataPoint {
+    private static func interpolate(before: FITDataPoint, after: FITDataPoint, fraction: Double) -> FITDataPoint {
         let timestamp = Date(
             timeIntervalSince1970: before.timestamp.timeIntervalSince1970
                 + fraction * (after.timestamp.timeIntervalSince1970 - before.timestamp.timeIntervalSince1970)
@@ -216,7 +285,7 @@ final class TimeSync {
     }
 
     /// Compute grade from altitude difference over ~10 data points for smoothing.
-    private func computeGrade(result: FITDataPoint, index: Int) -> FITDataPoint {
+    private static func computeGrade(result: FITDataPoint, index: Int, dataPoints: [FITDataPoint]) -> FITDataPoint {
         let lookback = min(index, 10)
         let prev = dataPoints[index - lookback]
         let curr = dataPoints[index]
@@ -246,7 +315,7 @@ final class TimeSync {
         )
     }
 
-    private func lerpOptional(_ a: Double?, _ b: Double?, _ t: Double) -> Double? {
+    private static func lerpOptional(_ a: Double?, _ b: Double?, _ t: Double) -> Double? {
         guard let a = a, let b = b else { return a ?? b }
         return a + t * (b - a)
     }

@@ -321,6 +321,7 @@ final class VideoExporter: @unchecked Sendable {
     ) async throws {
         if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
 
+        let timeSyncSnapshot = await timeSync.makeExportCopy()
         let assetDuration = try await AVURLAsset(url: videoURL).load(.duration)
         let totalSeconds = CMTimeGetSeconds(assetDuration)
         let trimmedDuration = trimSettings.trimmedDuration(original: totalSeconds)
@@ -337,7 +338,7 @@ final class VideoExporter: @unchecked Sendable {
         if ranges.count > 1 {
             try await exportSingleVideoInRanges(
                 videoURL: videoURL,
-                timeSync: timeSync,
+                timeSync: timeSyncSnapshot,
                 segmentIndex: segmentIndex,
                 ranges: ranges,
                 overlayRenderer: overlayRenderer,
@@ -347,7 +348,7 @@ final class VideoExporter: @unchecked Sendable {
         } else if let range = ranges.first {
             try await exportSingleVideoRange(
                 videoURL: videoURL,
-                timeSync: timeSync,
+                timeSync: timeSyncSnapshot,
                 segmentIndex: segmentIndex,
                 sourceStartTime: range.sourceStartTime,
                 duration: range.duration,
@@ -361,7 +362,7 @@ final class VideoExporter: @unchecked Sendable {
 
     private func exportSingleVideoRange(
         videoURL: URL,
-        timeSync: TimeSync,
+        timeSync: TimeSync.ExportSnapshot,
         segmentIndex: Int,
         sourceStartTime: TimeInterval,
         duration: TimeInterval,
@@ -537,7 +538,7 @@ final class VideoExporter: @unchecked Sendable {
 
     private func exportSingleVideoInRanges(
         videoURL: URL,
-        timeSync: TimeSync,
+        timeSync: TimeSync.ExportSnapshot,
         segmentIndex: Int,
         ranges: [SourceExportRange],
         overlayRenderer: OverlayRenderer,
@@ -650,6 +651,8 @@ final class VideoExporter: @unchecked Sendable {
             return
         }
 
+        let timeSyncSnapshot = await timeSync.makeExportCopy()
+
         // Phase 1: pre-load durations
         var segmentDurations: [Double] = []
         for (segIdx, url) in videoURLs.enumerated() {
@@ -739,7 +742,7 @@ final class VideoExporter: @unchecked Sendable {
 
                     try await self.exportSingleVideoRange(
                         videoURL: job.videoURL,
-                        timeSync: timeSync,
+                        timeSync: timeSyncSnapshot,
                         segmentIndex: job.segmentIndex,
                         sourceStartTime: job.range.sourceStartTime,
                         duration: job.range.duration,
