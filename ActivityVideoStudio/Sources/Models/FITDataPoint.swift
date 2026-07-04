@@ -34,4 +34,43 @@ struct FITDataPoint {
         let seconds = Int(totalSeconds) % 60
         return String(format: "%d'%02d\"", minutes, seconds)
     }
+
+    func resolvedGrade(fallbackDataPoints dataPoints: [FITDataPoint]) -> Double? {
+        if let grade, grade.isFinite {
+            return grade
+        }
+
+        guard let currentDistance = distance else { return nil }
+        guard let anchorIndex = dataPoints.lastIndex(where: { point in
+            guard let pointDistance = point.distance else { return false }
+            return pointDistance <= currentDistance
+        }), anchorIndex > 0 else {
+            return nil
+        }
+
+        let lookback = min(anchorIndex, 10)
+        let previous = dataPoints[anchorIndex - lookback]
+        let anchor = dataPoints[anchorIndex]
+
+        guard let previousAltitude = previous.altitude,
+              let previousDistance = previous.distance,
+              let currentAltitude = altitude ?? anchor.altitude else {
+            return nil
+        }
+
+        let distanceDelta = currentDistance - previousDistance
+        guard distanceDelta > 1 else { return nil }
+
+        let computedGrade = ((currentAltitude - previousAltitude) / distanceDelta) * 100.0
+        return computedGrade.isFinite ? computedGrade : nil
+    }
+
+    func gradeFormatted(fallbackDataPoints dataPoints: [FITDataPoint]) -> String {
+        guard let grade = resolvedGrade(fallbackDataPoints: dataPoints) else {
+            return "--%"
+        }
+
+        let displayGrade = abs(grade) < 0.05 ? 0 : grade
+        return String(format: "%+.1f%%", displayGrade)
+    }
 }

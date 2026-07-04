@@ -171,6 +171,15 @@ private struct LiveActivityDataLayer: View {
                 )
             }
 
+            if settings.showGrade {
+                labelValue(
+                    label: "GRADE",
+                    value: frame.dataPoint.gradeFormatted(fallbackDataPoints: allDataPoints),
+                    x: rightX,
+                    y: rightGradeY()
+                )
+            }
+
             if settings.showAltitude {
                 let value = frame.dataPoint.altitude.map { String(format: "%.0f M", $0) } ?? "-- M"
                 labelValue(label: "ALTITUDE", value: value, x: rightX, y: rightAltitudeY())
@@ -219,6 +228,10 @@ private struct LiveActivityDataLayer: View {
             rects.append(labelValueRect(x: x, y: y, valueSize: style.valueFontSize * scale))
             y += style.rightMetricAdvance * scale
         }
+        if settings.showGrade {
+            rects.append(labelValueRect(x: x, y: y, valueSize: style.valueFontSize * scale))
+            y += style.rightMetricAdvance * scale
+        }
         if settings.showAltitude {
             rects.append(labelValueRect(x: x, y: y, valueSize: style.valueFontSize * scale))
         }
@@ -254,11 +267,20 @@ private struct LiveActivityDataLayer: View {
         return y
     }
 
+    private func rightGradeY() -> CGFloat {
+        var y = style.rightStartY(in: size, scale: scale)
+        if settings.showDistance { y += style.rightDistanceAdvance * scale }
+        if settings.showTime { y += style.rightMetricAdvance * scale }
+        if settings.showElevationGain { y += style.rightMetricAdvance * scale }
+        return y
+    }
+
     private func rightAltitudeY() -> CGFloat {
         var y = style.rightStartY(in: size, scale: scale)
         if settings.showDistance { y += style.rightDistanceAdvance * scale }
         if settings.showTime { y += style.rightMetricAdvance * scale }
         if settings.showElevationGain { y += style.rightMetricAdvance * scale }
+        if settings.showGrade { y += style.rightMetricAdvance * scale }
         return y
     }
 

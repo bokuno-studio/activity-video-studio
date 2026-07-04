@@ -171,7 +171,7 @@ final class OverlayRenderer {
             drawLabelValue(ctx: ctx, label: "CORE TEMP", value: value, x: leftX, y: leftY, labelColor: accentColor, valueSize: valueFontSize, valueColor: c, labelSize: labelFontSize)
         }
 
-        // === RIGHT SIDE (top→bottom): GPS track (drawn directly by OverlayRenderer) → Distance → TIME → ELEV GAIN → ALTITUDE → 標高グラフ ===
+        // === RIGHT SIDE (top→bottom): GPS track (drawn directly by OverlayRenderer) → Distance → TIME → ELEV GAIN → GRADE → ALTITUDE → 標高グラフ ===
 
         // Distance - right, below GPS track area.
         // GPS track drawn directly by OverlayRenderer (see drawGPSTrack) in the top-right corner.
@@ -191,6 +191,11 @@ final class OverlayRenderer {
         }
 
         if settings.showElevationGain {
+            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: valueFontSize * scale))
+            rightY += rightAdvance
+        }
+
+        if settings.showGrade {
             rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: valueFontSize * scale))
             rightY += rightAdvance
         }
@@ -230,7 +235,14 @@ final class OverlayRenderer {
             rightY += rightAdvance
         }
 
-        // ALTITUDE (current elevation) - right, below elev gain
+        // GRADE - right, below elevation gain
+        if settings.showGrade {
+            let value = dataPoint.gradeFormatted(fallbackDataPoints: allDataPoints)
+            drawLabelValue(ctx: ctx, label: "GRADE", value: value, x: rightX, y: rightY, labelColor: accentColor, valueSize: valueFontSize, labelSize: labelFontSize)
+            rightY += rightAdvance
+        }
+
+        // ALTITUDE (current elevation) - right, below grade
         if settings.showAltitude {
             let value = dataPoint.altitude.map { String(format: "%.0f M", $0) } ?? "-- M"
             drawLabelValue(ctx: ctx, label: "ALTITUDE", value: value, x: rightX, y: rightY, labelColor: accentColor, valueSize: valueFontSize, labelSize: labelFontSize)

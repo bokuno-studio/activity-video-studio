@@ -615,7 +615,8 @@ final class FITParser {
             let baseType = BaseType(rawValue: field.baseType)
             let isInvalid = isFieldInvalid(
                 data: data, offset: fieldStart,
-                size: Int(field.size), baseType: baseType
+                size: Int(field.size), baseType: baseType,
+                littleEndian: definition.littleEndian
             )
 
             if !isInvalid {
@@ -777,20 +778,39 @@ final class FITParser {
         Int32(bitPattern: readUInt32(data: data, offset: offset, littleEndian: littleEndian))
     }
 
-    private func isFieldInvalid(data: Data, offset: Int, size: Int, baseType: BaseType?) -> Bool {
+    private func readUInt64(data: Data, offset: Int, littleEndian: Bool) -> UInt64 {
+        if littleEndian {
+            return UInt64(data[offset])
+                | (UInt64(data[offset + 1]) << 8)
+                | (UInt64(data[offset + 2]) << 16)
+                | (UInt64(data[offset + 3]) << 24)
+                | (UInt64(data[offset + 4]) << 32)
+                | (UInt64(data[offset + 5]) << 40)
+                | (UInt64(data[offset + 6]) << 48)
+                | (UInt64(data[offset + 7]) << 56)
+        } else {
+            return (UInt64(data[offset]) << 56)
+                | (UInt64(data[offset + 1]) << 48)
+                | (UInt64(data[offset + 2]) << 40)
+                | (UInt64(data[offset + 3]) << 32)
+                | (UInt64(data[offset + 4]) << 24)
+                | (UInt64(data[offset + 5]) << 16)
+                | (UInt64(data[offset + 6]) << 8)
+                | UInt64(data[offset + 7])
+        }
+    }
+
+    private func isFieldInvalid(data: Data, offset: Int, size: Int, baseType: BaseType?, littleEndian: Bool) -> Bool {
         guard let bt = baseType else { return false }
         switch size {
         case 1:
             return UInt64(data[offset]) == bt.invalidValue
         case 2:
-            let val = UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
-            return UInt64(val) == bt.invalidValue
+            return UInt64(readUInt16(data: data, offset: offset, littleEndian: littleEndian)) == bt.invalidValue
         case 4:
-            let val = UInt32(data[offset])
-                | (UInt32(data[offset + 1]) << 8)
-                | (UInt32(data[offset + 2]) << 16)
-                | (UInt32(data[offset + 3]) << 24)
-            return UInt64(val) == bt.invalidValue
+            return UInt64(readUInt32(data: data, offset: offset, littleEndian: littleEndian)) == bt.invalidValue
+        case 8:
+            return readUInt64(data: data, offset: offset, littleEndian: littleEndian) == bt.invalidValue
         default:
             return false
         }
