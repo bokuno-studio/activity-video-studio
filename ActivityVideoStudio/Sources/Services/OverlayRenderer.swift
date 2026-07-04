@@ -823,13 +823,17 @@ enum OverlayHorizontalPosition: Codable {
 
         switch anchor {
         case .left:
-            self = .left(try container.decode(CGFloat.self, forKey: .offset))
+            self = .left(try container.decodeFiniteCGFloat(forKey: .offset, default: 0))
         case .right:
-            self = .right(try container.decode(CGFloat.self, forKey: .offset))
+            self = .right(try container.decodeFiniteCGFloat(forKey: .offset, default: 0))
         case .proportion:
             self = .proportion(
-                try container.decode(CGFloat.self, forKey: .fraction),
-                offset: try container.decodeIfPresent(CGFloat.self, forKey: .offset) ?? 0
+                try container.decodeClampedCGFloat(
+                    forKey: .fraction,
+                    default: 0.5,
+                    range: OverlayThemeStyleClamp.positionFraction
+                ),
+                offset: try container.decodeFiniteCGFloat(forKey: .offset, default: 0)
             )
         }
     }
@@ -886,13 +890,17 @@ enum OverlayVerticalPosition: Codable {
 
         switch anchor {
         case .top:
-            self = .top(try container.decode(CGFloat.self, forKey: .offset))
+            self = .top(try container.decodeFiniteCGFloat(forKey: .offset, default: 0))
         case .bottom:
-            self = .bottom(try container.decode(CGFloat.self, forKey: .offset))
+            self = .bottom(try container.decodeFiniteCGFloat(forKey: .offset, default: 0))
         case .proportion:
             self = .proportion(
-                try container.decode(CGFloat.self, forKey: .fraction),
-                offset: try container.decodeIfPresent(CGFloat.self, forKey: .offset) ?? 0
+                try container.decodeClampedCGFloat(
+                    forKey: .fraction,
+                    default: 0.5,
+                    range: OverlayThemeStyleClamp.positionFraction
+                ),
+                offset: try container.decodeFiniteCGFloat(forKey: .offset, default: 0)
             )
         }
     }
@@ -984,6 +992,13 @@ private struct OverlayThemeColor: Codable {
     var blue: Double
     var alpha: Double
 
+    private enum CodingKeys: String, CodingKey {
+        case red
+        case green
+        case blue
+        case alpha
+    }
+
     init(red: Double, green: Double, blue: Double, alpha: Double) {
         self.red = red
         self.green = green
@@ -999,6 +1014,14 @@ private struct OverlayThemeColor: Codable {
         alpha = Double(nsColor.alphaComponent)
     }
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        red = try container.decodeIfPresent(Double.self, forKey: .red) ?? 0
+        green = try container.decodeIfPresent(Double.self, forKey: .green) ?? 0
+        blue = try container.decodeIfPresent(Double.self, forKey: .blue) ?? 0
+        alpha = try container.decodeIfPresent(Double.self, forKey: .alpha) ?? 1
+    }
+
     var cgColor: CGColor {
         CGColor(
             red: clampedCGFloat(red),
@@ -1010,6 +1033,42 @@ private struct OverlayThemeColor: Codable {
 
     private func clampedCGFloat(_ value: Double) -> CGFloat {
         CGFloat(min(max(value, 0), 1))
+    }
+}
+
+private enum OverlayThemeStyleClamp {
+    static let fontSize: ClosedRange<CGFloat> = 8...300
+    static let mapRatio: ClosedRange<CGFloat> = 0.05...0.75
+    static let panelWidthScale: ClosedRange<CGFloat> = 0.25...3
+    static let positionFraction: ClosedRange<CGFloat> = 0...1
+}
+
+private func themeFiniteCGFloat(_ value: CGFloat, default defaultValue: CGFloat) -> CGFloat {
+    value.isFinite ? value : defaultValue
+}
+
+private func themeClampedCGFloat(_ value: CGFloat, to range: ClosedRange<CGFloat>, default defaultValue: CGFloat) -> CGFloat {
+    guard value.isFinite else { return defaultValue }
+    return min(max(value, range.lowerBound), range.upperBound)
+}
+
+private extension KeyedDecodingContainer {
+    func decodeFiniteCGFloat(forKey key: Key, default defaultValue: CGFloat) throws -> CGFloat {
+        guard let value = try decodeIfPresent(CGFloat.self, forKey: key) else {
+            return defaultValue
+        }
+        return themeFiniteCGFloat(value, default: defaultValue)
+    }
+
+    func decodeClampedCGFloat(
+        forKey key: Key,
+        default defaultValue: CGFloat,
+        range: ClosedRange<CGFloat>
+    ) throws -> CGFloat {
+        guard let value = try decodeIfPresent(CGFloat.self, forKey: key) else {
+            return defaultValue
+        }
+        return themeClampedCGFloat(value, to: range, default: defaultValue)
     }
 }
 
@@ -1052,39 +1111,69 @@ extension OverlayPresetRenderStyle {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        accentColor = try container.decode(OverlayThemeColor.self, forKey: .accentColor).cgColor
-        accentRed = try container.decode(OverlayThemeColor.self, forKey: .accentRed).cgColor
-        shadowColor = try container.decode(OverlayThemeColor.self, forKey: .shadowColor).cgColor
-        metricsBackgroundColor = try container.decode(OverlayThemeColor.self, forKey: .metricsBackgroundColor).cgColor
-        panelBackgroundColor = try container.decode(OverlayThemeColor.self, forKey: .panelBackgroundColor).cgColor
-        mapBackgroundColor = try container.decode(OverlayThemeColor.self, forKey: .mapBackgroundColor).cgColor
-        elevationColor = try container.decode(OverlayThemeColor.self, forKey: .elevationColor).cgColor
-        elevationLineColor = try container.decode(OverlayThemeColor.self, forKey: .elevationLineColor).cgColor
-        elevationFillColor = try container.decode(OverlayThemeColor.self, forKey: .elevationFillColor).cgColor
-        trackOutlineColor = try container.decode(OverlayThemeColor.self, forKey: .trackOutlineColor).cgColor
-        trackLineColor = try container.decode(OverlayThemeColor.self, forKey: .trackLineColor).cgColor
-        mapDotColor = try container.decode(OverlayThemeColor.self, forKey: .mapDotColor).cgColor
-        labelFontSize = try container.decode(CGFloat.self, forKey: .labelFontSize)
-        valueFontSize = try container.decode(CGFloat.self, forKey: .valueFontSize)
-        distanceFontSize = try container.decode(CGFloat.self, forKey: .distanceFontSize)
-        leftXPosition = try container.decode(OverlayHorizontalPosition.self, forKey: .leftXPosition)
-        leftStartYPosition = try container.decode(OverlayVerticalPosition.self, forKey: .leftStartYPosition)
-        rightXPosition = try container.decode(OverlayHorizontalPosition.self, forKey: .rightXPosition)
-        rightStartYPosition = try container.decode(OverlayVerticalPosition.self, forKey: .rightStartYPosition)
-        leftMetricAdvance = try container.decode(CGFloat.self, forKey: .leftMetricAdvance)
-        rightDistanceAdvance = try container.decode(CGFloat.self, forKey: .rightDistanceAdvance)
-        rightMetricAdvance = try container.decode(CGFloat.self, forKey: .rightMetricAdvance)
-        metricPanelWidthScale = try container.decode(CGFloat.self, forKey: .metricPanelWidthScale)
-        distancePanelWidthScale = try container.decode(CGFloat.self, forKey: .distancePanelWidthScale)
-        metricsCornerRadius = try container.decode(CGFloat.self, forKey: .metricsCornerRadius)
-        mapWidthRatio = try container.decode(CGFloat.self, forKey: .mapWidthRatio)
-        mapHeightRatio = try container.decode(CGFloat.self, forKey: .mapHeightRatio)
-        mapMargin = try container.decode(CGFloat.self, forKey: .mapMargin)
-        mapCornerRadius = try container.decode(CGFloat.self, forKey: .mapCornerRadius)
-        mapPlacement = try container.decode(OverlayMapPlacement.self, forKey: .mapPlacement)
-        profileGap = try container.decode(CGFloat.self, forKey: .profileGap)
-        profileBottomPadding = try container.decode(CGFloat.self, forKey: .profileBottomPadding)
-        profileCornerRadius = try container.decode(CGFloat.self, forKey: .profileCornerRadius)
+        self = OverlayPreset.defaultPreset.renderStyle
+
+        accentColor = try container.decodeIfPresent(OverlayThemeColor.self, forKey: .accentColor)?.cgColor ?? accentColor
+        accentRed = try container.decodeIfPresent(OverlayThemeColor.self, forKey: .accentRed)?.cgColor ?? accentRed
+        shadowColor = try container.decodeIfPresent(OverlayThemeColor.self, forKey: .shadowColor)?.cgColor ?? shadowColor
+        metricsBackgroundColor = try container.decodeIfPresent(OverlayThemeColor.self, forKey: .metricsBackgroundColor)?.cgColor ?? metricsBackgroundColor
+        panelBackgroundColor = try container.decodeIfPresent(OverlayThemeColor.self, forKey: .panelBackgroundColor)?.cgColor ?? panelBackgroundColor
+        mapBackgroundColor = try container.decodeIfPresent(OverlayThemeColor.self, forKey: .mapBackgroundColor)?.cgColor ?? mapBackgroundColor
+        elevationColor = try container.decodeIfPresent(OverlayThemeColor.self, forKey: .elevationColor)?.cgColor ?? elevationColor
+        elevationLineColor = try container.decodeIfPresent(OverlayThemeColor.self, forKey: .elevationLineColor)?.cgColor ?? elevationLineColor
+        elevationFillColor = try container.decodeIfPresent(OverlayThemeColor.self, forKey: .elevationFillColor)?.cgColor ?? elevationFillColor
+        trackOutlineColor = try container.decodeIfPresent(OverlayThemeColor.self, forKey: .trackOutlineColor)?.cgColor ?? trackOutlineColor
+        trackLineColor = try container.decodeIfPresent(OverlayThemeColor.self, forKey: .trackLineColor)?.cgColor ?? trackLineColor
+        mapDotColor = try container.decodeIfPresent(OverlayThemeColor.self, forKey: .mapDotColor)?.cgColor ?? mapDotColor
+        labelFontSize = try container.decodeClampedCGFloat(
+            forKey: .labelFontSize,
+            default: labelFontSize,
+            range: OverlayThemeStyleClamp.fontSize
+        )
+        valueFontSize = try container.decodeClampedCGFloat(
+            forKey: .valueFontSize,
+            default: valueFontSize,
+            range: OverlayThemeStyleClamp.fontSize
+        )
+        distanceFontSize = try container.decodeClampedCGFloat(
+            forKey: .distanceFontSize,
+            default: distanceFontSize,
+            range: OverlayThemeStyleClamp.fontSize
+        )
+        leftXPosition = try container.decodeIfPresent(OverlayHorizontalPosition.self, forKey: .leftXPosition) ?? leftXPosition
+        leftStartYPosition = try container.decodeIfPresent(OverlayVerticalPosition.self, forKey: .leftStartYPosition) ?? leftStartYPosition
+        rightXPosition = try container.decodeIfPresent(OverlayHorizontalPosition.self, forKey: .rightXPosition) ?? rightXPosition
+        rightStartYPosition = try container.decodeIfPresent(OverlayVerticalPosition.self, forKey: .rightStartYPosition) ?? rightStartYPosition
+        leftMetricAdvance = try container.decodeFiniteCGFloat(forKey: .leftMetricAdvance, default: leftMetricAdvance)
+        rightDistanceAdvance = try container.decodeFiniteCGFloat(forKey: .rightDistanceAdvance, default: rightDistanceAdvance)
+        rightMetricAdvance = try container.decodeFiniteCGFloat(forKey: .rightMetricAdvance, default: rightMetricAdvance)
+        metricPanelWidthScale = try container.decodeClampedCGFloat(
+            forKey: .metricPanelWidthScale,
+            default: metricPanelWidthScale,
+            range: OverlayThemeStyleClamp.panelWidthScale
+        )
+        distancePanelWidthScale = try container.decodeClampedCGFloat(
+            forKey: .distancePanelWidthScale,
+            default: distancePanelWidthScale,
+            range: OverlayThemeStyleClamp.panelWidthScale
+        )
+        metricsCornerRadius = try container.decodeFiniteCGFloat(forKey: .metricsCornerRadius, default: metricsCornerRadius)
+        mapWidthRatio = try container.decodeClampedCGFloat(
+            forKey: .mapWidthRatio,
+            default: mapWidthRatio,
+            range: OverlayThemeStyleClamp.mapRatio
+        )
+        mapHeightRatio = try container.decodeClampedCGFloat(
+            forKey: .mapHeightRatio,
+            default: mapHeightRatio,
+            range: OverlayThemeStyleClamp.mapRatio
+        )
+        mapMargin = try container.decodeFiniteCGFloat(forKey: .mapMargin, default: mapMargin)
+        mapCornerRadius = try container.decodeFiniteCGFloat(forKey: .mapCornerRadius, default: mapCornerRadius)
+        mapPlacement = try container.decodeIfPresent(OverlayMapPlacement.self, forKey: .mapPlacement) ?? mapPlacement
+        profileGap = try container.decodeFiniteCGFloat(forKey: .profileGap, default: profileGap)
+        profileBottomPadding = try container.decodeFiniteCGFloat(forKey: .profileBottomPadding, default: profileBottomPadding)
+        profileCornerRadius = try container.decodeFiniteCGFloat(forKey: .profileCornerRadius, default: profileCornerRadius)
     }
 
     func encode(to encoder: Encoder) throws {

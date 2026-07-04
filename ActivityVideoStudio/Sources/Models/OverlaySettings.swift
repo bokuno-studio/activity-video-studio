@@ -1,5 +1,24 @@
 import Foundation
 
+private enum OverlayThemeDecodingError: LocalizedError {
+    case unsupportedSchemaVersion(found: Int, supported: Int)
+
+    var errorDescription: String? {
+        "テーマ形式のバージョンに対応していません"
+    }
+
+    var failureReason: String? {
+        switch self {
+        case .unsupportedSchemaVersion(let found, let supported):
+            return "schemaVersion \(found) は、このアプリが対応している schemaVersion \(supported) より新しい形式です。"
+        }
+    }
+
+    var recoverySuggestion: String? {
+        "ActivityVideoStudio を更新してから、もう一度テーマを読み込んでください。"
+    }
+}
+
 /// Built-in visual styles for the burned-in activity overlay.
 enum OverlayPreset: String, CaseIterable, Codable, Identifiable {
     case defaultPreset = "default"
@@ -60,10 +79,26 @@ struct OverlayTheme: Codable, Identifiable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? Self.currentSchemaVersion
-        id = try container.decode(String.self, forKey: .id)
-        displayName = try container.decode(String.self, forKey: .displayName)
-        style = try container.decode(OverlayPresetRenderStyle.self, forKey: .style)
+        let decodedSchemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? Self.currentSchemaVersion
+        guard decodedSchemaVersion <= Self.currentSchemaVersion else {
+            throw OverlayThemeDecodingError.unsupportedSchemaVersion(
+                found: decodedSchemaVersion,
+                supported: Self.currentSchemaVersion
+            )
+        }
+
+        schemaVersion = decodedSchemaVersion
+
+        let decodedID = try container.decodeIfPresent(String.self, forKey: .id)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        id = decodedID?.isEmpty == false ? decodedID! : "user.theme"
+
+        let decodedDisplayName = try container.decodeIfPresent(String.self, forKey: .displayName)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        displayName = decodedDisplayName?.isEmpty == false ? decodedDisplayName! : id
+
+        style = try container.decodeIfPresent(OverlayPresetRenderStyle.self, forKey: .style)
+            ?? OverlayPreset.defaultPreset.renderStyle
         isBuiltIn = false
     }
 
