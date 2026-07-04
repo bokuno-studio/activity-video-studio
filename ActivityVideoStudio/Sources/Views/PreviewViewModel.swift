@@ -60,6 +60,7 @@ final class PreviewViewModel: ObservableObject {
     @Published var trimSettings: [TrimSettings] = []
     @Published var playbackRate: Float = 1.0
     @Published var chapterMarkers: [ChapterMarker] = []
+    @Published var youtubeDescription: String = ""
     @Published private(set) var projectURL: URL?
     @Published private(set) var isProjectEdited = false
     @Published private(set) var videoNativeWidth: Int = 0
@@ -132,9 +133,31 @@ final class PreviewViewModel: ObservableObject {
     private(set) var fitURL: URL?
     private(set) var videoURLs: [URL] = []
     private(set) var videoMetadatas: [VideoMetadata] = []
+    private var didInitializeYouTubeDescription = false
 
     /// Durations of individual video segments, for mapping playback time to segment.
     private var segmentDurations: [TimeInterval] = []
+
+    private static let timelineComparisonEpsilon: TimeInterval = 0.001
+    private static let chapterMarkerTimelineWarningPrefix = "動画タイムライン変更により"
+
+    private struct TimelineSegmentSnapshot {
+        let identity: String
+        let start: TimeInterval
+        let duration: TimeInterval
+
+        var end: TimeInterval {
+            start + duration
+        }
+
+        func contains(_ time: TimeInterval, isLast: Bool) -> Bool {
+            let epsilon: TimeInterval = 0.001
+            if isLast {
+                return time >= start - epsilon && time <= end + epsilon
+            }
+            return time >= start - epsilon && time < end - epsilon
+        }
+    }
 
     init() {
         setupTimeObserver()
@@ -606,6 +629,7 @@ final class PreviewViewModel: ObservableObject {
         trimSettings = []
         textOverlays = []
         chapterMarkers = []
+        youtubeDescription = ""
         syncOffset = 0
         timeSync = nil
         overlayRenderer = nil
@@ -615,6 +639,7 @@ final class PreviewViewModel: ObservableObject {
         projectURL = nil
         isProjectEdited = false
         didApplyDefaultFITStartAlignment = false
+        didInitializeYouTubeDescription = false
         refreshedProjectFileReferencesByPath.removeAll()
     }
 
@@ -751,13 +776,14 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func loadVideo(url: URL) async {
+        let markerTimelineBeforeLoad = makeTimelineSnapshot()
         beginLoading("動画を読み込み中...")
         defer { endLoading() }
 
         let reader = VideoMetadataReader()
         do {
             try await appendVideo(url: url, reader: reader)
-            await finishVideoLoading()
+            await finishVideoLoading(markerTimelineBeforeChange: markerTimelineBeforeLoad)
         } catch {
             showError(
                 title: "動画を読み込めませんでした",
@@ -774,6 +800,7 @@ final class PreviewViewModel: ObservableObject {
             return
         }
 
+        let markerTimelineBeforeLoad = makeTimelineSnapshot()
         beginLoading("0 / \(urls.count) 本 読み込み中...", progress: 0)
         defer { endLoading() }
 
@@ -807,7 +834,11 @@ final class PreviewViewModel: ObservableObject {
             return
         }
 
-        await finishVideoLoading(loadedCount: loadedCount, requestedCount: urls.count)
+        await finishVideoLoading(
+            loadedCount: loadedCount,
+            requestedCount: urls.count,
+            markerTimelineBeforeChange: markerTimelineBeforeLoad
+        )
 
         if !failedNames.isEmpty {
             showError(
@@ -824,8 +855,15 @@ final class PreviewViewModel: ObservableObject {
         trimSettings.append(TrimSettings())
     }
 
-    private func finishVideoLoading(loadedCount: Int? = nil, requestedCount: Int? = nil) async {
+    private func finishVideoLoading(
+        loadedCount: Int? = nil,
+        requestedCount: Int? = nil,
+        markerTimelineBeforeChange: [TimelineSegmentSnapshot]? = nil
+    ) async {
         sortVideosByCreationDate()
+        if let markerTimelineBeforeChange {
+            remapChapterMarkers(from: markerTimelineBeforeChange)
+        }
         videoLoaded = true
         setupTimeSync()
 
@@ -876,21 +914,127 @@ final class PreviewViewModel: ObservableObject {
         updateNativeVideoWidth()
     }
 
+    private func makeTimelineSnapshot() -> [TimelineSegmentSnapshot] {
+        var cursor: TimeInterval = 0
+        var occurrenceCounts: [String: Int] = [:]
+
+        return zip(videoURLs, videoMetadatas).map { url, metadata in
+            let baseIdentity = timelineSegmentIdentity(url: url, metadata: metadata)
+            let occurrence = occurrenceCounts[baseIdentity, default: 0]
+            occurrenceCounts[baseIdentity] = occurrence + 1
+            defer { cursor += metadata.duration }
+
+            return TimelineSegmentSnapshot(
+                identity: "\(baseIdentity)#\(occurrence)",
+                start: cursor,
+                duration: metadata.duration
+            )
+        }
+    }
+
+    private func timelineSegmentIdentity(url: URL, metadata: VideoMetadata) -> String {
+        let creationTime = metadata.creationDate?.timeIntervalSinceReferenceDate ?? Double.nan
+        return [
+            url.standardizedFileURL.path,
+            String(format: "%.6f", metadata.duration),
+            String(format: "%.6f", creationTime)
+        ].joined(separator: "|")
+    }
+
+    private func segment(containing time: TimeInterval, in segments: [TimelineSegmentSnapshot]) -> TimelineSegmentSnapshot? {
+        for (index, segment) in segments.enumerated() {
+            if segment.contains(time, isLast: index == segments.count - 1) {
+                return segment
+            }
+        }
+        return nil
+    }
+
+    private func remapChapterMarkers(from oldSegments: [TimelineSegmentSnapshot]) {
+        guard !chapterMarkers.isEmpty, !oldSegments.isEmpty else { return }
+
+        let newSegments = makeTimelineSnapshot()
+        guard !newSegments.isEmpty else {
+            let droppedCount = chapterMarkers.count
+            chapterMarkers.removeAll()
+            warnAboutDroppedChapterMarkers(droppedCount)
+            return
+        }
+
+        var droppedCount = 0
+        var didMoveMarker = false
+        var remappedMarkers: [ChapterMarker] = []
+
+        for marker in chapterMarkers {
+            guard let oldSegment = segment(containing: marker.time, in: oldSegments),
+                  let newSegment = newSegments.first(where: { $0.identity == oldSegment.identity }) else {
+                droppedCount += 1
+                continue
+            }
+
+            let localTime = min(max(marker.time - oldSegment.start, 0), oldSegment.duration)
+            guard localTime <= newSegment.duration + Self.timelineComparisonEpsilon else {
+                droppedCount += 1
+                continue
+            }
+
+            var remappedMarker = marker
+            remappedMarker.time = newSegment.start + min(localTime, newSegment.duration)
+            if abs(remappedMarker.time - marker.time) > Self.timelineComparisonEpsilon {
+                didMoveMarker = true
+            }
+            remappedMarkers.append(remappedMarker)
+        }
+
+        if droppedCount > 0 || didMoveMarker {
+            chapterMarkers = remappedMarkers.sorted { $0.time < $1.time }
+        }
+        if droppedCount > 0 {
+            warnAboutDroppedChapterMarkers(droppedCount)
+        }
+    }
+
+    private func warnAboutDroppedChapterMarkers(_ count: Int) {
+        let message = count == 1
+            ? "\(Self.chapterMarkerTimelineWarningPrefix)、対応する動画がないチャプターマーカーを1件削除しました"
+            : "\(Self.chapterMarkerTimelineWarningPrefix)、対応する動画がないチャプターマーカーを\(count)件削除しました"
+        projectWarningMessage = message
+        statusMessage = message
+    }
+
+    private func clearChapterMarkerTimelineWarning() {
+        if projectWarningMessage?.hasPrefix(Self.chapterMarkerTimelineWarningPrefix) == true {
+            projectWarningMessage = nil
+        }
+        if statusMessage?.hasPrefix(Self.chapterMarkerTimelineWarningPrefix) == true {
+            statusMessage = nil
+        }
+    }
+
     /// Remove a video at the given index.
     func removeVideo(at index: Int, undoManager: UndoManager? = nil) {
         guard index < videoURLs.count else { return }
+        let markerTimelineBeforeRemoval = makeTimelineSnapshot()
+        let chapterMarkersBeforeRemoval = chapterMarkers
         let removedURL = videoURLs.remove(at: index)
         let removedMetadata = videoMetadatas.remove(at: index)
         let removedTrim = trimSettings.remove(at: index)
         undoManager?.registerUndo(withTarget: self) { target in
             Task { @MainActor in
-                target.insertVideo(removedURL, metadata: removedMetadata, trim: removedTrim, at: index)
+                target.insertVideo(
+                    removedURL,
+                    metadata: removedMetadata,
+                    trim: removedTrim,
+                    at: index,
+                    restoringChapterMarkers: chapterMarkersBeforeRemoval
+                )
             }
         }
         undoManager?.setActionName("動画削除")
 
         segmentDurations = videoMetadatas.map { $0.duration }
         videoLoaded = !videoURLs.isEmpty
+        remapChapterMarkers(from: markerTimelineBeforeRemoval)
         if !videoLoaded {
             resetSyncOffsetForAutomaticAlignment()
         }
@@ -908,13 +1052,26 @@ final class PreviewViewModel: ObservableObject {
         markProjectEdited()
     }
 
-    private func insertVideo(_ url: URL, metadata: VideoMetadata, trim: TrimSettings, at index: Int) {
+    private func insertVideo(
+        _ url: URL,
+        metadata: VideoMetadata,
+        trim: TrimSettings,
+        at index: Int,
+        restoringChapterMarkers restoredChapterMarkers: [ChapterMarker]? = nil
+    ) {
+        let markerTimelineBeforeInsertion = makeTimelineSnapshot()
         let insertionIndex = min(max(index, 0), videoURLs.count)
         videoURLs.insert(url, at: insertionIndex)
         videoMetadatas.insert(metadata, at: insertionIndex)
         trimSettings.insert(trim, at: insertionIndex)
         segmentDurations = videoMetadatas.map { $0.duration }
         videoLoaded = true
+        if let restoredChapterMarkers {
+            chapterMarkers = restoredChapterMarkers.sorted { $0.time < $1.time }
+            clearChapterMarkerTimelineWarning()
+        } else {
+            remapChapterMarkers(from: markerTimelineBeforeInsertion)
+        }
         updateNativeVideoWidth()
         setupTimeSync()
         Task {
@@ -1210,6 +1367,35 @@ final class PreviewViewModel: ObservableObject {
         f.dateFormat = "yyyy-MM-dd HH:mm:ss.S"
         return f
     }()
+
+    // MARK: - YouTube description
+
+    func initializeYouTubeDescriptionIfNeeded() {
+        guard !didInitializeYouTubeDescription,
+              youtubeDescription.isEmpty,
+              fitLoaded else {
+            return
+        }
+        regenerateYouTubeDescription()
+    }
+
+    func regenerateYouTubeDescription() {
+        didInitializeYouTubeDescription = true
+
+        guard let summary = YouTubeDescriptionGenerator.summarize(dataPoints: fitDataPoints) else {
+            youtubeDescription = "FIT データがありません"
+            return
+        }
+
+        let chapters = chapterMarkers.map { marker in
+            (time: trimmedTime(for: marker.time), label: marker.label)
+        }
+
+        youtubeDescription = YouTubeDescriptionGenerator.generate(
+            summary: summary,
+            chapters: chapters
+        )
+    }
 
     // MARK: - Chapter markers
 

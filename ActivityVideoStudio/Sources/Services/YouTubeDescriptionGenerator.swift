@@ -80,9 +80,7 @@ final class YouTubeDescriptionGenerator {
         // Chapters
         if !chapters.isEmpty {
             lines.append("📖 チャプター")
-            for chapter in chapters {
-                lines.append("\(formatTimestamp(chapter.time)) \(chapter.label)")
-            }
+            lines.append(contentsOf: chapterLines(chapters: chapters))
             lines.append("")
         }
 
@@ -99,6 +97,12 @@ final class YouTubeDescriptionGenerator {
         return lines.joined(separator: "\n")
     }
 
+    static func chapterLines(chapters: [(time: TimeInterval, label: String)]) -> [String] {
+        normalizedChapters(chapters).map { chapter in
+            "\(formatTimestamp(chapter.seconds)) \(chapter.label)"
+        }
+    }
+
     // MARK: - Formatting
 
     private static func formatDuration(_ seconds: TimeInterval) -> String {
@@ -112,11 +116,60 @@ final class YouTubeDescriptionGenerator {
         return String(format: "%d分%02d秒", m, s)
     }
 
-    private static func formatTimestamp(_ seconds: TimeInterval) -> String {
-        let total = max(0, Int(seconds))
+    private struct NormalizedChapter {
+        var seconds: Int
+        var label: String
+    }
+
+    private static func normalizedChapters(_ chapters: [(time: TimeInterval, label: String)]) -> [NormalizedChapter] {
+        let sorted = chapters
+            .enumerated()
+            .map { index, chapter in
+                (
+                    index: index,
+                    seconds: max(0, Int(chapter.time)),
+                    rawLabel: chapter.label.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
+            .sorted {
+                if $0.seconds != $1.seconds { return $0.seconds < $1.seconds }
+                return $0.index < $1.index
+            }
+
+        guard !sorted.isEmpty else { return [] }
+
+        var result: [NormalizedChapter] = []
+        if sorted[0].seconds > 0 {
+            result.append(NormalizedChapter(seconds: 0, label: "スタート"))
+        }
+
+        for chapter in sorted {
+            let label = chapter.rawLabel.isEmpty ? defaultChapterLabel(for: chapter.seconds) : chapter.rawLabel
+            if let duplicateIndex = result.firstIndex(where: { $0.seconds == chapter.seconds }) {
+                if result[duplicateIndex].label == defaultChapterLabel(for: chapter.seconds), !chapter.rawLabel.isEmpty {
+                    result[duplicateIndex].label = chapter.rawLabel
+                }
+            } else {
+                result.append(NormalizedChapter(seconds: chapter.seconds, label: label))
+            }
+        }
+
+        return result
+    }
+
+    private static func defaultChapterLabel(for seconds: Int) -> String {
+        seconds == 0 ? "スタート" : "チャプター"
+    }
+
+    private static func formatTimestamp(_ total: Int) -> String {
+        let total = max(0, total)
         let h = total / 3600
         let m = (total % 3600) / 60
         let s = total % 60
-        return String(format: "%d:%02d:%02d", h, m, s)
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        }
+        return String(format: "%d:%02d", m, s)
     }
+
 }

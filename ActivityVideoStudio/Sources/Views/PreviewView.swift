@@ -252,9 +252,10 @@ struct PreviewView: View {
                     )
                 case .youtube:
                     YouTubeDescriptionView(
-                        dataPoints: viewModel.fitDataPoints,
-                        chapterMarkers: viewModel.chapterMarkers,
-                        trimmedTime: viewModel.trimmedTime(for:)
+                        description: $viewModel.youtubeDescription,
+                        onGenerate: { viewModel.regenerateYouTubeDescription() },
+                        onAppear: { viewModel.initializeYouTubeDescriptionIfNeeded() },
+                        isTextFocused: $isTextFieldFocused
                     )
                 }
             }

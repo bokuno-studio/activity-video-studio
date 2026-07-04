@@ -111,15 +111,10 @@ struct ChapterMarkerView: View {
     }
 
     private func generateChapterText() -> String {
-        var lines: [String] = []
-        if markers.isEmpty || trimmedTime(markers.first?.time ?? 1) > 0 {
-            lines.append("0:00 スタート")
+        let chapters = markers.map { marker in
+            (time: trimmedTime(marker.time), label: marker.label)
         }
-        for marker in markers {
-            let label = marker.label.isEmpty ? "チャプター" : marker.label
-            lines.append("\(formatTime(trimmedTime(marker.time))) \(label)")
-        }
-        return lines.joined(separator: "\n")
+        return YouTubeDescriptionGenerator.chapterLines(chapters: chapters).joined(separator: "\n")
     }
 
     private func formatTime(_ seconds: TimeInterval) -> String {

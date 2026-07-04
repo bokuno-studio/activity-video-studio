@@ -3,10 +3,10 @@ import AppKit
 
 /// View showing the generated YouTube description with copy button.
 struct YouTubeDescriptionView: View {
-    let dataPoints: [FITDataPoint]
-    let chapterMarkers: [ChapterMarker]
-    let trimmedTime: (TimeInterval) -> TimeInterval
-    @State private var description: String = ""
+    @Binding var description: String
+    let onGenerate: () -> Void
+    let onAppear: () -> Void
+    var isTextFocused: FocusState<Bool>.Binding
     @State private var copied = false
 
     var body: some View {
@@ -17,7 +17,7 @@ struct YouTubeDescriptionView: View {
                 Spacer()
 
                 Button {
-                    regenerate()
+                    onGenerate()
                 } label: {
                     Label("生成", systemImage: "arrow.clockwise")
                 }
@@ -35,25 +35,9 @@ struct YouTubeDescriptionView: View {
             TextEditor(text: $description)
                 .font(.system(.body, design: .monospaced))
                 .frame(minHeight: 300)
+                .focused(isTextFocused)
         }
         .padding()
-        .onAppear { regenerate() }
-    }
-
-    private func regenerate() {
-        guard let summary = YouTubeDescriptionGenerator.summarize(dataPoints: dataPoints) else {
-            description = "FIT データがありません"
-            return
-        }
-
-        // Use chapter markers instead of auto-generated distance chapters
-        let chapters = chapterMarkers.map { marker in
-            (time: trimmedTime(marker.time), label: marker.label.isEmpty ? "チャプター" : marker.label)
-        }
-
-        description = YouTubeDescriptionGenerator.generate(
-            summary: summary,
-            chapters: chapters
-        )
+        .onAppear(perform: onAppear)
     }
 }
