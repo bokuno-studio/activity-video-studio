@@ -35,6 +35,13 @@
 		A1000001000000000000001C /* ChapterMarkerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001C /* ChapterMarkerView.swift */; };
 		A1000001000000000000001E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001E /* Assets.xcassets */; };
 		A1000001000000000000001F /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000001F /* PrivacyInfo.xcprivacy */; };
+		B10000010000000000000001 /* FITTestFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000001 /* FITTestFixtures.swift */; };
+		B10000010000000000000002 /* FITParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000002 /* FITParserTests.swift */; };
+		B10000010000000000000003 /* TimeSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000003 /* TimeSyncTests.swift */; };
+		B10000010000000000000004 /* FITDataPoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000003 /* FITDataPoint.swift */; };
+		B10000010000000000000005 /* VideoMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000004 /* VideoMetadata.swift */; };
+		B10000010000000000000006 /* FITParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000005 /* FITParser.swift */; };
+		B10000010000000000000007 /* TimeSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000007 /* TimeSync.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -68,6 +75,10 @@
 		A2000001000000000000001F /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = ActivityVideoStudio/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A20000010000000000000020 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A30000010000000000000001 /* ActivityVideoStudio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ActivityVideoStudio.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B20000010000000000000001 /* FITTestFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITTestFixtures.swift; sourceTree = "<group>"; };
+		B20000010000000000000002 /* FITParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITParserTests.swift; sourceTree = "<group>"; };
+		B20000010000000000000003 /* TimeSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeSyncTests.swift; sourceTree = "<group>"; };
+		B30000010000000000000001 /* ActivityVideoStudioTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ActivityVideoStudioTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -77,6 +88,7 @@
 				A40000010000000000000002 /* ActivityVideoStudio */,
 				A2000001000000000000001E /* Assets.xcassets */,
 				A2000001000000000000001F /* PrivacyInfo.xcprivacy */,
+				B40000010000000000000001 /* ActivityVideoStudioTests */,
 				A40000010000000000000009 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -159,8 +171,19 @@
 			isa = PBXGroup;
 			children = (
 				A30000010000000000000001 /* ActivityVideoStudio.app */,
+				B30000010000000000000001 /* ActivityVideoStudioTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B40000010000000000000001 /* ActivityVideoStudioTests */ = {
+			isa = PBXGroup;
+			children = (
+				B20000010000000000000001 /* FITTestFixtures.swift */,
+				B20000010000000000000002 /* FITParserTests.swift */,
+				B20000010000000000000003 /* TimeSyncTests.swift */,
+			);
+			path = ActivityVideoStudioTests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -183,6 +206,23 @@
 			productReference = A30000010000000000000001 /* ActivityVideoStudio.app */;
 			productType = "com.apple.product-type.application";
 		};
+		B50000010000000000000001 /* ActivityVideoStudioTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B70000010000000000000001 /* Build configuration list for PBXNativeTarget "ActivityVideoStudioTests" */;
+			buildPhases = (
+				B60000010000000000000001 /* Sources */,
+				B60000010000000000000002 /* Frameworks */,
+				B60000010000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ActivityVideoStudioTests;
+			productName = ActivityVideoStudioTests;
+			productReference = B30000010000000000000001 /* ActivityVideoStudioTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -192,6 +232,12 @@
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1500;
 				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					B50000010000000000000001 = {
+						CreatedOnToolsVersion = 15.0;
+						TestTargetID = A50000010000000000000001;
+					};
+				};
 			};
 			buildConfigurationList = A70000010000000000000001 /* Build configuration list for PBXProject "ActivityVideoStudio" */;
 			compatibilityVersion = "Xcode 14.0";
@@ -208,6 +254,7 @@
 			projectRoot = "";
 			targets = (
 				A50000010000000000000001 /* ActivityVideoStudio */,
+				B50000010000000000000001 /* ActivityVideoStudioTests */,
 			);
 		};
 /* End PBXProject section */
@@ -246,10 +293,31 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B60000010000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000010000000000000001 /* FITTestFixtures.swift in Sources */,
+				B10000010000000000000002 /* FITParserTests.swift in Sources */,
+				B10000010000000000000003 /* TimeSyncTests.swift in Sources */,
+				B10000010000000000000004 /* FITDataPoint.swift in Sources */,
+				B10000010000000000000005 /* VideoMetadata.swift in Sources */,
+				B10000010000000000000006 /* FITParser.swift in Sources */,
+				B10000010000000000000007 /* TimeSync.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A60000010000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B60000010000000000000002 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -265,6 +333,13 @@
 			files = (
 				A1000001000000000000001E /* Assets.xcassets in Resources */,
 				A1000001000000000000001F /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B60000010000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -357,6 +432,46 @@
 			};
 			name = Release;
 		};
+		B90000010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = J92UU2UFBH;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.activityvideostudio.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "";
+			};
+			name = Debug;
+		};
+		B90000010000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = J92UU2UFBH;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.activityvideostudio.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -374,6 +489,15 @@
 			buildConfigurations = (
 				A90000010000000000000003 /* Debug */,
 				A90000010000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B70000010000000000000001 /* Build configuration list for PBXNativeTarget "ActivityVideoStudioTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B90000010000000000000001 /* Debug */,
+				B90000010000000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

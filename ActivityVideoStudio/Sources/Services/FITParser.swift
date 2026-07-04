@@ -23,6 +23,8 @@ final class FITParser {
 
     private static let semicirclesToDegrees: Double = 180.0 / Double(1 << 31)
     private static let recordMessageNumber: UInt16 = 20
+    private static let fieldDescriptionMessageNumber: UInt16 = 206
+    private static let developerDataIdMessageNumber: UInt16 = 207
 
     // MARK: - FIT Base Types
 
@@ -44,6 +46,21 @@ final class FITParser {
         case sint64     = 0x8E
         case uint64     = 0x8F
         case uint64z    = 0x90
+
+        var byteWidth: Int? {
+            switch self {
+            case .enumType, .sint8, .uint8, .uint8z, .bool:
+                return 1
+            case .sint16, .uint16, .uint16z:
+                return 2
+            case .sint32, .uint32, .uint32z, .float32:
+                return 4
+            case .sint64, .uint64, .uint64z, .float64:
+                return 8
+            case .string:
+                return nil
+            }
+        }
 
         var invalidValue: UInt64 {
             switch self {
@@ -105,6 +122,25 @@ final class FITParser {
         let littleEndian: Bool
     }
 
+    private struct DeveloperFieldKey: Hashable {
+        let developerDataIndex: UInt8
+        let fieldNumber: UInt8
+    }
+
+    private enum DeveloperTemperatureKind {
+        case core
+        case skin
+    }
+
+    private struct DeveloperFieldMetadata {
+        let name: String
+        let units: String?
+        let baseType: BaseType?
+        let scale: Double?
+        let offset: Double?
+        let temperatureKind: DeveloperTemperatureKind?
+    }
+
     // MARK: - Parsing
 
     enum ParseError: Error, LocalizedError {
@@ -117,6 +153,7 @@ final class FITParser {
         case unsupportedZip64(String)
         case unsupportedZipCompression(String, UInt16)
         case zipDecompressionFailed(String)
+        case crcMismatch
 
         var errorDescription: String? {
             switch self {
@@ -130,6 +167,7 @@ final class FITParser {
             case .unsupportedZipCompression(let name, let method):
                 return "\(name) のZIP圧縮方式（\(method)）には対応していません"
             case .zipDecompressionFailed(let name): return "\(name) のZIP展開に失敗しました"
+            case .crcMismatch: return "FIT ファイルのCRCが一致しません"
             }
         }
     }
@@ -162,7 +200,12 @@ final class FITParser {
     }
 
     func parse(data: Data) throws -> ParseResult {
-        try parseAll(data: data)
+        let data = Self.normalizedData(data)
+        if Self.isZipData(data) {
+            let fitData = try Self.extractPreferredFITData(fromZip: data)
+            return try parseAll(data: fitData)
+        }
+        return try parseAll(data: data)
     }
 
     /// Parse and return only data points (backward compatible).
@@ -171,6 +214,7 @@ final class FITParser {
     }
 
     private func parseAll(data: Data) throws -> ParseResult {
+        let data = Self.normalizedData(data)
         guard data.count >= 14 else { throw ParseError.invalidHeader }
 
         let headerSize = data[0]
@@ -188,16 +232,19 @@ final class FITParser {
 
         let dataStart = Int(headerSize)
         let dataEnd = dataStart + Int(dataSize)
-        guard data.count >= dataEnd else { throw ParseError.unexpectedEndOfData }
+        guard data.count >= dataEnd + 2 else { throw ParseError.unexpectedEndOfData }
+        try Self.validateCRC(data: data, headerSize: Int(headerSize), dataEnd: dataEnd)
 
         var offset = dataStart
         var definitions: [UInt8: MessageDefinition] = [:]
         var dataPoints: [FITDataPoint] = []
         var lastTimestamp: UInt32 = 0
         var hrZoneConfig: HRZoneConfig?
+        var developerDataIndexes = Set<UInt8>()
+        var developerFields: [DeveloperFieldKey: DeveloperFieldMetadata] = [:]
 
         while offset < dataEnd {
-            guard offset < data.count else { throw ParseError.unexpectedEndOfData }
+            guard offset < dataEnd else { throw ParseError.unexpectedEndOfData }
             let recordHeader = data[offset]
             offset += 1
 
@@ -207,29 +254,21 @@ final class FITParser {
                 let localMessageType = (recordHeader >> 5) & 0x03
                 let timeOffset = UInt32(recordHeader & 0x1F)
 
-                let timestampLow5 = lastTimestamp & 0x1F
-                if timeOffset >= timestampLow5 {
-                    lastTimestamp = (lastTimestamp & 0xFFFFFFE0) | timeOffset
-                } else {
-                    lastTimestamp = (lastTimestamp & 0xFFFFFFE0) + 0x20 + timeOffset
-                }
+                lastTimestamp = expandCompressedTimestamp(lastTimestamp: lastTimestamp, timeOffset: timeOffset)
 
                 guard let definition = definitions[localMessageType] else {
-                    // Skip: unknown local type in compressed timestamp
-                    continue
+                    throw ParseError.invalidFile
                 }
 
-                let beforeOffset = offset
-                if let point = parseDataMessage(
+                if let point = try parseDataMessage(
                     data: data, offset: &offset,
                     definition: definition,
-                    overrideTimestamp: lastTimestamp
+                    overrideTimestamp: lastTimestamp,
+                    dataEnd: dataEnd,
+                    developerDataIndexes: developerDataIndexes,
+                    developerFields: developerFields
                 ) {
                     dataPoints.append(point)
-                }
-                // Safety: if parseDataMessage didn't advance offset, skip the data
-                if offset == beforeOffset {
-                    offset += totalFieldSize(definition) + definition.devFieldsSize
                 }
 
             } else if (recordHeader & 0x40) != 0 {
@@ -238,7 +277,8 @@ final class FITParser {
                 let hasDeveloperData = (recordHeader & 0x20) != 0
                 let definition = try parseDefinitionMessage(
                     data: data, offset: &offset,
-                    hasDeveloperData: hasDeveloperData
+                    hasDeveloperData: hasDeveloperData,
+                    dataEnd: dataEnd
                 )
                 definitions[localMessageType] = definition
 
@@ -246,33 +286,111 @@ final class FITParser {
                 // Normal data message
                 let localMessageType = recordHeader & 0x0F
                 guard let definition = definitions[localMessageType] else {
-                    // Skip unknown local message type
-                    continue
+                    throw ParseError.invalidFile
                 }
 
                 let fieldDataStart = offset
 
-                // zones_target message (global 7)
-                if definition.globalMessageNumber == 7 && hrZoneConfig == nil {
-                    if let config = parseZonesTarget(data: data, offset: &offset, definition: definition) {
+                switch definition.globalMessageNumber {
+                case 7 where hrZoneConfig == nil:
+                    // zones_target message
+                    if let config = try parseZonesTarget(
+                        data: data,
+                        offset: &offset,
+                        definition: definition,
+                        dataEnd: dataEnd
+                    ) {
                         hrZoneConfig = config
                     }
-                } else if let point = parseDataMessage(
-                    data: data, offset: &offset,
-                    definition: definition,
-                    overrideTimestamp: nil
-                ) {
-                    dataPoints.append(point)
-                    if let ts = extractTimestamp(
-                        data: data, offset: fieldDataStart, definition: definition
+                case FITParser.developerDataIdMessageNumber:
+                    if let developerDataIndex = try parseDeveloperDataId(
+                        data: data,
+                        offset: &offset,
+                        definition: definition,
+                        dataEnd: dataEnd
                     ) {
-                        lastTimestamp = ts
+                        developerDataIndexes.insert(developerDataIndex)
                     }
+                case FITParser.fieldDescriptionMessageNumber:
+                    if let (key, metadata) = try parseFieldDescription(
+                        data: data,
+                        offset: &offset,
+                        definition: definition,
+                        dataEnd: dataEnd
+                    ) {
+                        developerFields[key] = metadata
+                    }
+                default:
+                    if let point = try parseDataMessage(
+                        data: data, offset: &offset,
+                        definition: definition,
+                        overrideTimestamp: nil,
+                        dataEnd: dataEnd,
+                        developerDataIndexes: developerDataIndexes,
+                        developerFields: developerFields
+                    ) {
+                        dataPoints.append(point)
+                    }
+                }
+
+                if let ts = extractTimestamp(
+                    data: data,
+                    offset: fieldDataStart,
+                    definition: definition,
+                    dataEnd: dataEnd
+                ) {
+                    lastTimestamp = ts
                 }
             }
         }
 
         return ParseResult(dataPoints: dataPoints, hrZoneConfig: hrZoneConfig)
+    }
+
+    private static func normalizedData(_ data: Data) -> Data {
+        guard data.startIndex != 0 else { return data }
+        var normalized = Data()
+        normalized.reserveCapacity(data.count)
+        normalized.append(contentsOf: data)
+        return normalized
+    }
+
+    private static func validateCRC(data: Data, headerSize: Int, dataEnd: Int) throws {
+        if headerSize == 14 {
+            let storedHeaderCRC = readUInt16LE(data, 12)
+            let actualHeaderCRC = fitCRC(data: data, range: 0..<12)
+            guard storedHeaderCRC == 0 || actualHeaderCRC == storedHeaderCRC else {
+                throw ParseError.crcMismatch
+            }
+        }
+
+        let storedFileCRC = readUInt16LE(data, dataEnd)
+        let actualFileCRC = fitCRC(data: data, range: 0..<dataEnd)
+        guard storedFileCRC == 0 || actualFileCRC == storedFileCRC else {
+            throw ParseError.crcMismatch
+        }
+    }
+
+    private static func fitCRC(data: Data, range: Range<Int>) -> UInt16 {
+        let crcTable: [UInt16] = [
+            0x0000, 0xCC01, 0xD801, 0x1400,
+            0xF001, 0x3C00, 0x2800, 0xE401,
+            0xA001, 0x6C00, 0x7800, 0xB401,
+            0x5000, 0x9C01, 0x8801, 0x4400
+        ]
+        var crc: UInt16 = 0
+        for index in range {
+            var byte = data[index]
+            var tmp = crcTable[Int(crc & 0xF)]
+            crc = (crc >> 4) & 0x0FFF
+            crc = crc ^ tmp ^ crcTable[Int(byte & 0xF)]
+
+            tmp = crcTable[Int(crc & 0xF)]
+            crc = (crc >> 4) & 0x0FFF
+            byte >>= 4
+            crc = crc ^ tmp ^ crcTable[Int(byte & 0xF)]
+        }
+        return crc
     }
 
     // MARK: - ZIP support
@@ -420,13 +538,18 @@ final class FITParser {
 
     private static func inflateRawDeflate(_ input: Data, uncompressedSize: Int, name: String) throws -> Data {
         guard uncompressedSize > 0 else { return Data() }
+        guard !input.isEmpty else { throw ParseError.zipDecompressionFailed(name) }
         var output = Data(count: uncompressedSize)
         let decodedCount = output.withUnsafeMutableBytes { outputBuffer in
             input.withUnsafeBytes { inputBuffer in
-                compression_decode_buffer(
-                    outputBuffer.bindMemory(to: UInt8.self).baseAddress!,
+                guard let outputBaseAddress = outputBuffer.bindMemory(to: UInt8.self).baseAddress,
+                      let inputBaseAddress = inputBuffer.bindMemory(to: UInt8.self).baseAddress else {
+                    return 0
+                }
+                return compression_decode_buffer(
+                    outputBaseAddress,
                     outputBuffer.count,
-                    inputBuffer.bindMemory(to: UInt8.self).baseAddress!,
+                    inputBaseAddress,
                     inputBuffer.count,
                     nil,
                     COMPRESSION_ZLIB
@@ -453,6 +576,15 @@ final class FITParser {
         return nil
     }
 
+    private func expandCompressedTimestamp(lastTimestamp: UInt32, timeOffset: UInt32) -> UInt32 {
+        let baseTimestamp = lastTimestamp & 0xFFFF_FFE0
+        let candidate = baseTimestamp | timeOffset
+        if candidate < lastTimestamp {
+            return candidate &+ 0x20
+        }
+        return candidate
+    }
+
     private static func zipEntryName(data: Data, offset: Int, length: Int) -> String? {
         guard offset >= 0, length >= 0, offset + length <= data.count else { return nil }
         return String(data: data[offset..<(offset + length)], encoding: .utf8)
@@ -472,10 +604,15 @@ final class FITParser {
 
     // MARK: - zones_target parsing
 
-    private func parseZonesTarget(data: Data, offset: inout Int, definition: MessageDefinition) -> HRZoneConfig? {
+    private func parseZonesTarget(
+        data: Data,
+        offset: inout Int,
+        definition: MessageDefinition,
+        dataEnd: Int
+    ) throws -> HRZoneConfig? {
         let fieldsSize = totalFieldSize(definition)
         let totalSize = fieldsSize + definition.devFieldsSize
-        guard offset + totalSize <= data.count else { offset += totalSize; return nil }
+        guard offset + totalSize <= dataEnd else { throw ParseError.unexpectedEndOfData }
 
         var maxHR: UInt8?
         var thresholdHR: UInt8?
@@ -505,9 +642,12 @@ final class FITParser {
     // MARK: - Private parsing helpers
 
     private func parseDefinitionMessage(
-        data: Data, offset: inout Int, hasDeveloperData: Bool
+        data: Data,
+        offset: inout Int,
+        hasDeveloperData: Bool,
+        dataEnd: Int
     ) throws -> MessageDefinition {
-        guard offset + 5 <= data.count else { throw ParseError.unexpectedEndOfData }
+        guard offset + 5 <= dataEnd else { throw ParseError.unexpectedEndOfData }
 
         _ = data[offset]       // reserved
         let architecture = data[offset + 1]
@@ -523,7 +663,7 @@ final class FITParser {
         let fieldCount = Int(data[offset + 4])
         offset += 5
 
-        guard offset + fieldCount * 3 <= data.count else {
+        guard offset + fieldCount * 3 <= dataEnd else {
             throw ParseError.unexpectedEndOfData
         }
 
@@ -544,10 +684,10 @@ final class FITParser {
         var devFieldsSize = 0
         var devFields: [DevFieldDefinition] = []
         if hasDeveloperData {
-            guard offset < data.count else { throw ParseError.unexpectedEndOfData }
+            guard offset < dataEnd else { throw ParseError.unexpectedEndOfData }
             let devFieldCount = Int(data[offset])
             offset += 1
-            guard offset + devFieldCount * 3 <= data.count else {
+            guard offset + devFieldCount * 3 <= dataEnd else {
                 throw ParseError.unexpectedEndOfData
             }
             for _ in 0..<devFieldCount {
@@ -573,18 +713,143 @@ final class FITParser {
         )
     }
 
+    private func parseDeveloperDataId(
+        data: Data,
+        offset: inout Int,
+        definition: MessageDefinition,
+        dataEnd: Int
+    ) throws -> UInt8? {
+        let fieldsSize = totalFieldSize(definition)
+        let totalSize = fieldsSize + definition.devFieldsSize
+        guard offset + totalSize <= dataEnd else { throw ParseError.unexpectedEndOfData }
+
+        var developerDataIndex: UInt8?
+        for field in definition.fields {
+            let fieldStart = offset
+            let fieldEnd = fieldStart + Int(field.size)
+            guard fieldEnd <= dataEnd else { throw ParseError.unexpectedEndOfData }
+
+            let baseType = BaseType(rawValue: field.baseType)
+            let isInvalid = isFieldInvalid(
+                data: data,
+                offset: fieldStart,
+                size: Int(field.size),
+                baseType: baseType,
+                littleEndian: definition.littleEndian
+            )
+
+            if field.fieldNumber == 3, field.size >= 1, !isInvalid {
+                developerDataIndex = data[fieldStart]
+            }
+            offset = fieldEnd
+        }
+
+        offset += definition.devFieldsSize
+        return developerDataIndex
+    }
+
+    private func parseFieldDescription(
+        data: Data,
+        offset: inout Int,
+        definition: MessageDefinition,
+        dataEnd: Int
+    ) throws -> (DeveloperFieldKey, DeveloperFieldMetadata)? {
+        let fieldsSize = totalFieldSize(definition)
+        let totalSize = fieldsSize + definition.devFieldsSize
+        guard offset + totalSize <= dataEnd else { throw ParseError.unexpectedEndOfData }
+
+        var developerDataIndex: UInt8?
+        var fieldDefinitionNumber: UInt8?
+        var fitBaseType: BaseType?
+        var fieldName: String?
+        var units: String?
+        var scale: Double?
+        var offsetValue: Double?
+
+        for field in definition.fields {
+            let fieldStart = offset
+            let fieldEnd = fieldStart + Int(field.size)
+            guard fieldEnd <= dataEnd else { throw ParseError.unexpectedEndOfData }
+
+            let baseType = BaseType(rawValue: field.baseType)
+            let isInvalid = isFieldInvalid(
+                data: data,
+                offset: fieldStart,
+                size: Int(field.size),
+                baseType: baseType,
+                littleEndian: definition.littleEndian
+            )
+
+            if !isInvalid {
+                switch field.fieldNumber {
+                case 0 where field.size >= 1:
+                    developerDataIndex = data[fieldStart]
+                case 1 where field.size >= 1:
+                    fieldDefinitionNumber = data[fieldStart]
+                case 2 where field.size >= 1:
+                    fitBaseType = BaseType(rawValue: data[fieldStart])
+                case 3:
+                    fieldName = readString(data: data, offset: fieldStart, size: Int(field.size))
+                case 6:
+                    scale = readNumericValue(
+                        data: data,
+                        offset: fieldStart,
+                        size: Int(field.size),
+                        baseType: baseType,
+                        littleEndian: definition.littleEndian
+                    )
+                case 7:
+                    offsetValue = readNumericValue(
+                        data: data,
+                        offset: fieldStart,
+                        size: Int(field.size),
+                        baseType: baseType,
+                        littleEndian: definition.littleEndian
+                    )
+                case 8:
+                    units = readString(data: data, offset: fieldStart, size: Int(field.size))
+                default:
+                    break
+                }
+            }
+            offset = fieldEnd
+        }
+
+        offset += definition.devFieldsSize
+
+        guard let developerDataIndex,
+              let fieldDefinitionNumber,
+              let fieldName else {
+            return nil
+        }
+
+        let key = DeveloperFieldKey(
+            developerDataIndex: developerDataIndex,
+            fieldNumber: fieldDefinitionNumber
+        )
+        let metadata = DeveloperFieldMetadata(
+            name: fieldName,
+            units: units,
+            baseType: fitBaseType,
+            scale: scale,
+            offset: offsetValue,
+            temperatureKind: developerTemperatureKind(fieldName: fieldName, units: units)
+        )
+        return (key, metadata)
+    }
+
     private func parseDataMessage(
         data: Data,
         offset: inout Int,
         definition: MessageDefinition,
-        overrideTimestamp: UInt32?
-    ) -> FITDataPoint? {
+        overrideTimestamp: UInt32?,
+        dataEnd: Int,
+        developerDataIndexes: Set<UInt8>,
+        developerFields: [DeveloperFieldKey: DeveloperFieldMetadata]
+    ) throws -> FITDataPoint? {
         let fieldsSize = totalFieldSize(definition)
         let totalSize = fieldsSize + definition.devFieldsSize
-        guard offset + totalSize <= data.count else {
-            // Not enough data, skip
-            return nil
-        }
+        guard offset + totalSize <= dataEnd else { throw ParseError.unexpectedEndOfData }
 
         // Only parse record messages (global message number 20)
         guard definition.globalMessageNumber == FITParser.recordMessageNumber else {
@@ -608,9 +873,7 @@ final class FITParser {
         for field in definition.fields {
             let fieldStart = offset
             let fieldEnd = fieldStart + Int(field.size)
-            guard fieldEnd <= data.count else {
-                return nil
-            }
+            guard fieldEnd <= dataEnd else { throw ParseError.unexpectedEndOfData }
 
             let baseType = BaseType(rawValue: field.baseType)
             let isInvalid = isFieldInvalid(
@@ -678,17 +941,26 @@ final class FITParser {
         for devField in definition.devFields {
             let devStart = offset
             let devEnd = devStart + Int(devField.size)
-            guard devEnd <= data.count else { break }
+            guard devEnd <= dataEnd else { throw ParseError.unexpectedEndOfData }
 
-            if devField.devDataIndex == 0 && devField.size == 4 {
-                let rawBits = readUInt32(data: data, offset: devStart, littleEndian: definition.littleEndian)
-                let floatVal = Float(bitPattern: rawBits)
-                if !floatVal.isNaN && floatVal > 0 && floatVal < 50 {
-                    switch devField.fieldNumber {
-                    case 0:  coreTemp = Double(floatVal)  // core_temperature
-                    case 10: skinTemp = Double(floatVal)  // skin_temperature
-                    default: break
-                    }
+            let key = DeveloperFieldKey(
+                developerDataIndex: devField.devDataIndex,
+                fieldNumber: devField.fieldNumber
+            )
+            if let (temperatureKind, value) = developerTemperature(
+                data: data,
+                offset: devStart,
+                devField: devField,
+                key: key,
+                littleEndian: definition.littleEndian,
+                developerDataIndexes: developerDataIndexes,
+                developerFields: developerFields
+            ) {
+                switch temperatureKind {
+                case .core:
+                    coreTemp = value
+                case .skin:
+                    skinTemp = value
                 }
             }
             offset = devEnd
@@ -800,6 +1072,199 @@ final class FITParser {
         }
     }
 
+    private func readString(data: Data, offset: Int, size: Int) -> String? {
+        guard size > 0 else { return nil }
+        let end = offset + size
+        guard end <= data.count else { return nil }
+
+        let bytes = data[offset..<end]
+        let stringBytes = bytes.prefix { $0 != 0 }
+        guard !stringBytes.isEmpty else { return nil }
+
+        let string = String(bytes: stringBytes, encoding: .utf8)
+            ?? String(bytes: stringBytes, encoding: .ascii)
+        let trimmed = string?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    private func readNumericValue(
+        data: Data,
+        offset: Int,
+        size: Int,
+        baseType: BaseType?,
+        littleEndian: Bool
+    ) -> Double? {
+        guard let baseType,
+              let width = baseType.byteWidth,
+              size >= width,
+              offset + width <= data.count else {
+            return nil
+        }
+        guard !isFieldInvalid(
+            data: data,
+            offset: offset,
+            size: width,
+            baseType: baseType,
+            littleEndian: littleEndian
+        ) else {
+            return nil
+        }
+
+        switch baseType {
+        case .enumType, .uint8, .uint8z, .bool:
+            return Double(data[offset])
+        case .sint8:
+            return Double(Int8(bitPattern: data[offset]))
+        case .uint16, .uint16z:
+            return Double(readUInt16(data: data, offset: offset, littleEndian: littleEndian))
+        case .sint16:
+            return Double(readSInt16(data: data, offset: offset, littleEndian: littleEndian))
+        case .uint32, .uint32z:
+            return Double(readUInt32(data: data, offset: offset, littleEndian: littleEndian))
+        case .sint32:
+            return Double(readSInt32(data: data, offset: offset, littleEndian: littleEndian))
+        case .uint64, .uint64z:
+            return Double(readUInt64(data: data, offset: offset, littleEndian: littleEndian))
+        case .sint64:
+            return Double(Int64(bitPattern: readUInt64(data: data, offset: offset, littleEndian: littleEndian)))
+        case .float32:
+            let value = Float(bitPattern: readUInt32(data: data, offset: offset, littleEndian: littleEndian))
+            return value.isFinite ? Double(value) : nil
+        case .float64:
+            let value = Double(bitPattern: readUInt64(data: data, offset: offset, littleEndian: littleEndian))
+            return value.isFinite ? value : nil
+        case .string:
+            return nil
+        }
+    }
+
+    private func readDeveloperValue(
+        data: Data,
+        offset: Int,
+        size: Int,
+        metadata: DeveloperFieldMetadata,
+        littleEndian: Bool
+    ) -> Double? {
+        guard var value = readNumericValue(
+            data: data,
+            offset: offset,
+            size: size,
+            baseType: metadata.baseType,
+            littleEndian: littleEndian
+        ) else {
+            return nil
+        }
+
+        if let scale = metadata.scale, scale != 0 {
+            value /= scale
+        }
+        if let offset = metadata.offset {
+            value -= offset
+        }
+        return value
+    }
+
+    private func developerTemperature(
+        data: Data,
+        offset: Int,
+        devField: DevFieldDefinition,
+        key: DeveloperFieldKey,
+        littleEndian: Bool,
+        developerDataIndexes: Set<UInt8>,
+        developerFields: [DeveloperFieldKey: DeveloperFieldMetadata]
+    ) -> (DeveloperTemperatureKind, Double)? {
+        if developerDataIndexes.contains(devField.devDataIndex),
+           let metadata = developerFields[key],
+           let temperatureKind = metadata.temperatureKind,
+           let value = readDeveloperValue(
+            data: data,
+            offset: offset,
+            size: Int(devField.size),
+            metadata: metadata,
+            littleEndian: littleEndian
+           ),
+           isPlausibleBodyTemperature(value) {
+            return (temperatureKind, value)
+        }
+
+        return legacyDeveloperTemperature(
+            data: data,
+            offset: offset,
+            devField: devField,
+            key: key,
+            littleEndian: littleEndian,
+            developerFields: developerFields
+        )
+    }
+
+    private func legacyDeveloperTemperature(
+        data: Data,
+        offset: Int,
+        devField: DevFieldDefinition,
+        key: DeveloperFieldKey,
+        littleEndian: Bool,
+        developerFields: [DeveloperFieldKey: DeveloperFieldMetadata]
+    ) -> (DeveloperTemperatureKind, Double)? {
+        guard developerFields[key] == nil,
+              devField.devDataIndex == 0,
+              devField.size == 4,
+              let temperatureKind = legacyDeveloperTemperatureKind(fieldNumber: devField.fieldNumber) else {
+            return nil
+        }
+
+        let value = Double(Float(bitPattern: readUInt32(data: data, offset: offset, littleEndian: littleEndian)))
+        guard isPlausibleBodyTemperature(value) else { return nil }
+        return (temperatureKind, value)
+    }
+
+    private func legacyDeveloperTemperatureKind(fieldNumber: UInt8) -> DeveloperTemperatureKind? {
+        switch fieldNumber {
+        case 0:
+            return .core
+        case 10:
+            return .skin
+        default:
+            return nil
+        }
+    }
+
+    private func developerTemperatureKind(fieldName: String, units: String?) -> DeveloperTemperatureKind? {
+        let compactName = fieldName
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+        guard compactName.contains("temperature") || compactName.contains("temp") else {
+            return nil
+        }
+        if let units, !isCelsiusUnit(units) {
+            return nil
+        }
+
+        if compactName.contains("core") {
+            return .core
+        }
+        if compactName.contains("skin") {
+            return .skin
+        }
+        return nil
+    }
+
+    private func isCelsiusUnit(_ units: String) -> Bool {
+        let compactUnits = units
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "°", with: "")
+            .filter { $0.isLetter }
+        return compactUnits == "c"
+            || compactUnits == "celsius"
+            || compactUnits == "degc"
+            || compactUnits == "degreec"
+            || compactUnits == "degreesc"
+    }
+
+    private func isPlausibleBodyTemperature(_ value: Double) -> Bool {
+        value.isFinite && value > 0 && value < 50
+    }
+
     private func isFieldInvalid(data: Data, offset: Int, size: Int, baseType: BaseType?, littleEndian: Bool) -> Bool {
         guard let bt = baseType else { return false }
         switch size {
@@ -820,13 +1285,28 @@ final class FITParser {
         definition.fields.reduce(0) { $0 + Int($1.size) }
     }
 
-    private func extractTimestamp(data: Data, offset: Int, definition: MessageDefinition) -> UInt32? {
+    private func extractTimestamp(
+        data: Data,
+        offset: Int,
+        definition: MessageDefinition,
+        dataEnd: Int
+    ) -> UInt32? {
         var fieldOffset = offset
         for field in definition.fields {
-            if field.fieldNumber == RecordField.timestamp.rawValue, field.size >= 4 {
+            let fieldEnd = fieldOffset + Int(field.size)
+            guard fieldEnd <= dataEnd else { return nil }
+            let baseType = BaseType(rawValue: field.baseType)
+            let isInvalid = isFieldInvalid(
+                data: data,
+                offset: fieldOffset,
+                size: Int(field.size),
+                baseType: baseType,
+                littleEndian: definition.littleEndian
+            )
+            if field.fieldNumber == RecordField.timestamp.rawValue, field.size >= 4, !isInvalid {
                 return readUInt32(data: data, offset: fieldOffset, littleEndian: definition.littleEndian)
             }
-            fieldOffset += Int(field.size)
+            fieldOffset = fieldEnd
         }
         return nil
     }

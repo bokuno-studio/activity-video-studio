@@ -3,6 +3,8 @@ import CoreLocation
 
 /// A single data point from a Garmin FIT record message.
 struct FITDataPoint {
+    private static let minimumPaceSpeedMetersPerSecond = 0.5
+
     let timestamp: Date
     let coordinate: CLLocationCoordinate2D?
     let heartRate: UInt8?          // bpm
@@ -23,7 +25,7 @@ struct FITDataPoint {
 
     /// Pace in seconds per km, computed from speed
     var paceSecondsPerKm: Double? {
-        guard let speed = speed, speed > 0 else { return nil }
+        guard let speed = speed, speed >= Self.minimumPaceSpeedMetersPerSecond else { return nil }
         return 1000.0 / speed
     }
 

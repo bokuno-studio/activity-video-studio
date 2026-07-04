@@ -28,6 +28,7 @@ final class TimeSync {
 
     private let dataPoints: [FITDataPoint]
     private(set) var segments: [VideoSegment] = []
+    private static let maximumInterpolationGap: TimeInterval = 5
 
     /// Activity start time from the first FIT data point.
     var activityStartTime: Date? { dataPoints.first?.timestamp }
@@ -37,7 +38,7 @@ final class TimeSync {
     }
 
     init(dataPoints: [FITDataPoint]) {
-        self.dataPoints = dataPoints
+        self.dataPoints = dataPoints.sorted { $0.timestamp < $1.timestamp }
     }
 
     // MARK: - Setup
@@ -75,7 +76,7 @@ final class TimeSync {
 
     /// Update the manual offset for a specific video segment.
     func updateOffset(segmentIndex: Int, offsetSeconds: Double) {
-        guard segmentIndex < segments.count else { return }
+        guard segments.indices.contains(segmentIndex) else { return }
         let old = segments[segmentIndex]
         guard let creationDate = old.metadata.creationDate else {
             segments[segmentIndex] = VideoSegment(
@@ -113,7 +114,7 @@ final class TimeSync {
     ///   - playbackTime: Playback position in seconds from video start
     /// - Returns: Interpolated data point, or nil if no data available
     func dataPoint(segmentIndex: Int, playbackTime: TimeInterval) -> FITDataPoint? {
-        guard segmentIndex < segments.count else { return nil }
+        guard segments.indices.contains(segmentIndex) else { return nil }
         let segment = segments[segmentIndex]
         guard let fitStartTime = segment.fitStartTime else { return nil }
 
@@ -156,6 +157,9 @@ final class TimeSync {
         let afterTime = after.timestamp.timeIntervalSince1970
         let range = afterTime - beforeTime
         guard range > 0 else { return before }
+        if range > Self.maximumInterpolationGap {
+            return targetTime >= afterTime ? after : before
+        }
 
         let fraction = (targetTime - beforeTime) / range
         var result = interpolate(before: before, after: after, fraction: fraction)
@@ -170,7 +174,7 @@ final class TimeSync {
 
     /// Elapsed time from activity start for a given playback position.
     func elapsedTime(segmentIndex: Int, playbackTime: TimeInterval) -> TimeInterval? {
-        guard segmentIndex < segments.count,
+        guard segments.indices.contains(segmentIndex),
               let start = activityStartTime else { return nil }
         let segment = segments[segmentIndex]
         guard let fitStartTime = segment.fitStartTime else { return nil }
