@@ -8,9 +8,13 @@ final class TimeSync {
     /// A video segment with its time range in the FIT timeline.
     struct VideoSegment {
         let metadata: VideoMetadata
-        let fitStartTime: Date      // FIT time when this video starts
-        let fitEndTime: Date         // FIT time when this video ends
+        let fitStartTime: Date?      // FIT time when this video starts
+        let fitEndTime: Date?        // FIT time when this video ends
         let offsetSeconds: Double    // Manual sync offset (positive = FIT data delayed)
+
+        var isSynced: Bool {
+            fitStartTime != nil && fitEndTime != nil
+        }
     }
 
     private let dataPoints: [FITDataPoint]
@@ -18,6 +22,10 @@ final class TimeSync {
 
     /// Activity start time from the first FIT data point.
     var activityStartTime: Date? { dataPoints.first?.timestamp }
+
+    var firstSyncedSegment: VideoSegment? {
+        segments.first { $0.isSynced }
+    }
 
     init(dataPoints: [FITDataPoint]) {
         self.dataPoints = dataPoints
@@ -27,7 +35,15 @@ final class TimeSync {
 
     /// Add a video and automatically sync it using its creationDate.
     func addVideo(_ metadata: VideoMetadata, offsetSeconds: Double = 0) {
-        guard let creationDate = metadata.creationDate else { return }
+        guard let creationDate = metadata.creationDate else {
+            segments.append(VideoSegment(
+                metadata: metadata,
+                fitStartTime: nil,
+                fitEndTime: nil,
+                offsetSeconds: offsetSeconds
+            ))
+            return
+        }
 
         let adjustedStart = creationDate.addingTimeInterval(offsetSeconds)
         let adjustedEnd = adjustedStart.addingTimeInterval(metadata.duration)
@@ -39,14 +55,21 @@ final class TimeSync {
             offsetSeconds: offsetSeconds
         )
         segments.append(segment)
-        segments.sort { $0.fitStartTime < $1.fitStartTime }
     }
 
     /// Update the manual offset for a specific video segment.
     func updateOffset(segmentIndex: Int, offsetSeconds: Double) {
         guard segmentIndex < segments.count else { return }
         let old = segments[segmentIndex]
-        guard let creationDate = old.metadata.creationDate else { return }
+        guard let creationDate = old.metadata.creationDate else {
+            segments[segmentIndex] = VideoSegment(
+                metadata: old.metadata,
+                fitStartTime: nil,
+                fitEndTime: nil,
+                offsetSeconds: offsetSeconds
+            )
+            return
+        }
 
         let adjustedStart = creationDate.addingTimeInterval(offsetSeconds)
         let adjustedEnd = adjustedStart.addingTimeInterval(old.metadata.duration)
@@ -69,8 +92,9 @@ final class TimeSync {
     func dataPoint(segmentIndex: Int, playbackTime: TimeInterval) -> FITDataPoint? {
         guard segmentIndex < segments.count else { return nil }
         let segment = segments[segmentIndex]
+        guard let fitStartTime = segment.fitStartTime else { return nil }
 
-        let fitTime = segment.fitStartTime.addingTimeInterval(playbackTime)
+        let fitTime = fitStartTime.addingTimeInterval(playbackTime)
         return interpolatedDataPoint(at: fitTime)
     }
 
@@ -126,7 +150,8 @@ final class TimeSync {
         guard segmentIndex < segments.count,
               let start = activityStartTime else { return nil }
         let segment = segments[segmentIndex]
-        let fitTime = segment.fitStartTime.addingTimeInterval(playbackTime)
+        guard let fitStartTime = segment.fitStartTime else { return nil }
+        let fitTime = fitStartTime.addingTimeInterval(playbackTime)
         return fitTime.timeIntervalSince(start)
     }
 

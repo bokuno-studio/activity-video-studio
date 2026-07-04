@@ -328,11 +328,13 @@ enum HeadlessExporter {
     }
 
     private enum Err: Error, LocalizedError {
-        case missing(String), empty(String)
+        case missing(String), empty(String), unsyncedVideos([String])
         var errorDescription: String? {
             switch self {
             case .missing(let f): return "引数 \(f) が必要です"
             case .empty(let m):   return m
+            case .unsyncedVideos(let names):
+                return "撮影日時を読み取れない動画があるため中断しました: \(names.joined(separator: ", "))"
             }
         }
     }
@@ -375,6 +377,13 @@ enum HeadlessExporter {
         }
         let videoURLs = metas.map { $0.url }
         logLine("[Headless] videos: \(videoURLs.map { $0.lastPathComponent }.joined(separator: ", "))")
+        let unsyncedVideoNames = metas
+            .filter { $0.creationDate == nil }
+            .map { $0.url.lastPathComponent }
+        if !unsyncedVideoNames.isEmpty {
+            logLine("[Headless] WARNING: 撮影日時なし: \(unsyncedVideoNames.joined(separator: ", "))")
+            throw Err.unsyncedVideos(unsyncedVideoNames)
+        }
 
         // Sync offset (clock-skew correction)
         var syncOffset: Double = 0
@@ -390,7 +399,6 @@ enum HeadlessExporter {
         let timeSync = TimeSync(dataPoints: pts)
         var cumulative: TimeInterval = 0
         for m in metas {
-            guard m.creationDate != nil else { continue }
             let adj = VideoMetadata(
                 url: m.url,
                 creationDate: m.creationDate?.addingTimeInterval(cumulative),
@@ -398,7 +406,9 @@ enum HeadlessExporter {
                 naturalSize: m.naturalSize
             )
             timeSync.addVideo(adj, offsetSeconds: syncOffset)
-            cumulative += m.duration
+            if m.creationDate != nil {
+                cumulative += m.duration
+            }
         }
 
         // Trim: uniform --trim-start/--trim-end + per-segment --trim-start-N/--trim-end-N

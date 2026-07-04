@@ -151,6 +151,7 @@ final class PreviewViewModel: ObservableObject {
 
     private static let timelineComparisonEpsilon: TimeInterval = 0.001
     private static let chapterMarkerTimelineWarningPrefix = "動画タイムライン変更により"
+    private static let missingCreationDateWarningToken = "撮影日時なし:"
     private static let playbackEndEpsilon: TimeInterval = 0.05
     private static let scrollSeekCoarseDelayNanoseconds: UInt64 = 50_000_000
     private static let scrollSeekExactDelayNanoseconds: UInt64 = 180_000_000
@@ -620,6 +621,7 @@ final class PreviewViewModel: ObservableObject {
         videoLoaded = !videoURLs.isEmpty
         updateNativeVideoWidth()
         setupTimeSync()
+        warnings.append(contentsOf: missingCreationDateWarnings())
 
         textOverlays = document.textOverlays
         chapterMarkers = document.chapterMarkers.sorted { $0.time < $1.time }
@@ -791,6 +793,24 @@ final class PreviewViewModel: ObservableObject {
         return "警告: \(visible)"
     }
 
+    private func missingCreationDateWarnings() -> [String] {
+        zip(videoURLs, videoMetadatas).compactMap { url, metadata in
+            guard metadata.creationDate == nil else { return nil }
+            return "\(Self.missingCreationDateWarningToken) \(url.lastPathComponent)"
+        }
+    }
+
+    private func refreshMissingCreationDateWarning() {
+        let warnings = missingCreationDateWarnings()
+        guard !warnings.isEmpty else {
+            if projectWarningMessage?.contains(Self.missingCreationDateWarningToken) == true {
+                projectWarningMessage = nil
+            }
+            return
+        }
+        projectWarningMessage = warningMessage(from: warnings)
+    }
+
     private func defaultProjectFileName() -> String {
         let baseName = videoURLs.first?.deletingPathExtension().lastPathComponent ?? "ActivityVideoStudio"
         return baseName + ".avsproj"
@@ -947,6 +967,7 @@ final class PreviewViewModel: ObservableObject {
         }
         videoLoaded = true
         setupTimeSync()
+        refreshMissingCreationDateWarning()
 
         guard await rebuildComposition() else { return }
         applyDefaultFITStartAlignmentIfPossible()
@@ -968,9 +989,10 @@ final class PreviewViewModel: ObservableObject {
         }
 
         var message = "\(loadSummary) (\(videoURLs.count)本, 合計 \(formatDuration(duration)))"
-        if let ts = timeSync, let firstSeg = ts.segments.first,
-           let fitStart = ts.activityStartTime {
-            let offset = fitStart.timeIntervalSince(firstSeg.fitStartTime)
+        if let ts = timeSync, let firstSeg = ts.firstSyncedSegment,
+           let fitStart = ts.activityStartTime,
+           let firstSegmentStart = firstSeg.fitStartTime {
+            let offset = fitStart.timeIntervalSince(firstSegmentStart)
             if offset > 0 {
                 message += " | FIT記録開始: \(formatDuration(offset))後"
             }
@@ -1130,6 +1152,7 @@ final class PreviewViewModel: ObservableObject {
         }
         updateNativeVideoWidth()
         setupTimeSync()
+        refreshMissingCreationDateWarning()
         if videoLoaded {
             Task { await rebuildComposition() }
         } else {
@@ -1165,6 +1188,7 @@ final class PreviewViewModel: ObservableObject {
         }
         updateNativeVideoWidth()
         setupTimeSync()
+        refreshMissingCreationDateWarning()
         Task {
             guard await rebuildComposition() else { return }
             applyDefaultFITStartAlignmentIfPossible()
@@ -1780,8 +1804,6 @@ final class PreviewViewModel: ObservableObject {
         // Each subsequent chapter's real start = creationDate + sum of preceding durations.
         var cumulativeOffset: TimeInterval = 0
         for metadata in videoMetadatas {
-            guard metadata.creationDate != nil else { continue }
-
             // Create a metadata with adjusted creationDate for chaptered files
             let adjustedMetadata = VideoMetadata(
                 url: metadata.url,
@@ -1793,7 +1815,9 @@ final class PreviewViewModel: ObservableObject {
             // timeline shifts uniformly against the FIT timeline. Applying it to
             // segment 0 only would leave later GoPro chapters mis-aligned.
             timeSync?.addVideo(adjustedMetadata, offsetSeconds: syncOffset)
-            cumulativeOffset += metadata.duration
+            if metadata.creationDate != nil {
+                cumulativeOffset += metadata.duration
+            }
         }
     }
 
@@ -1908,7 +1932,7 @@ final class PreviewViewModel: ObservableObject {
         var remaining = globalTime
         for (i, dur) in segmentDurations.enumerated() {
             if remaining <= dur || i == segmentDurations.count - 1 {
-                return (min(i, (timeSync?.segments.count ?? 1) - 1), remaining)
+                return (i, remaining)
             }
             remaining -= dur
         }
