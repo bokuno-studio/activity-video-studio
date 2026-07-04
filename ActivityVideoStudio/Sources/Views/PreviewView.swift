@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 /// Main preview screen: video + overlay + minimap + controls.
 struct PreviewView: View {
     @StateObject private var viewModel = PreviewViewModel()
+    @State private var exportViewModel: ExportViewModel?
     @State private var rightPanelTab: RightPanelTab = .trim
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showRightPanel = true
@@ -48,9 +49,11 @@ struct PreviewView: View {
                 dropPrompt
             }
         }
-        .sheet(isPresented: $viewModel.showExport) {
+        .sheet(item: $exportViewModel, onDismiss: {
+            exportViewModel = nil
+        }) { exportViewModel in
             ExportView(
-                viewModel: viewModel.makeExportViewModel(),
+                viewModel: exportViewModel,
                 isTextFocused: $isTextFieldFocused
             )
         }
@@ -105,13 +108,13 @@ struct PreviewView: View {
 
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    viewModel.showExport = true
+                    presentExport()
                 } label: {
                     Label("エクスポート", systemImage: "square.and.arrow.up")
                 }
                 .help("エクスポート (⌘E)")
                 .accessibilityLabel("エクスポート")
-                .disabled(!viewModel.videoLoaded || !viewModel.fitLoaded)
+                .disabled(!canPresentExport)
             }
         }
         // Keyboard shortcuts (disabled when editing text or a front modal is open)
@@ -277,12 +280,12 @@ struct PreviewView: View {
     private var commandContext: PreviewCommandContext {
         PreviewCommandContext(
             canSaveProject: viewModel.canSaveProject,
-            canExport: viewModel.videoLoaded && viewModel.fitLoaded,
+            canExport: canPresentExport,
             isPlaying: viewModel.isPlaying,
             shortcutsSuspended: previewShortcutsSuspended,
             openProject: { viewModel.presentOpenProjectPanel() },
             saveProject: { viewModel.presentSaveProjectPanel() },
-            exportVideo: { viewModel.showExport = true },
+            exportVideo: { presentExport() },
             seekToTrimStart: { viewModel.seekToTrimStart() },
             skipBackward5: { viewModel.skipBackward() },
             skipForward5: { viewModel.skipForward() },
@@ -294,12 +297,27 @@ struct PreviewView: View {
         )
     }
 
+    private var canPresentExport: Bool {
+        viewModel.videoLoaded && viewModel.fitLoaded && exportViewModel == nil
+    }
+
     private var frontModalPresented: Bool {
-        viewModel.showExport
+        exportViewModel != nil
     }
 
     private var previewShortcutsSuspended: Bool {
         isTextFieldFocused || focusedChapterMarkerID != nil || trimFieldEditing || frontModalPresented
+    }
+
+    private func presentExport() {
+        guard canPresentExport else { return }
+        viewModel.pausePlayback()
+
+        let exportViewModel = viewModel.makeExportViewModel()
+        exportViewModel.onDismiss = {
+            self.exportViewModel = nil
+        }
+        self.exportViewModel = exportViewModel
     }
 
     private func clearChapterMarkerFocus() {

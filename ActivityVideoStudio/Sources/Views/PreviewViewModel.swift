@@ -47,7 +47,6 @@ final class PreviewViewModel: ObservableObject {
     @Published var fitLoaded = false
     @Published var videoLoaded = false
     @Published var syncOffset: Double = 0
-    @Published var showExport = false
     @Published var showFileList = false
     @Published var currentCoordinate: CLLocationCoordinate2D?
     @Published var trackCoordinates: [CLLocationCoordinate2D] = []
@@ -991,6 +990,11 @@ final class PreviewViewModel: ObservableObject {
 
     // MARK: - Playback controls
 
+    func pausePlayback() {
+        player.pause()
+        isPlaying = false
+    }
+
     func togglePlayback() {
         if isPlaying {
             player.pause()
@@ -1264,9 +1268,6 @@ final class PreviewViewModel: ObservableObject {
         overlayRenderer?.textOverlays = textOverlays
         overlayRenderer?.trackCoordinates = trackCoordinates
         vm.overlayRenderer = overlayRenderer?.makeExportCopy()
-        vm.onDismiss = { [weak self] in
-            self?.showExport = false
-        }
         return vm
     }
 

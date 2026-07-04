@@ -3,7 +3,9 @@ import AppKit
 
 /// ViewModel for the export flow.
 @MainActor
-final class ExportViewModel: ObservableObject {
+final class ExportViewModel: ObservableObject, Identifiable {
+
+    let id = UUID()
 
     enum Resolution: String, CaseIterable {
         case r720p, r1080p, r4k
@@ -64,6 +66,7 @@ final class ExportViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var alert: UserFacingAlert?
     @Published var isCancelling = false
+    @Published private var isChoosingExportDirectory = false
     @Published var outputURL: URL?
     @Published var outputFileName: String = ""
     @Published var nativeVideoWidth: Int = 0 {
@@ -77,7 +80,9 @@ final class ExportViewModel: ObservableObject {
     var onDismiss: (() -> Void)?
 
     var videoCount: Int { videoURLs.count }
-    var canExport: Bool { !videoURLs.isEmpty && timeSync != nil }
+    var canExport: Bool {
+        hasRequiredExportInputs && !isExporting && !isCancelling && !isChoosingExportDirectory
+    }
     var availableResolutions: [Resolution] {
         let maxWidth = nativeVideoWidth > 0 ? nativeVideoWidth : Resolution.r1080p.width
         let resolutions = Resolution.allCases.filter { $0.width <= maxWidth }
@@ -91,6 +96,12 @@ final class ExportViewModel: ObservableObject {
     private var sleepPreventionActivity: NSObjectProtocol?
 
     func startExport() {
+        guard !isExporting, !isCancelling, !isChoosingExportDirectory else { return }
+        guard hasRequiredExportInputs else {
+            presentExportReadinessError()
+            return
+        }
+
         clampResolutionToSource()
 
         if outputFileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -105,8 +116,10 @@ final class ExportViewModel: ObservableObject {
         panel.message = "保存先フォルダを選択"
         panel.prompt = "エクスポート"
 
+        isChoosingExportDirectory = true
         panel.begin { [weak self] response in
             Task { @MainActor in
+                self?.isChoosingExportDirectory = false
                 guard response == .OK, let directoryURL = panel.url else { return }
                 self?.startExport(in: directoryURL)
             }
@@ -118,11 +131,12 @@ final class ExportViewModel: ObservableObject {
     }
 
     private func startExport(in directoryURL: URL) {
-        guard let timeSync = timeSync, let renderer = overlayRenderer else {
-            isExporting = false
-            let message = "動画とFITファイルを読み込んでから、もう一度エクスポートしてください。"
-            errorMessage = message
-            alert = UserFacingAlert(title: "エクスポートの準備ができていません", message: message)
+        guard hasRequiredExportInputs,
+              let timeSync = timeSync,
+              let renderer = overlayRenderer,
+              let firstVideoURL = videoURLs.first
+        else {
+            presentExportReadinessError()
             return
         }
 
@@ -179,7 +193,7 @@ final class ExportViewModel: ObservableObject {
                     )
                 } else {
                     try await exporter.exportSingleVideo(
-                        videoURL: videoURLs[0],
+                        videoURL: firstVideoURL,
                         timeSync: timeSync,
                         segmentIndex: 0,
                         trimSettings: trimSettings.first ?? TrimSettings(),
@@ -227,6 +241,21 @@ final class ExportViewModel: ObservableObject {
         let available = availableResolutions
         guard !available.contains(resolution), let fallback = available.last else { return }
         resolution = fallback
+    }
+
+    private var hasRequiredExportInputs: Bool {
+        !videoURLs.isEmpty && timeSync != nil && overlayRenderer != nil
+    }
+
+    private func presentExportReadinessError() {
+        isExporting = false
+        isCancelling = false
+        isChoosingExportDirectory = false
+        endSleepPreventionIfNeeded()
+
+        let message = "動画とFITファイルを読み込んでから、もう一度エクスポートしてください。"
+        errorMessage = message
+        alert = UserFacingAlert(title: "エクスポートの準備ができていません", message: message)
     }
 
     private func beginSleepPreventionIfNeeded() {
