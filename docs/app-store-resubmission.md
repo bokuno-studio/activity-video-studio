@@ -52,7 +52,7 @@
 2. 上部のスキーム横の実機/シミュレータ選択を **「My Mac」** に
 3. メニュー **Product → Archive**（構成が **Release** であること。Scheme の Archive が Release を使う設定か確認）
 4. 完了すると **Organizer** が開く → 対象アーカイブを選択
-5. **Distribute App** → **App Store Connect** → **Upload** → 画面に従う（署名は自動／チーム `J92UU2UFBH`）
+5. **Distribute App** → **App Store Connect** → **Upload** → 画面に従う（署名は自動／対象の Apple Developer team）
 6. アップロード完了
 
 > うまくいかない場合のよくある原因: Archive が Debug 構成になっている／Distribution 証明書が無い（自動署名なら Xcode が作成）。

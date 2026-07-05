@@ -10,9 +10,10 @@ Usage:
   asc.py builds <appId> [version]   list builds (optionally filter version)
   asc.py token                      print a short-lived JWT (for debugging)
 """
-import base64, json, os, subprocess, sys, time, urllib.request, urllib.error
+import base64, json, os, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 
 API = "https://api.appstoreconnect.apple.com"
+REQUEST_TIMEOUT = 30
 
 def b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
@@ -51,11 +52,50 @@ def request(method: str, path: str, body=None):
     req.add_header("Authorization", "Bearer " + make_jwt())
     req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as r:
             txt = r.read().decode()
-            return r.status, (json.loads(txt) if txt else {})
+            return r.status, parse_json_body(txt)
     except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode() or "{}")
+        return e.code, parse_json_body(e.read().decode(errors="replace"))
+    except urllib.error.URLError as e:
+        return 0, {"errors": [{"detail": f"request failed: {e.reason}"}]}
+
+def parse_json_body(txt: str):
+    if not txt:
+        return {}
+    try:
+        return json.loads(txt)
+    except json.JSONDecodeError:
+        return {"errors": [{"detail": "non-JSON response body"}], "raw": txt}
+
+def query_value(value: str) -> str:
+    return urllib.parse.quote(str(value), safe="")
+
+def parse_builds_args(args):
+    if not args:
+        print(__doc__); sys.exit(2)
+    app_id = args[0]
+    version = None
+    state = None
+    i = 1
+    while i < len(args):
+        arg = args[i]
+        if arg in ("--state", "--processing-state"):
+            if i + 1 >= len(args):
+                sys.stderr.write(f"{arg} requires a value\n")
+                sys.exit(2)
+            state = args[i + 1]
+            i += 2
+        elif arg.startswith("--"):
+            sys.stderr.write(f"unknown builds option: {arg}\n")
+            sys.exit(2)
+        elif version is None:
+            version = arg
+            i += 1
+        else:
+            sys.stderr.write(f"unexpected builds argument: {arg}\n")
+            sys.exit(2)
+    return app_id, version, state
 
 def main():
     if len(sys.argv) < 2:
@@ -72,11 +112,16 @@ def main():
         for a in body.get("data", []):
             print(a["id"], a["attributes"]["name"], a["attributes"]["bundleId"])
     elif cmd == "builds":
-        app_id = sys.argv[2]
-        q = f"/v1/builds?filter[app]={app_id}&sort=-version&limit=10&include=preReleaseVersion"
-        if len(sys.argv) > 3:
-            q += f"&filter[preReleaseVersion.version]={sys.argv[3]}"
+        app_id, version, state = parse_builds_args(sys.argv[2:])
+        q = (f"/v1/builds?filter[app]={query_value(app_id)}"
+             f"&sort=-uploadedDate&limit=50&include=preReleaseVersion")
+        if version:
+            q += f"&filter[preReleaseVersion.version]={query_value(version)}"
+        if state:
+            q += f"&filter[processingState]={query_value(state)}"
         st, body = request("GET", q)
+        if st != 200:
+            _die("list builds failed", st, body)
         for b in body.get("data", []):
             at = b["attributes"]
             print(at.get("version"), at.get("processingState"), at.get("uploadedDate"))
@@ -114,15 +159,17 @@ def editable_version(app_id):
     for v in body.get("data", []):
         if v["attributes"]["appStoreState"] in editable:
             return v
-    return body.get("data", [None])[0]
+    data = body.get("data") or []
+    return data[0] if data else None
 
 def find_build(app_id, version):
     # `version` here is the build number (CFBundleVersion), as printed by the
     # `builds` command. Filter by filter[version] (build number), NOT by
     # preReleaseVersion.version (which is the marketing/short version string).
     st, body = request("GET",
-        f"/v1/builds?filter[app]={app_id}&filter[version]={version}"
-        f"&sort=-version&limit=1")
+        f"/v1/builds?filter[app]={query_value(app_id)}"
+        f"&filter[version]={query_value(version)}"
+        f"&filter[processingState]=VALID&sort=-uploadedDate&limit=1")
     if st != 200:
         _die("find build failed", st, body)
     data = body.get("data", [])

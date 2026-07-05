@@ -29,8 +29,21 @@ ASC_KEY_PATH="${ASC_KEY_PATH:-$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_
 # --- build number ---
 BUILD_NUMBER="${1:-}"
 if [ -z "$BUILD_NUMBER" ]; then
-  LATEST="$(python3 "$ASC" builds "$APP_ID" 2>/dev/null | awk 'NR==1{print $1}')"
-  if [[ "$LATEST" =~ ^[0-9]+$ ]]; then BUILD_NUMBER=$((LATEST + 1)); else BUILD_NUMBER="$(date +%y%m%d%H%M)"; fi
+  if LATEST_OUTPUT="$(python3 "$ASC" builds "$APP_ID" 2>&1)"; then
+    LATEST="$(printf '%s\n' "$LATEST_OUTPUT" | awk 'NR==1{print $1}')"
+  else
+    echo "warning: failed to fetch latest App Store Connect build; using timestamp fallback" >&2
+    printf '%s\n' "$LATEST_OUTPUT" >&2
+    LATEST=""
+  fi
+  if [[ "$LATEST" =~ ^[0-9]+$ ]]; then
+    BUILD_NUMBER=$((LATEST + 1))
+  else
+    if [ -n "$LATEST" ]; then
+      echo "warning: latest build '$LATEST' is not numeric; using timestamp fallback" >&2
+    fi
+    BUILD_NUMBER="$(date +%y%m%d%H%M)"
+  fi
 fi
 echo "==> build number: $BUILD_NUMBER"
 

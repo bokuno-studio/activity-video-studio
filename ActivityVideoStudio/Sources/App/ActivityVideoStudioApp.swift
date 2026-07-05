@@ -318,6 +318,9 @@ enum HeadlessExporter {
 
     static func logLine(_ msg: String) {
         FileHandle.standardError.write(Data((msg + "\n").utf8))
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            _ = FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
         if let h = try? FileHandle(forWritingTo: logURL) {
             h.seekToEndOfFile()
             h.write(Data((msg + "\n").utf8))
@@ -326,36 +329,132 @@ enum HeadlessExporter {
     }
 
     private enum Err: Error, LocalizedError {
-        case missing(String), empty(String), unsyncedVideos([String])
+        case missing(String), empty(String), invalidArgument(String, String), unsyncedVideos([String])
         var errorDescription: String? {
             switch self {
             case .missing(let f): return "引数 \(f) が必要です"
             case .empty(let m):   return m
+            case .invalidArgument(let f, let m): return "引数 \(f) が不正です: \(m)"
             case .unsyncedVideos(let names):
                 return "撮影日時を読み取れない動画があるため中断しました: \(names.joined(separator: ", "))"
             }
         }
     }
 
+    private static let booleanFlags: Set<String> = [
+        "--headless-export",
+        "--align-fit-start"
+    ]
+
+    private static let valueFlags: Set<String> = [
+        "--fit",
+        "--video",
+        "--export-to",
+        "--offset",
+        "--trim-start",
+        "--trim-end",
+        "--width",
+        "--height",
+        "--overlay-preset",
+        "--text",
+        "--text-pos",
+        "--text-size"
+    ]
+
+    private static func isKnownFlag(_ flag: String) -> Bool {
+        booleanFlags.contains(flag) ||
+            valueFlags.contains(flag) ||
+            segmentTrimIndex(flag, prefix: "--trim-start-") != nil ||
+            segmentTrimIndex(flag, prefix: "--trim-end-") != nil
+    }
+
+    private static func segmentTrimIndex(_ flag: String, prefix: String) -> Int? {
+        guard flag.hasPrefix(prefix) else { return nil }
+        let suffix = String(flag.dropFirst(prefix.count))
+        guard let index = Int(suffix), index >= 0 else { return nil }
+        return index
+    }
+
+    private static func warnUnknownFlags(in args: [String]) {
+        for arg in args.dropFirst() where arg.hasPrefix("--") && !isKnownFlag(arg) {
+            logLine("[Headless] WARNING: unknown flag ignored: \(arg)")
+        }
+    }
+
+    private static func value(_ flag: String, in args: [String]) throws -> String? {
+        guard let i = args.firstIndex(of: flag) else { return nil }
+        guard i + 1 < args.count, !args[i + 1].hasPrefix("--") else {
+            throw Err.invalidArgument(flag, "値が必要です")
+        }
+        return args[i + 1]
+    }
+
+    private static func values(_ flag: String, in args: [String]) throws -> [String] {
+        var out: [String] = []
+        var i = 0
+        while i < args.count {
+            if args[i] == flag {
+                guard i + 1 < args.count, !args[i + 1].hasPrefix("--") else {
+                    throw Err.invalidArgument(flag, "値が必要です")
+                }
+                out.append(args[i + 1])
+                i += 2
+            } else {
+                i += 1
+            }
+        }
+        return out
+    }
+
+    private static func optionalDouble(_ flag: String, in args: [String]) throws -> Double? {
+        guard let raw = try value(flag, in: args) else { return nil }
+        guard let parsed = Double(raw), parsed.isFinite else {
+            throw Err.invalidArgument(flag, "\(raw) は数値ではありません")
+        }
+        return parsed
+    }
+
+    private static func doubleValue(_ flag: String, in args: [String], default defaultValue: Double) throws -> Double {
+        try optionalDouble(flag, in: args) ?? defaultValue
+    }
+
+    private static func intValue(_ flag: String, in args: [String], default defaultValue: Int) throws -> Int {
+        guard let raw = try value(flag, in: args) else { return defaultValue }
+        guard let parsed = Int(raw), parsed > 0 else {
+            throw Err.invalidArgument(flag, "\(raw) は正の整数ではありません")
+        }
+        return parsed
+    }
+
+    private static func segmentTrimValues(prefix: String, in args: [String]) throws -> [Int: TimeInterval] {
+        var out: [Int: TimeInterval] = [:]
+        var i = 0
+        while i < args.count {
+            if let index = segmentTrimIndex(args[i], prefix: prefix) {
+                let flag = args[i]
+                guard i + 1 < args.count, !args[i + 1].hasPrefix("--") else {
+                    throw Err.invalidArgument(flag, "値が必要です")
+                }
+                guard let parsed = TimeInterval(args[i + 1]), parsed.isFinite else {
+                    throw Err.invalidArgument(flag, "\(args[i + 1]) は数値ではありません")
+                }
+                out[index] = parsed
+                i += 2
+            } else {
+                i += 1
+            }
+        }
+        return out
+    }
+
     private static func perform() async throws {
         let args = ProcessInfo.processInfo.arguments
-        func value(_ flag: String) -> String? {
-            guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
-            return args[i + 1]
-        }
-        func values(_ flag: String) -> [String] {
-            var out: [String] = []
-            var i = 0
-            while i < args.count {
-                if args[i] == flag, i + 1 < args.count { out.append(args[i + 1]); i += 2 } else { i += 1 }
-            }
-            return out
-        }
+        warnUnknownFlags(in: args)
 
-        guard let fitPath = value("--fit") else { throw Err.missing("--fit") }
-        let videoPaths = values("--video")
+        guard let fitPath = try value("--fit", in: args) else { throw Err.missing("--fit") }
+        let videoPaths = try values("--video", in: args)
         guard !videoPaths.isEmpty else { throw Err.missing("--video") }
-        guard let outPath = value("--export-to") else { throw Err.missing("--export-to") }
+        guard let outPath = try value("--export-to", in: args) else { throw Err.missing("--export-to") }
 
         // FIT
         let pts = try FITParser().parseDataPoints(url: URL(fileURLWithPath: fitPath))
@@ -385,9 +484,10 @@ enum HeadlessExporter {
 
         // Sync offset (clock-skew correction)
         var syncOffset: Double = 0
+        let offset = try optionalDouble("--offset", in: args)
         if args.contains("--align-fit-start") {
             if let cd = metas.first?.creationDate { syncOffset = fitStart.timeIntervalSince(cd) }
-        } else if let off = value("--offset").flatMap(Double.init) {
+        } else if let off = offset {
             syncOffset = off
         }
         logLine("[Headless] syncOffset: \(Int(syncOffset))s")
@@ -411,34 +511,53 @@ enum HeadlessExporter {
         }
 
         // Trim: uniform --trim-start/--trim-end + per-segment --trim-start-N/--trim-end-N
-        let trimStart = value("--trim-start").flatMap(TimeInterval.init) ?? 0
-        let trimEnd = value("--trim-end").flatMap(TimeInterval.init) ?? 0
+        let trimStart = try doubleValue("--trim-start", in: args, default: 0)
+        let trimEnd = try doubleValue("--trim-end", in: args, default: 0)
         var trims = metas.map { _ in TrimSettings(startTrim: trimStart, endTrim: trimEnd) }
-        for i in trims.indices {
-            if let v = value("--trim-start-\(i)").flatMap(TimeInterval.init) { trims[i].startTrim = v }
-            if let v = value("--trim-end-\(i)").flatMap(TimeInterval.init) { trims[i].endTrim = v }
+        let perSegmentStart = try segmentTrimValues(prefix: "--trim-start-", in: args)
+        let perSegmentEnd = try segmentTrimValues(prefix: "--trim-end-", in: args)
+        for (i, v) in perSegmentStart {
+            if trims.indices.contains(i) {
+                trims[i].startTrim = v
+            } else {
+                logLine("[Headless] WARNING: --trim-start-\(i) ignored; only \(trims.count) video(s)")
+            }
+        }
+        for (i, v) in perSegmentEnd {
+            if trims.indices.contains(i) {
+                trims[i].endTrim = v
+            } else {
+                logLine("[Headless] WARNING: --trim-end-\(i) ignored; only \(trims.count) video(s)")
+            }
         }
 
         // Overlay
-        let w = value("--width").flatMap(Int.init) ?? 1920
-        let h = value("--height").flatMap(Int.init) ?? 1080
+        let w = try intValue("--width", in: args, default: 1920)
+        let h = try intValue("--height", in: args, default: 1080)
         let overlaySettings = OverlaySettings()
-        if let presetValue = value("--overlay-preset"),
-           let preset = OverlayPreset(rawValue: presetValue) {
+        if let presetValue = try value("--overlay-preset", in: args) {
+            guard let preset = OverlayPreset(rawValue: presetValue) else {
+                let allowed = OverlayPreset.allCases.map(\.rawValue).joined(separator: ", ")
+                throw Err.invalidArgument("--overlay-preset", "\(presetValue)（allowed: \(allowed)）")
+            }
             overlaySettings.overlayPreset = preset
             logLine("[Headless] overlayPreset: \(preset.rawValue)")
         }
         let renderer = OverlayRenderer(videoSize: CGSize(width: w, height: h), settings: overlaySettings)
         renderer.allDataPoints = pts
         renderer.trackCoordinates = pts.compactMap { $0.coordinate }
-        if let text = value("--text"), !text.isEmpty {
+        let textSize = try optionalDouble("--text-size", in: args)
+        let textPosition = try value("--text-pos", in: args)
+        if let text = try value("--text", in: args), !text.isEmpty {
             var ov = TextOverlay(text: text, startTime: 0, duration: 9999)
-            switch value("--text-pos") {
+            switch textPosition {
+            case nil, "center":      ov.position = .center
             case "topCenter":    ov.position = .topCenter
             case "bottomCenter": ov.position = .bottomCenter
-            default:             ov.position = .center
+            default:
+                throw Err.invalidArgument("--text-pos", "\(textPosition ?? "")（allowed: center, topCenter, bottomCenter）")
             }
-            if let fs = value("--text-size").flatMap(Double.init) { ov.fontSize = CGFloat(fs) }
+            if let fs = textSize { ov.fontSize = CGFloat(fs) }
             renderer.textOverlays = [ov]
         }
 

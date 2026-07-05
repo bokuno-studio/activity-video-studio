@@ -21,6 +21,9 @@ private func exportLog(_ msg: String) {
     let line = "[Export] \(msg)\n"
     if let data = line.data(using: .utf8) {
         let logURL = URL(fileURLWithPath: "/tmp/avs_export.log")
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            _ = FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
         if let fh = try? FileHandle(forWritingTo: logURL) {
             fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
         }

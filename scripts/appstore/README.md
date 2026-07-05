@@ -9,8 +9,8 @@ App Store Connect API の3点を環境変数に入れる。run-coach の `.env` 
 set -a; . ~/dev/run-coach/.env; set +a   # ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_PATH
 ```
 
-- `.p8`: `~/.appstoreconnect/private_keys/AuthKey_<KEY_ID>.p8`（Key ID `P29AKGUR92`）
-- 同一 Apple アカウント（team `J92UU2UFBH`）なので ActivityVideoStudio に使える
+- `.p8`: `~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8`（Key ID は環境変数で指定し、repo には記載しない）
+- ActivityVideoStudio を管理できる Apple Developer team の API キーを使う
 - キーのロールは **App Manager 以上**が必要（提出するため）
 
 ## 使い方

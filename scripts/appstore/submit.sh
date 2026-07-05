@@ -6,6 +6,14 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 APP_ID="6764239734"
 : "${ASC_KEY_ID:?set ASC_KEY_ID (source ~/dev/run-coach/.env)}"
-BUILD="${1:-$(python3 scripts/appstore/asc.py builds "$APP_ID" | awk 'NR==1{print $1}')}"
+BUILD="${1:-}"
+if [ -z "$BUILD" ]; then
+  BUILD_OUTPUT="$(python3 scripts/appstore/asc.py builds "$APP_ID" --state VALID)"
+  BUILD="$(printf '%s\n' "$BUILD_OUTPUT" | awk 'NR==1{print $1}')"
+  if [ -z "$BUILD" ]; then
+    echo "no VALID App Store Connect build found for app $APP_ID" >&2
+    exit 1
+  fi
+fi
 echo "submitting build $BUILD for review…"
 python3 scripts/appstore/asc.py submit "$APP_ID" "$BUILD" scripts/appstore/review_notes.txt
