@@ -29,6 +29,61 @@ final class TimeSyncTests: XCTestCase {
         XCTAssertEqual(sync.segments.first?.offsetSeconds, 0)
     }
 
+    func testUpdateOffsetMovesOnlyRequestedSegmentInMultiSegmentSync() throws {
+        let sync = TimeSync(dataPoints: stride(from: 0, through: 30, by: 5).map {
+            point(seconds: TimeInterval($0), speed: Double($0))
+        })
+        sync.addVideo(VideoMetadata(
+            url: URL(fileURLWithPath: "/tmp/segment-0.mov"),
+            creationDate: date(seconds: 0),
+            duration: 10,
+            naturalSize: nil
+        ))
+        sync.addVideo(VideoMetadata(
+            url: URL(fileURLWithPath: "/tmp/segment-1.mov"),
+            creationDate: date(seconds: 10),
+            duration: 10,
+            naturalSize: nil
+        ))
+
+        let originalSegmentPoint = try XCTUnwrap(sync.dataPoint(segmentIndex: 1, playbackTime: 2.5))
+        XCTAssertEqual(originalSegmentPoint.speed ?? 0, 12.5, accuracy: 0.001)
+
+        sync.updateOffset(segmentIndex: 1, offsetSeconds: 5)
+
+        XCTAssertEqual(sync.segments[0].fitStartTime, date(seconds: 0))
+        XCTAssertEqual(sync.segments[0].offsetSeconds, 0)
+        XCTAssertEqual(sync.segments[1].fitStartTime, date(seconds: 15))
+        XCTAssertEqual(sync.segments[1].fitEndTime, date(seconds: 25))
+        XCTAssertEqual(sync.segments[1].offsetSeconds, 5)
+        let unaffectedFirstSegmentPoint = try XCTUnwrap(sync.dataPoint(segmentIndex: 0, playbackTime: 2.5))
+        let shiftedSecondSegmentPoint = try XCTUnwrap(sync.dataPoint(segmentIndex: 1, playbackTime: 2.5))
+        XCTAssertEqual(unaffectedFirstSegmentPoint.speed ?? 0, 2.5, accuracy: 0.001)
+        XCTAssertEqual(shiftedSecondSegmentPoint.speed ?? 0, 17.5, accuracy: 0.001)
+        XCTAssertEqual(sync.elapsedTime(segmentIndex: 1, playbackTime: 2.5), 17.5)
+    }
+
+    func testTimezoneCorrectionCandidateSuggestsOffsetThatRestoresOverlap() throws {
+        let fitStart: TimeInterval = 1_767_225_600
+        let sync = TimeSync(dataPoints: [
+            point(seconds: fitStart, speed: 1),
+            point(seconds: fitStart + 600, speed: 2)
+        ])
+
+        sync.addVideo(VideoMetadata(
+            url: URL(fileURLWithPath: "/tmp/local-time.mov"),
+            creationDate: date(seconds: fitStart - 9 * 3_600),
+            duration: 300,
+            naturalSize: nil
+        ))
+
+        let candidate = try XCTUnwrap(sync.segments.first?.timeZoneCorrectionCandidate)
+        XCTAssertEqual(candidate.offsetSeconds, 9 * 3_600, accuracy: 0.001)
+        XCTAssertEqual(candidate.correctedStartTime, date(seconds: fitStart))
+        XCTAssertEqual(candidate.correctedEndTime, date(seconds: fitStart + 300))
+        XCTAssertEqual(candidate.overlapSeconds, 300, accuracy: 0.001)
+    }
+
     @MainActor
     func testExportCopyIsIndependentOfLaterOffsetUpdates() throws {
         let sync = TimeSync(dataPoints: [
