@@ -213,7 +213,7 @@ final class TimeSync {
         let range = afterTime - beforeTime
         guard range > 0 else { return before }
         if range > Self.maximumInterpolationGap {
-            return targetTime >= afterTime ? after : before
+            return before
         }
 
         let fraction = (targetTime - beforeTime) / range

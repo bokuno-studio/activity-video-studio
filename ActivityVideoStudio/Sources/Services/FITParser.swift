@@ -1,6 +1,9 @@
 import Foundation
 import CoreLocation
 import Compression
+import OSLog
+
+private let fitParserLogger = Logger(subsystem: "com.avs", category: "FITParser")
 
 /// Parses Garmin .FIT files and extracts record data points.
 /// Supports the FIT binary protocol with Definition, Data, and Developer messages.
@@ -232,8 +235,10 @@ final class FITParser {
 
         let dataStart = Int(headerSize)
         let dataEnd = dataStart + Int(dataSize)
-        guard data.count >= dataEnd + 2 else { throw ParseError.unexpectedEndOfData }
+        let fileEnd = dataEnd + 2
+        guard data.count >= fileEnd else { throw ParseError.unexpectedEndOfData }
         try Self.validateCRC(data: data, headerSize: Int(headerSize), dataEnd: dataEnd)
+        Self.logChainedFITIfPresent(data: data, firstFileEnd: fileEnd)
 
         var offset = dataStart
         var definitions: [UInt8: MessageDefinition] = [:]
@@ -254,6 +259,9 @@ final class FITParser {
                 let localMessageType = (recordHeader >> 5) & 0x03
                 let timeOffset = UInt32(recordHeader & 0x1F)
 
+                guard lastTimestamp != 0 else {
+                    throw ParseError.invalidFile
+                }
                 lastTimestamp = expandCompressedTimestamp(lastTimestamp: lastTimestamp, timeOffset: timeOffset)
 
                 guard let definition = definitions[localMessageType] else {
@@ -369,6 +377,38 @@ final class FITParser {
         guard storedFileCRC == 0 || actualFileCRC == storedFileCRC else {
             throw ParseError.crcMismatch
         }
+    }
+
+    private static func logChainedFITIfPresent(data: Data, firstFileEnd: Int) {
+        guard firstFileEnd < data.count,
+              hasFITHeader(at: firstFileEnd, in: data) else {
+            return
+        }
+
+        let remainingBytes = data.count - firstFileEnd
+        fitParserLogger.warning(
+            "Chained FIT segment detected after the first segment; ignoring \(remainingBytes, privacy: .public) trailing bytes."
+        )
+    }
+
+    private static func hasFITHeader(at offset: Int, in data: Data) -> Bool {
+        guard offset >= 0,
+              offset + 12 <= data.count else {
+            return false
+        }
+
+        let headerSize = data[offset]
+        guard headerSize >= 12,
+              offset + Int(headerSize) <= data.count else {
+            return false
+        }
+
+        let fitSignature = String(bytes: data[(offset + 8)..<(offset + 12)], encoding: .ascii)
+        guard fitSignature == ".FIT" else { return false }
+
+        let dataSize = readUInt32LE(data, offset + 4)
+        let segmentEnd = offset + Int(headerSize) + Int(dataSize) + 2
+        return segmentEnd <= data.count
     }
 
     private static func fitCRC(data: Data, range: Range<Int>) -> UInt16 {
@@ -651,6 +691,12 @@ final class FITParser {
 
         _ = data[offset]       // reserved
         let architecture = data[offset + 1]
+        guard architecture <= 1 else {
+            fitParserLogger.warning(
+                "Invalid FIT definition architecture \(architecture, privacy: .public); aborting parse."
+            )
+            throw ParseError.invalidFile
+        }
         let littleEndian = architecture == 0
 
         let globalMessageNumber: UInt16
@@ -672,6 +718,9 @@ final class FITParser {
             let fieldNum = data[offset]
             let fieldSize = data[offset + 1]
             let baseType = data[offset + 2]
+            guard fieldSize >= 1 else {
+                throw ParseError.invalidFile
+            }
             fields.append(FieldDefinition(
                 fieldNumber: fieldNum,
                 size: fieldSize,
@@ -694,6 +743,9 @@ final class FITParser {
                 let devFieldNum = data[offset]
                 let devSize = data[offset + 1]
                 let devIdx = data[offset + 2]
+                guard devSize >= 1 else {
+                    throw ParseError.invalidFile
+                }
                 devFields.append(DevFieldDefinition(
                     fieldNumber: devFieldNum,
                     size: devSize,
