@@ -57,7 +57,11 @@ final class ExportViewModel: ObservableObject, Identifiable {
             }
         }
     }
-    @Published var isExporting = false
+    @Published var isExporting = false {
+        didSet {
+            onExportingChanged?(isExporting)
+        }
+    }
     @Published var exportComplete = false
     @Published var progress: Double = 0
     @Published var estimatedRemaining: TimeInterval?
@@ -77,6 +81,8 @@ final class ExportViewModel: ObservableObject, Identifiable {
     var timeSync: TimeSync?
     var overlayRenderer: OverlayRenderer?
     var onDismiss: (() -> Void)?
+    var onExportingChanged: (@MainActor (Bool) -> Void)?
+    var shouldQuitWhenDone: (() -> Bool)?
 
     var canExport: Bool {
         hasRequiredExportInputs && !isExporting && !isCancelling && !isChoosingExportDirectory
@@ -273,7 +279,7 @@ final class ExportViewModel: ObservableObject, Identifiable {
         exportComplete = true
         endSleepPreventionIfNeeded()
 
-        if quitWhenDone {
+        if quitWhenDone, shouldQuitWhenDone?() ?? true {
             NSApplication.shared.terminate(nil)
         }
     }

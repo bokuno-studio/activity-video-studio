@@ -9,24 +9,42 @@ import Dispatch
 final class AppTerminationCoordinator {
     static let shared = AppTerminationCoordinator()
 
-    private var ownerID: UUID?
-    private var shouldTerminate: (() -> Bool)?
+    private struct Registration {
+        var shouldTerminate: () -> Bool
+        var isExporting: () -> Bool
+    }
+
+    private var registrationsByOwnerID: [UUID: Registration] = [:]
 
     private init() {}
 
-    func register(ownerID: UUID, shouldTerminate: @escaping () -> Bool) {
-        self.ownerID = ownerID
-        self.shouldTerminate = shouldTerminate
+    func register(
+        ownerID: UUID,
+        isExporting: @escaping () -> Bool = { false },
+        shouldTerminate: @escaping () -> Bool
+    ) {
+        registrationsByOwnerID[ownerID] = Registration(
+            shouldTerminate: shouldTerminate,
+            isExporting: isExporting
+        )
     }
 
     func unregister(ownerID: UUID) {
-        guard self.ownerID == ownerID else { return }
-        self.ownerID = nil
-        shouldTerminate = nil
+        registrationsByOwnerID[ownerID] = nil
     }
 
     func canTerminate() -> Bool {
-        shouldTerminate?() ?? true
+        for registration in registrationsByOwnerID.values {
+            guard registration.shouldTerminate() else { return false }
+        }
+        return true
+    }
+
+    func hasExportInProgress(excluding ownerID: UUID? = nil) -> Bool {
+        registrationsByOwnerID.contains { currentOwnerID, registration in
+            if currentOwnerID == ownerID { return false }
+            return registration.isExporting()
+        }
     }
 }
 
@@ -34,8 +52,9 @@ final class AppTerminationCoordinator {
 final class AppFileOpenCoordinator {
     static let shared = AppFileOpenCoordinator()
 
-    private var ownerID: UUID?
-    private var handler: (([URL]) -> Void)?
+    private var handlersByOwnerID: [UUID: ([URL]) -> Void] = [:]
+    private var windowIDByOwnerID: [UUID: ObjectIdentifier] = [:]
+    private var ownerIDByWindowID: [ObjectIdentifier: UUID] = [:]
     private var pendingURLs: [URL] = []
     private var recentOpenTimesByKey: [String: Date] = [:]
     private let duplicateInterval: TimeInterval = 1
@@ -43,33 +62,79 @@ final class AppFileOpenCoordinator {
     private init() {}
 
     func register(ownerID: UUID, handler: @escaping ([URL]) -> Void) {
-        self.ownerID = ownerID
-        self.handler = handler
+        handlersByOwnerID[ownerID] = handler
         flushPendingURLs()
     }
 
     func unregister(ownerID: UUID) {
-        guard self.ownerID == ownerID else { return }
-        self.ownerID = nil
-        handler = nil
+        handlersByOwnerID[ownerID] = nil
+        unregisterWindow(ownerID: ownerID)
+    }
+
+    func registerWindow(_ window: NSWindow?, ownerID: UUID) {
+        unregisterWindow(ownerID: ownerID)
+
+        guard let window else { return }
+        let windowID = ObjectIdentifier(window)
+        if let previousOwnerID = ownerIDByWindowID[windowID] {
+            windowIDByOwnerID[previousOwnerID] = nil
+        }
+        ownerIDByWindowID[windowID] = ownerID
+        windowIDByOwnerID[ownerID] = windowID
+        flushPendingURLs()
     }
 
     func open(_ urls: [URL]) {
         let urls = uniqueURLs(from: urls)
         guard !urls.isEmpty else { return }
 
-        if let handler {
+        if let handler = targetHandler() {
             handler(urls)
         } else {
             pendingURLs.append(contentsOf: urls)
         }
     }
 
+    private func unregisterWindow(ownerID: UUID) {
+        guard let windowID = windowIDByOwnerID.removeValue(forKey: ownerID) else { return }
+        ownerIDByWindowID[windowID] = nil
+    }
+
     private func flushPendingURLs() {
-        guard let handler, !pendingURLs.isEmpty else { return }
+        guard let handler = targetHandler(), !pendingURLs.isEmpty else { return }
         let urls = pendingURLs
         pendingURLs.removeAll()
         handler(urls)
+    }
+
+    private func targetHandler() -> (([URL]) -> Void)? {
+        if let ownerID = targetOwnerID(), let handler = handlersByOwnerID[ownerID] {
+            return handler
+        }
+
+        guard handlersByOwnerID.count == 1 else { return nil }
+        return handlersByOwnerID.values.first
+    }
+
+    private func targetOwnerID() -> UUID? {
+        if let ownerID = ownerID(for: NSApplication.shared.keyWindow) {
+            return ownerID
+        }
+        if let ownerID = ownerID(for: NSApplication.shared.mainWindow) {
+            return ownerID
+        }
+        return nil
+    }
+
+    private func ownerID(for window: NSWindow?) -> UUID? {
+        var currentWindow = window
+        while let window = currentWindow {
+            if let ownerID = ownerIDByWindowID[ObjectIdentifier(window)] {
+                return ownerID
+            }
+            currentWindow = window.sheetParent
+        }
+        return nil
     }
 
     private func uniqueURLs(from urls: [URL]) -> [URL] {

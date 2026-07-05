@@ -63,6 +63,7 @@ final class PreviewViewModel: ObservableObject {
     @Published var youtubeDescription: String = ""
     @Published private(set) var projectURL: URL?
     @Published private(set) var isProjectEdited = false
+    @Published private(set) var isExporting = false
     @Published private(set) var videoNativeWidth: Int = 0
 
     let playbackRateOptions: [Float] = [0.5, 1.0, 2.0, 4.0, 8.0, 10.0]
@@ -682,11 +683,32 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func confirmCloseEditedProject() -> Bool {
-        confirmSaveDiscardOrCancelEditedProject(clearsEditedStateOnDiscard: true)
+        confirmInterruptExportIfNeeded(
+            informativeText: "このウィンドウを閉じるかアプリを終了すると、進行中のエクスポートが中断され、作成中の動画が失われる可能性があります。",
+            continueButtonTitle: "続行"
+        ) && confirmSaveDiscardOrCancelEditedProject(clearsEditedStateOnDiscard: true)
     }
 
     private func confirmReplaceEditedProject() -> Bool {
-        confirmSaveDiscardOrCancelEditedProject(clearsEditedStateOnDiscard: false)
+        confirmInterruptExportIfNeeded(
+            informativeText: "別のプロジェクトを開くと、進行中のエクスポートが中断され、作成中の動画が失われる可能性があります。",
+            continueButtonTitle: "開く"
+        ) && confirmSaveDiscardOrCancelEditedProject(clearsEditedStateOnDiscard: false)
+    }
+
+    private func confirmInterruptExportIfNeeded(
+        informativeText: String,
+        continueButtonTitle: String
+    ) -> Bool {
+        guard isExporting else { return true }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "エクスポート中です"
+        alert.informativeText = informativeText
+        alert.addButton(withTitle: continueButtonTitle)
+        alert.addButton(withTitle: "キャンセル")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func confirmSaveDiscardOrCancelEditedProject(clearsEditedStateOnDiscard: Bool) -> Bool {
@@ -1808,6 +1830,9 @@ final class PreviewViewModel: ObservableObject {
         overlayRenderer?.textOverlays = textOverlays
         overlayRenderer?.trackCoordinates = trackCoordinates
         vm.overlayRenderer = overlayRenderer?.makeExportCopy()
+        vm.onExportingChanged = { [weak self] isExporting in
+            self?.isExporting = isExporting
+        }
         return vm
     }
 

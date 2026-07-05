@@ -17,6 +17,7 @@ struct ExportView: View {
         }
         .padding()
         .frame(width: 400)
+        .interactiveDismissDisabled(viewModel.isExporting)
         .alert(item: $viewModel.alert) { alert in
             Alert(
                 title: Text(alert.title),

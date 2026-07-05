@@ -64,6 +64,7 @@ struct PreviewView: View {
                 viewModel: exportViewModel,
                 isTextFocused: $isTextFieldFocused
             )
+            .interactiveDismissDisabled(viewModel.isExporting)
         }
         .alert(item: $viewModel.alert) { alert in
             Alert(
@@ -73,7 +74,10 @@ struct PreviewView: View {
             )
         }
         .onAppear {
-            AppTerminationCoordinator.shared.register(ownerID: appLifecycleOwnerID) {
+            AppTerminationCoordinator.shared.register(
+                ownerID: appLifecycleOwnerID,
+                isExporting: { viewModel.isExporting }
+            ) {
                 viewModel.confirmCloseEditedProject()
             }
             AppFileOpenCoordinator.shared.register(ownerID: appLifecycleOwnerID) { urls in
@@ -91,6 +95,7 @@ struct PreviewView: View {
         }
         .background {
             WindowDocumentBridge(
+                ownerID: appLifecycleOwnerID,
                 title: viewModel.windowTitle,
                 representedURL: viewModel.projectURL,
                 isDocumentEdited: viewModel.isProjectEdited,
@@ -358,6 +363,9 @@ struct PreviewView: View {
         viewModel.pausePlayback()
 
         let exportViewModel = viewModel.makeExportViewModel()
+        exportViewModel.shouldQuitWhenDone = { [ownerID = appLifecycleOwnerID] in
+            !AppTerminationCoordinator.shared.hasExportInProgress(excluding: ownerID)
+        }
         exportViewModel.onDismiss = {
             self.exportViewModel = nil
         }
@@ -1019,6 +1027,7 @@ private extension CGRect {
 }
 
 private struct WindowDocumentBridge: NSViewRepresentable {
+    var ownerID: UUID
     var title: String
     var representedURL: URL?
     var isDocumentEdited: Bool
@@ -1044,6 +1053,7 @@ private struct WindowDocumentBridge: NSViewRepresentable {
     }
 
     private func updateCoordinator(_ coordinator: Coordinator) {
+        coordinator.ownerID = ownerID
         coordinator.title = title
         coordinator.representedURL = representedURL
         coordinator.isDocumentEdited = isDocumentEdited
@@ -1051,12 +1061,15 @@ private struct WindowDocumentBridge: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, NSWindowDelegate {
+        var ownerID = UUID()
         var title = ""
         var representedURL: URL?
         var isDocumentEdited = false
         var shouldClose: () -> Bool = { true }
 
+        @MainActor
         func apply(to window: NSWindow?) {
+            AppFileOpenCoordinator.shared.registerWindow(window, ownerID: ownerID)
             guard let window else { return }
             window.title = title
             window.representedURL = representedURL
