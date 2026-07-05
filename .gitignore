@@ -48,3 +48,6 @@ build-app-rel/
 
 # Test coverage profiles
 *.profraw
+
+# Python bytecode
+__pycache__/
