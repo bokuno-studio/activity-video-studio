@@ -368,6 +368,12 @@ enum HeadlessExporter {
             segmentTrimIndex(flag, prefix: "--trim-end-") != nil
     }
 
+    private static func segmentTrimPrefix(for flag: String) -> String? {
+        if flag.hasPrefix("--trim-start-") { return "--trim-start-" }
+        if flag.hasPrefix("--trim-end-") { return "--trim-end-" }
+        return nil
+    }
+
     private static func segmentTrimIndex(_ flag: String, prefix: String) -> Int? {
         guard flag.hasPrefix(prefix) else { return nil }
         let suffix = String(flag.dropFirst(prefix.count))
@@ -375,18 +381,43 @@ enum HeadlessExporter {
         return index
     }
 
-    private static func warnUnknownFlags(in args: [String]) {
-        for arg in args.dropFirst() where arg.hasPrefix("--") && !isKnownFlag(arg) {
-            logLine("[Headless] WARNING: unknown flag ignored: \(arg)")
+    private static func validateSegmentTrimFlags(in args: [String]) throws {
+        for arg in args.dropFirst() {
+            guard let prefix = segmentTrimPrefix(for: arg) else { continue }
+            let suffix = String(arg.dropFirst(prefix.count))
+            guard let index = Int(suffix), index >= 0 else {
+                throw Err.invalidArgument(arg, "末尾は0以上の整数で指定してください")
+            }
         }
+    }
+
+    private static func warnUnknownFlags(in args: [String]) {
+        var i = 1
+        while i < args.count {
+            let arg = args[i]
+            if arg.hasPrefix("--"), !isKnownFlag(arg) {
+                logLine("[Headless] WARNING: unknown flag ignored: \(arg)")
+            }
+            if valueFlags.contains(arg) ||
+                segmentTrimIndex(arg, prefix: "--trim-start-") != nil ||
+                segmentTrimIndex(arg, prefix: "--trim-end-") != nil {
+                i += 2
+            } else {
+                i += 1
+            }
+        }
+    }
+
+    private static func argumentValue(after i: Int, for flag: String, in args: [String]) throws -> String {
+        guard i + 1 < args.count, !isKnownFlag(args[i + 1]) else {
+            throw Err.invalidArgument(flag, "値が必要です")
+        }
+        return args[i + 1]
     }
 
     private static func value(_ flag: String, in args: [String]) throws -> String? {
         guard let i = args.firstIndex(of: flag) else { return nil }
-        guard i + 1 < args.count, !args[i + 1].hasPrefix("--") else {
-            throw Err.invalidArgument(flag, "値が必要です")
-        }
-        return args[i + 1]
+        return try argumentValue(after: i, for: flag, in: args)
     }
 
     private static func values(_ flag: String, in args: [String]) throws -> [String] {
@@ -394,10 +425,7 @@ enum HeadlessExporter {
         var i = 0
         while i < args.count {
             if args[i] == flag {
-                guard i + 1 < args.count, !args[i + 1].hasPrefix("--") else {
-                    throw Err.invalidArgument(flag, "値が必要です")
-                }
-                out.append(args[i + 1])
+                out.append(try argumentValue(after: i, for: flag, in: args))
                 i += 2
             } else {
                 i += 1
@@ -432,11 +460,9 @@ enum HeadlessExporter {
         while i < args.count {
             if let index = segmentTrimIndex(args[i], prefix: prefix) {
                 let flag = args[i]
-                guard i + 1 < args.count, !args[i + 1].hasPrefix("--") else {
-                    throw Err.invalidArgument(flag, "値が必要です")
-                }
-                guard let parsed = TimeInterval(args[i + 1]), parsed.isFinite else {
-                    throw Err.invalidArgument(flag, "\(args[i + 1]) は数値ではありません")
+                let raw = try argumentValue(after: i, for: flag, in: args)
+                guard let parsed = TimeInterval(raw), parsed.isFinite else {
+                    throw Err.invalidArgument(flag, "\(raw) は数値ではありません")
                 }
                 out[index] = parsed
                 i += 2
@@ -447,9 +473,24 @@ enum HeadlessExporter {
         return out
     }
 
+    private static func textOverlayPosition(from raw: String?) throws -> TextOverlay.Position {
+        switch raw {
+        case nil, "center":
+            return .center
+        case "topCenter":
+            return .topCenter
+        case "bottomCenter":
+            return .bottomCenter
+        default:
+            throw Err.invalidArgument("--text-pos", "\(raw ?? "")（指定可能な値: center, topCenter, bottomCenter）")
+        }
+    }
+
     private static func perform() async throws {
         let args = ProcessInfo.processInfo.arguments
+        try validateSegmentTrimFlags(in: args)
         warnUnknownFlags(in: args)
+        let textPosition = try textOverlayPosition(from: value("--text-pos", in: args))
 
         guard let fitPath = try value("--fit", in: args) else { throw Err.missing("--fit") }
         let videoPaths = try values("--video", in: args)
@@ -548,16 +589,9 @@ enum HeadlessExporter {
         renderer.buildElevationGainCache()
         renderer.trackCoordinates = pts.compactMap { $0.coordinate }
         let textSize = try optionalDouble("--text-size", in: args)
-        let textPosition = try value("--text-pos", in: args)
         if let text = try value("--text", in: args), !text.isEmpty {
             var ov = TextOverlay(text: text, startTime: 0, duration: 9999)
-            switch textPosition {
-            case nil, "center":      ov.position = .center
-            case "topCenter":    ov.position = .topCenter
-            case "bottomCenter": ov.position = .bottomCenter
-            default:
-                throw Err.invalidArgument("--text-pos", "\(textPosition ?? "")（allowed: center, topCenter, bottomCenter）")
-            }
+            ov.position = textPosition
             if let fs = textSize { ov.fontSize = CGFloat(fs) }
             renderer.textOverlays = [ov]
         }
