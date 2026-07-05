@@ -1350,7 +1350,7 @@ final class VideoExporter: @unchecked Sendable {
             .appendingPathComponent("video_only")
             .appendingPathExtension("mp4")
         defer {
-            tempURLs.forEach { try? FileManager.default.removeItem(at: $0) }
+            Self.removeTemporaryExportFiles(tempURLs)
             try? FileManager.default.removeItem(at: videoOnlyURL)
         }
 
@@ -1430,6 +1430,7 @@ final class VideoExporter: @unchecked Sendable {
             progressSpan: finalVideoOnlyConcatenationProgressSpan,
             progress: progress
         )
+        Self.removeTemporaryExportFiles(tempURLs)
         if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
         onStatus("音声を処理中...")
         try await muxVideoWithSinglePassAudio(
@@ -1546,7 +1547,7 @@ final class VideoExporter: @unchecked Sendable {
             .appendingPathComponent("video_only")
             .appendingPathExtension("mp4")
         defer {
-            tempURLs.forEach { try? FileManager.default.removeItem(at: $0) }
+            Self.removeTemporaryExportFiles(tempURLs)
             try? FileManager.default.removeItem(at: videoOnlyURL)
         }
 
@@ -1629,6 +1630,7 @@ final class VideoExporter: @unchecked Sendable {
             progressSpan: finalVideoOnlyConcatenationProgressSpan,
             progress: progress
         )
+        Self.removeTemporaryExportFiles(tempURLs)
         if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
         onStatus("音声を処理中...")
         try await muxVideoWithSinglePassAudio(
@@ -1904,6 +1906,25 @@ final class VideoExporter: @unchecked Sendable {
                 "failed to remove temporary export directory " +
                 "\(directoryURL.lastPathComponent): \(error.localizedDescription)"
             )
+        }
+    }
+
+    private static func removeTemporaryExportFiles(_ urls: [URL]) {
+        let fileManager = FileManager.default
+        for url in urls {
+            do {
+                try fileManager.removeItem(at: url)
+                exportLog("removed temporary export file: \(url.lastPathComponent)")
+            } catch {
+                let nsError = error as NSError
+                if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileNoSuchFileError {
+                    continue
+                }
+                exportLog(
+                    "failed to remove temporary export file " +
+                    "\(url.lastPathComponent): \(error.localizedDescription)"
+                )
+            }
         }
     }
 
