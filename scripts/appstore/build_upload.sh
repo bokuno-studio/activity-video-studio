@@ -16,18 +16,32 @@ SCHEME="ActivityVideoStudio"
 APP_ID="6764239734"
 EXPORT_OPTS="$ROOT/scripts/appstore/ExportOptions.plist"
 ASC="$ROOT/scripts/appstore/asc.py"
-WORK="$(mktemp -d)/avs"
+TMP_ROOT="$(mktemp -d)"
+cleanup() {
+  rm -rf "$TMP_ROOT" 2>/dev/null || true
+}
+trap cleanup EXIT
+WORK="$TMP_ROOT/avs"
 mkdir -p "$WORK"
 ARCHIVE="$WORK/ActivityVideoStudio.xcarchive"
 EXPORT_DIR="$WORK/export"
+
+# --- build number ---
+if [ "$#" -gt 1 ]; then
+  echo "usage: scripts/appstore/build_upload.sh [BUILD_NUMBER]" >&2
+  exit 2
+fi
+BUILD_NUMBER="${1:-}"
+if [ -n "$BUILD_NUMBER" ] && [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "BUILD_NUMBER must be numeric: $BUILD_NUMBER" >&2
+  exit 2
+fi
 
 : "${ASC_KEY_ID:?set ASC_KEY_ID (source ~/dev/run-coach/.env)}"
 : "${ASC_ISSUER_ID:?set ASC_ISSUER_ID}"
 ASC_KEY_PATH="${ASC_KEY_PATH:-$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8}"
 [ -f "$ASC_KEY_PATH" ] || { echo "missing .p8 at $ASC_KEY_PATH"; exit 1; }
 
-# --- build number ---
-BUILD_NUMBER="${1:-}"
 if [ -z "$BUILD_NUMBER" ]; then
   if LATEST_OUTPUT="$(python3 "$ASC" builds "$APP_ID" 2>&1)"; then
     LATEST="$(printf '%s\n' "$LATEST_OUTPUT" | awk 'NR==1{print $1}')"
@@ -71,4 +85,3 @@ xcodebuild -exportArchive \
 echo "==> uploaded build $BUILD_NUMBER. It will appear in App Store Connect as 'Processing'."
 echo "    Check status:  python3 scripts/appstore/asc.py builds $APP_ID"
 echo "    Then submit:   scripts/appstore/submit.sh   (after it shows VALID)"
-rm -rf "$WORK" 2>/dev/null || true

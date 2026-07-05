@@ -84,6 +84,9 @@ def parse_builds_args(args):
             if i + 1 >= len(args):
                 sys.stderr.write(f"{arg} requires a value\n")
                 sys.exit(2)
+            if state is not None:
+                sys.stderr.write("duplicate builds state filter\n")
+                sys.exit(2)
             state = args[i + 1]
             i += 2
         elif arg.startswith("--"):
@@ -109,6 +112,8 @@ def main():
     elif cmd == "app":
         bid = sys.argv[2]
         st, body = request("GET", f"/v1/apps?filter[bundleId]={bid}")
+        if st != 200:
+            _die("lookup app failed", st, body)
         for a in body.get("data", []):
             print(a["id"], a["attributes"]["name"], a["attributes"]["bundleId"])
     elif cmd == "builds":
@@ -159,8 +164,7 @@ def editable_version(app_id):
     for v in body.get("data", []):
         if v["attributes"]["appStoreState"] in editable:
             return v
-    data = body.get("data") or []
-    return data[0] if data else None
+    return None
 
 def find_build(app_id, version):
     # `version` here is the build number (CFBundleVersion), as printed by the
@@ -218,6 +222,18 @@ def find_or_create_draft(app_id):
         _die("create reviewSubmission failed", st, body)
     return body["data"]["id"]
 
+def submission_item_version_ids(sub_id):
+    st, body = request("GET", f"/v1/reviewSubmissions/{sub_id}/items?limit=50")
+    if st != 200:
+        _die("list submission items failed", st, body)
+    ids = []
+    for item in body.get("data", []):
+        rel = item.get("relationships", {}).get("appStoreVersion", {}).get("data")
+        if not rel or not rel.get("id"):
+            _die("submission item missing appStoreVersion relationship", 0, item)
+        ids.append(rel["id"])
+    return ids
+
 def submit_for_review(app_id, build_version, notes):
     cancel_blocking_submissions(app_id)
     ver = editable_version(app_id)
@@ -256,8 +272,12 @@ def submit_for_review(app_id, build_version, notes):
 
     # Add the version as a submission item only if it isn't already one (a reused
     # draft from a prior partial run may already have it).
-    ist, ibody = request("GET", f"/v1/reviewSubmissions/{sub_id}/items")
-    if ist == 200 and ibody.get("data"):
+    item_version_ids = submission_item_version_ids(sub_id)
+    if item_version_ids:
+        if ver_id not in item_version_ids:
+            _die(f"draft submission {sub_id} already contains a different appStoreVersion",
+                 0, {"expectedAppStoreVersionId": ver_id,
+                     "actualAppStoreVersionIds": item_version_ids})
         print("  version already on this submission — continuing.")
     else:
         print("adding version to submission…")
