@@ -496,6 +496,7 @@ final class VideoExporter: @unchecked Sendable {
         let startTime = CMTime(seconds: clampedSourceStart, preferredTimescale: 600)
         let rangeDuration = CMTime(seconds: exportDuration, preferredTimescale: 600)
         let timeRange = CMTimeRange(start: startTime, duration: rangeDuration)
+        compVideoTrack.preferredTransform = try await videoTrack.load(.preferredTransform)
         try compVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
 
         let compAudioTrack: AVMutableCompositionTrack?
@@ -1281,12 +1282,19 @@ final class VideoExporter: @unchecked Sendable {
             withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
 
         var insertTime = CMTime.zero
+        var hasPreferredTransform = false
         for tempURL in tempURLs {
             let a = AVURLAsset(url: tempURL)
             let d = try await a.load(.duration)
             let r = CMTimeRange(start: .zero, duration: d)
             let t = try await a.load(.tracks)
-            if let vt = t.first(where: { $0.mediaType == .video }) { try vcTrack.insertTimeRange(r, of: vt, at: insertTime) }
+            if let vt = t.first(where: { $0.mediaType == .video }) {
+                if !hasPreferredTransform {
+                    vcTrack.preferredTransform = try await vt.load(.preferredTransform)
+                    hasPreferredTransform = true
+                }
+                try vcTrack.insertTimeRange(r, of: vt, at: insertTime)
+            }
             if let at = t.first(where: { $0.mediaType == .audio }) { try? acTrack?.insertTimeRange(r, of: at, at: insertTime) }
             insertTime = CMTimeAdd(insertTime, d)
         }
