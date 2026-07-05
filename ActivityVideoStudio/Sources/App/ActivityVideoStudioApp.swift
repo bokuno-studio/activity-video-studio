@@ -3,6 +3,7 @@ import AppKit
 import AVFoundation
 import CoreLocation
 import CoreGraphics
+import Dispatch
 
 @MainActor
 final class AppTerminationCoordinator {
@@ -302,20 +303,17 @@ enum HeadlessExporter {
 
     static func run() -> Never {
         try? "".write(to: logURL, atomically: true, encoding: .utf8)
-        let sem = DispatchSemaphore(value: 0)
-        var code: Int32 = 0
         Task {
             do {
                 try await perform()
                 logLine("[Headless] DONE ✓")
+                exit(0)
             } catch {
                 logLine("[Headless] FAILED: \(error.localizedDescription)")
-                code = 1
+                exit(1)
             }
-            sem.signal()
         }
-        sem.wait()
-        exit(code)
+        dispatchMain()
     }
 
     static func logLine(_ msg: String) {
