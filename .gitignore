@@ -45,3 +45,6 @@ docs/qa/qa-hook-*.log
 build-test/
 build-app/
 build-app-rel/
+
+# Test coverage profiles
+*.profraw
