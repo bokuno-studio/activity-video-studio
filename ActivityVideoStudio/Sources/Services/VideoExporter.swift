@@ -437,6 +437,7 @@ final class VideoExporter: @unchecked Sendable {
     private static let minimumInternalChunkDuration: TimeInterval = 120
     private static let minimumExportableDuration: TimeInterval = 0.05
     private static let temporaryExportFilePrefix = ".avs_tmp_"
+    private static let abandonedTemporaryFileAge: TimeInterval = 24 * 60 * 60
     private static let estimatedAudioBitRate = 192_000
     private static let fallbackFrameDurationTimescale: CMTimeScale = 600_000
 
@@ -589,7 +590,7 @@ final class VideoExporter: @unchecked Sendable {
         progress: @escaping ProgressCallback
     ) async throws {
         if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
-        try Self.cleanUpAbandonedTemporaryFiles(in: config.outputURL.deletingLastPathComponent())
+        Self.cleanUpAbandonedTemporaryFiles(in: config.outputURL.deletingLastPathComponent())
 
         let timeSyncSnapshot = await timeSync.makeExportCopy()
         let asset = AVURLAsset(url: videoURL)
@@ -1308,14 +1309,17 @@ final class VideoExporter: @unchecked Sendable {
             throw ExportError.exportFailed("カットの結果、書き出せる映像がありません")
         }
 
-        let tempDir = config.outputURL.deletingLastPathComponent()
+        let tempDir = try Self.createTemporaryExportDirectory(
+            in: config.outputURL.deletingLastPathComponent()
+        )
+        defer { Self.removeTemporaryExportDirectory(tempDir) }
         let tempURLs = ranges.map { _ in
             tempDir
-                .appendingPathComponent(".avs_tmp_" + UUID().uuidString)
+                .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("mp4")
         }
         let videoOnlyURL = tempDir
-            .appendingPathComponent(".avs_tmp_" + UUID().uuidString)
+            .appendingPathComponent("video_only")
             .appendingPathExtension("mp4")
         defer {
             tempURLs.forEach { try? FileManager.default.removeItem(at: $0) }
@@ -1433,7 +1437,7 @@ final class VideoExporter: @unchecked Sendable {
                 onStatus: onStatus, progress: progress)
             return
         }
-        try Self.cleanUpAbandonedTemporaryFiles(in: config.outputURL.deletingLastPathComponent())
+        Self.cleanUpAbandonedTemporaryFiles(in: config.outputURL.deletingLastPathComponent())
 
         let timeSyncSnapshot = await timeSync.makeExportCopy()
 
@@ -1458,7 +1462,10 @@ final class VideoExporter: @unchecked Sendable {
         // Phase 2: export each segment/range to temp file.
         // Keep intermediates next to the final output so large exports stay on
         // the user-selected volume instead of filling the system drive.
-        let tempDir = config.outputURL.deletingLastPathComponent()
+        let tempDir = try Self.createTemporaryExportDirectory(
+            in: config.outputURL.deletingLastPathComponent()
+        )
+        defer { Self.removeTemporaryExportDirectory(tempDir) }
         let concurrencyLimit = Self.adaptiveExportConcurrencyLimit()
         let chunkBudgetPerSegment = videoURLs.count < concurrencyLimit
             ? Swift.max(1, Int(ceil(Double(concurrencyLimit) / Double(videoURLs.count))))
@@ -1485,7 +1492,7 @@ final class VideoExporter: @unchecked Sendable {
                     ? "動画 \(segIdx + 1) / \(videoURLs.count) を書き出し中..."
                     : "動画 \(segIdx + 1) / \(videoURLs.count) 範囲 \(rangeIdx + 1) / \(ranges.count) を書き出し中..."
                 let tempURL = tempDir
-                    .appendingPathComponent(".avs_tmp_" + UUID().uuidString)
+                    .appendingPathComponent(UUID().uuidString)
                     .appendingPathExtension("mp4")
                 jobs.append(TimeRangeExportJob(
                     videoURL: url,
@@ -1508,7 +1515,7 @@ final class VideoExporter: @unchecked Sendable {
         )
         let tempURLs = jobs.map { $0.tempURL }
         let videoOnlyURL = tempDir
-            .appendingPathComponent(".avs_tmp_" + UUID().uuidString)
+            .appendingPathComponent("video_only")
             .appendingPathExtension("mp4")
         defer {
             tempURLs.forEach { try? FileManager.default.removeItem(at: $0) }
@@ -1833,28 +1840,76 @@ final class VideoExporter: @unchecked Sendable {
         }
     }
 
-    private static func cleanUpAbandonedTemporaryFiles(in directoryURL: URL) throws {
+    private static func createTemporaryExportDirectory(in directoryURL: URL) throws -> URL {
         let fileManager = FileManager.default
-        let temporaryFiles: [URL]
+        let temporaryDirectoryURL = directoryURL.appendingPathComponent(
+            temporaryExportFilePrefix + UUID().uuidString,
+            isDirectory: true
+        )
+
         do {
-            temporaryFiles = try fileManager.contentsOfDirectory(
+            try fileManager.createDirectory(
+                at: temporaryDirectoryURL,
+                withIntermediateDirectories: false
+            )
+            return temporaryDirectoryURL
+        } catch {
+            throw ExportError.exportFailed("一時フォルダの作成に失敗しました: \(error.localizedDescription)")
+        }
+    }
+
+    private static func removeTemporaryExportDirectory(_ directoryURL: URL) {
+        do {
+            try FileManager.default.removeItem(at: directoryURL)
+            exportLog("removed temporary export directory: \(directoryURL.lastPathComponent)")
+        } catch {
+            exportLog(
+                "failed to remove temporary export directory " +
+                "\(directoryURL.lastPathComponent): \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private static func cleanUpAbandonedTemporaryFiles(in directoryURL: URL) {
+        let fileManager = FileManager.default
+        let temporaryItems: [URL]
+        do {
+            temporaryItems = try fileManager.contentsOfDirectory(
                 at: directoryURL,
-                includingPropertiesForKeys: [.isDirectoryKey],
+                includingPropertiesForKeys: [.contentModificationDateKey],
                 options: [.skipsSubdirectoryDescendants]
             ).filter { $0.lastPathComponent.hasPrefix(temporaryExportFilePrefix) }
         } catch {
-            throw ExportError.exportFailed("一時ファイルの確認に失敗しました: \(error.localizedDescription)")
+            exportLog("failed to inspect abandoned temporary export files: \(error.localizedDescription)")
+            return
         }
 
-        for url in temporaryFiles {
-            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
-            if values?.isDirectory == true { continue }
+        let now = Date()
+        for url in temporaryItems {
+            let values: URLResourceValues
+            do {
+                values = try url.resourceValues(forKeys: [.contentModificationDateKey])
+            } catch {
+                exportLog(
+                    "failed to inspect temporary export item " +
+                    "\(url.lastPathComponent): \(error.localizedDescription)"
+                )
+                continue
+            }
+
+            guard let modifiedAt = values.contentModificationDate,
+                  now.timeIntervalSince(modifiedAt) > abandonedTemporaryFileAge else {
+                continue
+            }
 
             do {
                 try fileManager.removeItem(at: url)
-                exportLog("removed abandoned temporary export file: \(url.lastPathComponent)")
+                exportLog("removed abandoned temporary export item: \(url.lastPathComponent)")
             } catch {
-                throw ExportError.exportFailed("一時ファイルの削除に失敗しました: \(url.lastPathComponent) (\(error.localizedDescription))")
+                exportLog(
+                    "failed to remove abandoned temporary export item " +
+                    "\(url.lastPathComponent): \(error.localizedDescription)"
+                )
             }
         }
     }
