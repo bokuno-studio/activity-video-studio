@@ -147,6 +147,7 @@ final class ExportViewModel: ObservableObject, Identifiable {
         isCancelling = false
         statusMessage = nil
         progress = 0
+        estimatedRemaining = nil
         beginSleepPreventionIfNeeded()
 
         let exporter = VideoExporter()
@@ -181,8 +182,7 @@ final class ExportViewModel: ObservableObject, Identifiable {
                     },
                     progress: { [weak self] fraction, remaining in
                         Task { @MainActor in
-                            self?.progress = fraction
-                            self?.estimatedRemaining = remaining
+                            self?.applyExportProgress(fraction, estimatedRemaining: remaining)
                         }
                     }
                 )
@@ -203,6 +203,20 @@ final class ExportViewModel: ObservableObject, Identifiable {
                     self?.finishExportWithError(error)
                 }
             }
+        }
+    }
+
+    private func applyExportProgress(_ fraction: Double, estimatedRemaining: TimeInterval?) {
+        guard fraction.isFinite else { return }
+
+        let clampedProgress = Swift.min(Swift.max(fraction, 0), 1)
+        guard clampedProgress >= progress else { return }
+
+        progress = clampedProgress
+        if let estimatedRemaining, estimatedRemaining.isFinite, estimatedRemaining >= 0 {
+            self.estimatedRemaining = estimatedRemaining
+        } else {
+            self.estimatedRemaining = nil
         }
     }
 

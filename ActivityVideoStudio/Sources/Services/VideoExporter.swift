@@ -7,6 +7,9 @@ import OSLog
 import VideoToolbox
 
 private let exportLogger = Logger(subsystem: "com.avs", category: "Export")
+private let finalConcatenationProgressStart = 0.99
+private let finalConcatenationProgressSpan = 1.0 - finalConcatenationProgressStart
+private let concatenationProgressPollInterval: UInt64 = 250_000_000
 
 /// Log export progress; DEBUG builds also mirror to /tmp/avs_export.log for CLI runs.
 private func exportLog(_ msg: String) {
@@ -212,7 +215,7 @@ final class VideoExporter: @unchecked Sendable {
                 }
                 let elapsed = Date().timeIntervalSince(start)
                 let remaining = weightedProgress > 0.01 ? elapsed / weightedProgress - elapsed : nil
-                return (Swift.min(weightedProgress, 0.99), remaining)
+                return (Swift.min(weightedProgress, finalConcatenationProgressStart), remaining)
             }
             progress(overall, estimated)
         }
@@ -427,6 +430,7 @@ final class VideoExporter: @unchecked Sendable {
         overlayRenderer: OverlayRenderer,
         config: ExportConfig,
         outputTimeOffset: TimeInterval = 0,
+        onStatus: @escaping StatusCallback = { _ in },
         progress: @escaping ProgressCallback
     ) async throws {
         if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
@@ -461,6 +465,7 @@ final class VideoExporter: @unchecked Sendable {
                 ranges: ranges,
                 overlayRenderer: overlayRenderer,
                 config: config,
+                onStatus: onStatus,
                 progress: progress
             )
         } else if let range = ranges.first {
@@ -876,7 +881,10 @@ final class VideoExporter: @unchecked Sendable {
                 let sampleTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
                 let seconds = CMTimeGetSeconds(sampleTime)
                 if seconds.isFinite {
-                    let fraction = Swift.min(Swift.max(seconds / durationSeconds, 0), 0.99)
+                    let fraction = Swift.min(
+                        Swift.max(seconds / durationSeconds, 0),
+                        finalConcatenationProgressStart
+                    )
                     let elapsed = Date().timeIntervalSince(exportStart)
                     let estimated = fraction > 0.01 ? elapsed / fraction - elapsed : nil
                     progress(fraction, estimated)
@@ -1108,6 +1116,7 @@ final class VideoExporter: @unchecked Sendable {
         ranges: [SourceExportRange],
         overlayRenderer: OverlayRenderer,
         config: ExportConfig,
+        onStatus: @escaping StatusCallback,
         progress: @escaping ProgressCallback
     ) async throws {
         guard !ranges.isEmpty else {
@@ -1191,7 +1200,8 @@ final class VideoExporter: @unchecked Sendable {
         }
 
         if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
-        try await concatenateExportedFiles(tempURLs, outputURL: config.outputURL)
+        onStatus("動画を結合中...")
+        try await concatenateExportedFiles(tempURLs, outputURL: config.outputURL, progress: progress)
         progress(1.0, 0)
     }
 
@@ -1213,7 +1223,8 @@ final class VideoExporter: @unchecked Sendable {
             try await exportSingleVideo(
                 videoURL: videoURLs[0], timeSync: timeSync, segmentIndex: 0,
                 trimSettings: trimSettings.first ?? TrimSettings(),
-                overlayRenderer: overlayRenderer, config: config, progress: progress)
+                overlayRenderer: overlayRenderer, config: config,
+                onStatus: onStatus, progress: progress)
             return
         }
         try Self.cleanUpAbandonedTemporaryFiles(in: config.outputURL.deletingLastPathComponent())
@@ -1355,13 +1366,17 @@ final class VideoExporter: @unchecked Sendable {
         if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
         onStatus("動画を結合中...")
 
-        try await concatenateExportedFiles(tempURLs, outputURL: config.outputURL)
+        try await concatenateExportedFiles(tempURLs, outputURL: config.outputURL, progress: progress)
         progress(1.0, 0)
     }
 
     // MARK: - Helpers
 
-    private func concatenateExportedFiles(_ tempURLs: [URL], outputURL: URL) async throws {
+    private func concatenateExportedFiles(
+        _ tempURLs: [URL],
+        outputURL: URL,
+        progress: @escaping ProgressCallback
+    ) async throws {
         guard !tempURLs.isEmpty else {
             throw ExportError.exportFailed("カットの結果、書き出せる映像がありません")
         }
@@ -1413,11 +1428,31 @@ final class VideoExporter: @unchecked Sendable {
             registerExportSession(concatSession)
             defer { unregisterExportSession(concatSession) }
 
+            progress(finalConcatenationProgressStart, nil)
+            let concatStart = Date()
+            let progressPollingTask = Task {
+                while !Task.isCancelled {
+                    let phaseProgress = Swift.min(Swift.max(Double(concatSession.progress), 0), 1)
+                    let overallProgress = finalConcatenationProgressStart
+                        + phaseProgress * finalConcatenationProgressSpan
+                    let elapsed = Date().timeIntervalSince(concatStart)
+                    let remaining = phaseProgress > 0.01 && phaseProgress < 1
+                        ? Swift.max(elapsed / phaseProgress - elapsed, 0)
+                        : nil
+                    progress(overallProgress, remaining)
+
+                    try? await Task.sleep(nanoseconds: concatenationProgressPollInterval)
+                }
+            }
+
             await withTaskCancellationHandler {
                 await concatSession.export()
             } onCancel: {
                 concatSession.cancelExport()
             }
+            progressPollingTask.cancel()
+            await progressPollingTask.value
+
             if cancellationRequested || Task.isCancelled || concatSession.status == .cancelled {
                 throw ExportError.cancelled
             }
