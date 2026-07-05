@@ -44,6 +44,7 @@ final class VideoExporter: @unchecked Sendable {
         case noVideos
         case cannotCreateWriter
         case exportFailed(String)
+        case insufficientDiskSpace(requiredBytes: Int64, availableBytes: Int64)
         case cancelled
 
         var errorDescription: String? {
@@ -51,7 +52,27 @@ final class VideoExporter: @unchecked Sendable {
             case .noVideos:             return "エクスポートする動画がありません"
             case .cannotCreateWriter:   return "エクスポート処理を作成できませんでした"
             case .exportFailed(let m):  return "エクスポート失敗: \(m)"
+            case .insufficientDiskSpace:
+                return "保存先の空き容量が不足しています"
             case .cancelled:            return "エクスポートがキャンセルされました"
+            }
+        }
+
+        var failureReason: String? {
+            switch self {
+            case let .insufficientDiskSpace(requiredBytes, availableBytes):
+                return "必要な空き容量: \(VideoExporter.formatByteCount(requiredBytes))\n利用可能な空き容量: \(VideoExporter.formatByteCount(availableBytes))"
+            default:
+                return nil
+            }
+        }
+
+        var recoverySuggestion: String? {
+            switch self {
+            case .insufficientDiskSpace:
+                return "保存先の空き容量を増やすか、別の保存先を選択してから再試行してください。"
+            default:
+                return nil
             }
         }
     }
@@ -336,6 +357,8 @@ final class VideoExporter: @unchecked Sendable {
 
     private static let minimumInternalChunkDuration: TimeInterval = 120
     private static let minimumExportableDuration: TimeInterval = 0.05
+    private static let temporaryExportFilePrefix = ".avs_tmp_"
+    private static let estimatedAudioBitRate = 192_000
 
     private static func adaptiveExportConcurrencyLimit() -> Int {
         let cores = Swift.max(ProcessInfo.processInfo.activeProcessorCount, 1)
@@ -407,6 +430,7 @@ final class VideoExporter: @unchecked Sendable {
         progress: @escaping ProgressCallback
     ) async throws {
         if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
+        try Self.cleanUpAbandonedTemporaryFiles(in: config.outputURL.deletingLastPathComponent())
 
         let timeSyncSnapshot = await timeSync.makeExportCopy()
         let assetDuration = try await AVURLAsset(url: videoURL).load(.duration)
@@ -421,6 +445,13 @@ final class VideoExporter: @unchecked Sendable {
         guard !ranges.isEmpty else {
             throw ExportError.exportFailed("カットの結果、書き出せる映像がありません")
         }
+        try Self.checkAvailableCapacity(
+            for: config.outputURL,
+            estimatedOutputBytes: Self.estimatedOutputBytes(
+                duration: ranges.reduce(0) { $0 + $1.duration },
+                config: config
+            )
+        )
 
         if ranges.count > 1 {
             try await exportSingleVideoInRanges(
@@ -581,18 +612,23 @@ final class VideoExporter: @unchecked Sendable {
 
         let sourceVideoProperties = await Self.sourceVideoProperties(for: videoTrack)
         let sourceAudioProperties = await Self.sourceAudioProperties(for: audioTrack)
-        try await exportCompositionWithWriter(
-            composition: composition,
-            videoComposition: videoComposition,
-            videoTrack: compVideoTrack,
-            audioTrack: compAudioTrack,
-            sourceVideoProperties: sourceVideoProperties,
-            sourceAudioProperties: sourceAudioProperties,
-            duration: rangeDuration,
-            config: config,
-            sourceFrameRate: sourceFrameRate,
-            progress: progress
-        )
+        do {
+            try await exportCompositionWithWriter(
+                composition: composition,
+                videoComposition: videoComposition,
+                videoTrack: compVideoTrack,
+                audioTrack: compAudioTrack,
+                sourceVideoProperties: sourceVideoProperties,
+                sourceAudioProperties: sourceAudioProperties,
+                duration: rangeDuration,
+                config: config,
+                sourceFrameRate: sourceFrameRate,
+                progress: progress
+            )
+        } catch {
+            Self.removePartialOutputIfNeeded(at: config.outputURL)
+            throw error
+        }
 
         progress(1.0, 0)
         exportLog("DONE seg=\(segmentIndex)")
@@ -1180,6 +1216,7 @@ final class VideoExporter: @unchecked Sendable {
                 overlayRenderer: overlayRenderer, config: config, progress: progress)
             return
         }
+        try Self.cleanUpAbandonedTemporaryFiles(in: config.outputURL.deletingLastPathComponent())
 
         let timeSyncSnapshot = await timeSync.makeExportCopy()
 
@@ -1235,6 +1272,13 @@ final class VideoExporter: @unchecked Sendable {
         guard !jobs.isEmpty else {
             throw ExportError.exportFailed("カットの結果、書き出せる映像がありません")
         }
+        try Self.checkAvailableCapacity(
+            for: config.outputURL,
+            estimatedOutputBytes: Self.estimatedOutputBytes(
+                duration: jobs.reduce(0) { $0 + $1.range.duration },
+                config: config
+            )
+        )
         let tempURLs = jobs.map { $0.tempURL }
         defer { tempURLs.forEach { try? FileManager.default.removeItem(at: $0) } }
 
@@ -1360,26 +1404,122 @@ final class VideoExporter: @unchecked Sendable {
             try FileManager.default.removeItem(at: outputURL)
         }
 
-        guard let concatSession = AVAssetExportSession(
-            asset: concatComp, presetName: AVAssetExportPresetPassthrough
-        ) else { throw ExportError.cannotCreateWriter }
-        concatSession.outputURL      = outputURL
-        concatSession.outputFileType = .mp4
-        registerExportSession(concatSession)
-        defer { unregisterExportSession(concatSession) }
+        do {
+            guard let concatSession = AVAssetExportSession(
+                asset: concatComp, presetName: AVAssetExportPresetPassthrough
+            ) else { throw ExportError.cannotCreateWriter }
+            concatSession.outputURL      = outputURL
+            concatSession.outputFileType = .mp4
+            registerExportSession(concatSession)
+            defer { unregisterExportSession(concatSession) }
 
-        await withTaskCancellationHandler {
-            await concatSession.export()
-        } onCancel: {
-            concatSession.cancelExport()
+            await withTaskCancellationHandler {
+                await concatSession.export()
+            } onCancel: {
+                concatSession.cancelExport()
+            }
+            if cancellationRequested || Task.isCancelled || concatSession.status == .cancelled {
+                throw ExportError.cancelled
+            }
+            guard concatSession.status == .completed else {
+                throw ExportError.exportFailed(
+                    concatSession.error?.localizedDescription ?? "結合に失敗しました")
+            }
+        } catch {
+            Self.removePartialOutputIfNeeded(at: outputURL)
+            throw error
         }
-        if cancellationRequested || Task.isCancelled || concatSession.status == .cancelled {
-            throw ExportError.cancelled
+    }
+
+    private static func cleanUpAbandonedTemporaryFiles(in directoryURL: URL) throws {
+        let fileManager = FileManager.default
+        let temporaryFiles: [URL]
+        do {
+            temporaryFiles = try fileManager.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsSubdirectoryDescendants]
+            ).filter { $0.lastPathComponent.hasPrefix(temporaryExportFilePrefix) }
+        } catch {
+            throw ExportError.exportFailed("一時ファイルの確認に失敗しました: \(error.localizedDescription)")
         }
-        guard concatSession.status == .completed else {
-            throw ExportError.exportFailed(
-                concatSession.error?.localizedDescription ?? "結合に失敗しました")
+
+        for url in temporaryFiles {
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+            if values?.isDirectory == true { continue }
+
+            do {
+                try fileManager.removeItem(at: url)
+                exportLog("removed abandoned temporary export file: \(url.lastPathComponent)")
+            } catch {
+                throw ExportError.exportFailed("一時ファイルの削除に失敗しました: \(url.lastPathComponent) (\(error.localizedDescription))")
+            }
         }
+    }
+
+    private static func checkAvailableCapacity(
+        for outputURL: URL,
+        estimatedOutputBytes: Int64
+    ) throws {
+        let requiredBytes = requiredCapacityBytes(estimatedOutputBytes: estimatedOutputBytes)
+        guard requiredBytes > 0 else { return }
+
+        let availableBytes = try availableCapacityBytes(for: outputURL.deletingLastPathComponent())
+        guard availableBytes >= requiredBytes else {
+            throw ExportError.insufficientDiskSpace(
+                requiredBytes: requiredBytes,
+                availableBytes: availableBytes
+            )
+        }
+    }
+
+    private static func estimatedOutputBytes(duration: TimeInterval, config: ExportConfig) -> Int64 {
+        guard duration.isFinite, duration > 0 else { return 0 }
+
+        let totalBitRate = Swift.max(config.bitRate + estimatedAudioBitRate, 1)
+        let estimatedBytes = (duration * Double(totalBitRate) / 8).rounded(.up)
+        guard estimatedBytes.isFinite, estimatedBytes > 0 else { return Int64.max }
+        guard estimatedBytes < 9_000_000_000_000_000_000 else { return Int64.max }
+        return Int64(estimatedBytes)
+    }
+
+    private static func requiredCapacityBytes(estimatedOutputBytes: Int64) -> Int64 {
+        let doubled = estimatedOutputBytes.multipliedReportingOverflow(by: 2)
+        return doubled.overflow ? Int64.max : doubled.partialValue
+    }
+
+    private static func availableCapacityBytes(for directoryURL: URL) throws -> Int64 {
+        do {
+            let values = try directoryURL.resourceValues(forKeys: [
+                .volumeAvailableCapacityForImportantUsageKey,
+                .volumeAvailableCapacityKey
+            ])
+            if let capacity = values.volumeAvailableCapacityForImportantUsage {
+                return capacity
+            }
+            if let capacity = values.volumeAvailableCapacity {
+                return Int64(capacity)
+            }
+            throw ExportError.exportFailed("保存先の空き容量を確認できませんでした")
+        } catch let error as ExportError {
+            throw error
+        } catch {
+            throw ExportError.exportFailed("保存先の空き容量を確認できませんでした: \(error.localizedDescription)")
+        }
+    }
+
+    private static func removePartialOutputIfNeeded(at url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: url)
+            exportLog("removed partial export output: \(url.lastPathComponent)")
+        } catch {
+            exportLog("failed to remove partial export output \(url.lastPathComponent): \(error.localizedDescription)")
+        }
+    }
+
+    private static func formatByteCount(_ byteCount: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: byteCount, countStyle: .file)
     }
 
     private static func validOverlayRenderSize(_ renderSize: CGSize, fallback: CGSize) -> CGSize {
