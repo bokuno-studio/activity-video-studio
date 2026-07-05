@@ -42,6 +42,7 @@
 		B10000010000000000000005 /* VideoMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000004 /* VideoMetadata.swift */; };
 		B10000010000000000000006 /* FITParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000005 /* FITParser.swift */; };
 		B10000010000000000000007 /* TimeSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000007 /* TimeSync.swift */; };
+		B10000010000000000000008 /* FITDataPointTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000004 /* FITDataPointTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -78,6 +79,7 @@
 		B20000010000000000000001 /* FITTestFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITTestFixtures.swift; sourceTree = "<group>"; };
 		B20000010000000000000002 /* FITParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITParserTests.swift; sourceTree = "<group>"; };
 		B20000010000000000000003 /* TimeSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeSyncTests.swift; sourceTree = "<group>"; };
+		B20000010000000000000004 /* FITDataPointTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDataPointTests.swift; sourceTree = "<group>"; };
 		B30000010000000000000001 /* ActivityVideoStudioTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ActivityVideoStudioTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -180,6 +182,7 @@
 			isa = PBXGroup;
 			children = (
 				B20000010000000000000001 /* FITTestFixtures.swift */,
+				B20000010000000000000004 /* FITDataPointTests.swift */,
 				B20000010000000000000002 /* FITParserTests.swift */,
 				B20000010000000000000003 /* TimeSyncTests.swift */,
 			);
@@ -298,6 +301,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B10000010000000000000001 /* FITTestFixtures.swift in Sources */,
+				B10000010000000000000008 /* FITDataPointTests.swift in Sources */,
 				B10000010000000000000002 /* FITParserTests.swift in Sources */,
 				B10000010000000000000003 /* TimeSyncTests.swift in Sources */,
 				B10000010000000000000004 /* FITDataPoint.swift in Sources */,

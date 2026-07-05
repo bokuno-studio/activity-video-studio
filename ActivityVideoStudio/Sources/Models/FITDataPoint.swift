@@ -42,11 +42,9 @@ struct FITDataPoint {
             return grade
         }
 
-        guard let currentDistance = distance else { return nil }
-        guard let anchorIndex = dataPoints.lastIndex(where: { point in
-            guard let pointDistance = point.distance else { return false }
-            return pointDistance <= currentDistance
-        }), anchorIndex > 0 else {
+        guard let currentDistance = distance, currentDistance > 0 else { return nil }
+        guard let anchorIndex = Self.lastIndex(in: dataPoints, atOrBeforeDistance: currentDistance),
+              anchorIndex > 0 else {
             return nil
         }
 
@@ -65,6 +63,26 @@ struct FITDataPoint {
 
         let computedGrade = ((currentAltitude - previousAltitude) / distanceDelta) * 100.0
         return computedGrade.isFinite ? computedGrade : nil
+    }
+
+    private static func lastIndex(in dataPoints: [FITDataPoint], atOrBeforeDistance target: Double) -> Int? {
+        guard !dataPoints.isEmpty else { return nil }
+
+        var lo = 0
+        var hi = dataPoints.count - 1
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if let distance = dataPoints[mid].distance, distance <= target {
+                lo = mid
+            } else {
+                hi = mid - 1
+            }
+        }
+
+        guard let distance = dataPoints[lo].distance, distance <= target else {
+            return nil
+        }
+        return lo
     }
 
     func gradeFormatted(fallbackDataPoints dataPoints: [FITDataPoint]) -> String {
