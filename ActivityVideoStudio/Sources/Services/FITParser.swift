@@ -1212,7 +1212,10 @@ final class FITParser {
             return nil
         }
 
-        let value = Double(Float(bitPattern: readUInt32(data: data, offset: offset, littleEndian: littleEndian)))
+        let rawValue = Float(bitPattern: readUInt32(data: data, offset: offset, littleEndian: littleEndian))
+        guard rawValue.isNormal else { return nil }
+
+        let value = Double(rawValue)
         guard isPlausibleBodyTemperature(value) else { return nil }
         return (temperatureKind, value)
     }
@@ -1262,7 +1265,7 @@ final class FITParser {
     }
 
     private func isPlausibleBodyTemperature(_ value: Double) -> Bool {
-        value.isFinite && value > 0 && value < 50
+        value.isNormal && (25.0...45.0).contains(value)
     }
 
     private func isFieldInvalid(data: Data, offset: Int, size: Int, baseType: BaseType?, littleEndian: Bool) -> Bool {
