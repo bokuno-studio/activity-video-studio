@@ -500,10 +500,19 @@ final class VideoExporter: @unchecked Sendable {
         try compVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
 
         let compAudioTrack: AVMutableCompositionTrack?
-        if let audioTrack,
-           let audioCompositionTrack = composition.addMutableTrack(
-               withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
-            try? audioCompositionTrack.insertTimeRange(timeRange, of: audioTrack, at: .zero)
+        if let audioTrack {
+            guard let audioCompositionTrack = composition.addMutableTrack(
+                withMediaType: .audio,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            ) else {
+                throw ExportError.exportFailed("音声トラックを出力に追加できませんでした")
+            }
+
+            do {
+                try audioCompositionTrack.insertTimeRange(timeRange, of: audioTrack, at: .zero)
+            } catch {
+                throw ExportError.exportFailed(Self.audioTransferFailureMessage(error: error))
+            }
             compAudioTrack = audioCompositionTrack
         } else {
             compAudioTrack = nil
@@ -641,6 +650,8 @@ final class VideoExporter: @unchecked Sendable {
             if reader.canAdd(output) {
                 reader.add(output)
                 audioOutput = output
+            } else {
+                throw ExportError.exportFailed("音声トラックを読み込みに追加できませんでした")
             }
         }
 
@@ -658,11 +669,15 @@ final class VideoExporter: @unchecked Sendable {
         writer.add(videoInput)
 
         var audioInput: AVAssetWriterInput?
-        if audioOutput != nil, let audioSettings = writerSettings.audioSettings {
+        if audioOutput != nil {
+            guard let audioSettings = writerSettings.audioSettings else {
+                throw ExportError.exportFailed("音声の書き出し設定を作成できませんでした")
+            }
+
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
             input.expectsMediaDataInRealTime = false
             guard writer.canAdd(input) else {
-                throw ExportError.cannotCreateWriter
+                throw ExportError.exportFailed("音声トラックを書き出しに追加できませんでした")
             }
             writer.add(input)
             audioInput = input
@@ -697,6 +712,7 @@ final class VideoExporter: @unchecked Sendable {
                             reader: reader,
                             writer: writer,
                             duration: duration,
+                            mediaDescription: "映像",
                             exportStart: exportStart,
                             reportProgress: true,
                             progress: progress
@@ -711,6 +727,7 @@ final class VideoExporter: @unchecked Sendable {
                                 reader: reader,
                                 writer: writer,
                                 duration: duration,
+                                mediaDescription: "音声",
                                 exportStart: exportStart,
                                 reportProgress: false,
                                 progress: progress
@@ -766,6 +783,7 @@ final class VideoExporter: @unchecked Sendable {
         reader: AVAssetReader,
         writer: AVAssetWriter,
         duration: CMTime,
+        mediaDescription: String,
         exportStart: Date,
         reportProgress: Bool,
         progress: @escaping ProgressCallback
@@ -777,10 +795,18 @@ final class VideoExporter: @unchecked Sendable {
                 throw ExportError.cancelled
             }
             if writer.status == .failed {
-                throw ExportError.exportFailed(writer.error?.localizedDescription ?? "映像の書き込みに失敗しました")
+                throw ExportError.exportFailed(Self.mediaFailureMessage(
+                    mediaDescription: mediaDescription,
+                    action: "書き込み",
+                    error: writer.error
+                ))
             }
             if reader.status == .failed {
-                throw ExportError.exportFailed(reader.error?.localizedDescription ?? "映像の読み込みに失敗しました")
+                throw ExportError.exportFailed(Self.mediaFailureMessage(
+                    mediaDescription: mediaDescription,
+                    action: "読み込み",
+                    error: reader.error
+                ))
             }
 
             while !input.isReadyForMoreMediaData {
@@ -788,7 +814,11 @@ final class VideoExporter: @unchecked Sendable {
                     throw ExportError.cancelled
                 }
                 if writer.status == .failed {
-                    throw ExportError.exportFailed(writer.error?.localizedDescription ?? "映像の書き込みに失敗しました")
+                    throw ExportError.exportFailed(Self.mediaFailureMessage(
+                        mediaDescription: mediaDescription,
+                        action: "書き込み",
+                        error: writer.error
+                    ))
                 }
                 try await Task.sleep(nanoseconds: 5_000_000)
             }
@@ -799,7 +829,11 @@ final class VideoExporter: @unchecked Sendable {
             }
 
             if !input.append(sampleBuffer) {
-                throw ExportError.exportFailed(writer.error?.localizedDescription ?? "映像の書き込みに失敗しました")
+                throw ExportError.exportFailed(Self.mediaFailureMessage(
+                    mediaDescription: mediaDescription,
+                    action: "書き込み",
+                    error: writer.error
+                ))
             }
 
             if reportProgress, durationSeconds.isFinite, durationSeconds > 0 {
@@ -922,6 +956,20 @@ final class VideoExporter: @unchecked Sendable {
         [
             AVFormatIDKey: kAudioFormatLinearPCM
         ]
+    }
+
+    private static func audioTransferFailureMessage(error: Error) -> String {
+        "音声のコピーに失敗しました: \(error.localizedDescription)"
+    }
+
+    private static func mediaFailureMessage(
+        mediaDescription: String,
+        action: String,
+        error: Error?
+    ) -> String {
+        let baseMessage = "\(mediaDescription)の\(action)に失敗しました"
+        guard let error else { return baseMessage }
+        return "\(baseMessage): \(error.localizedDescription)"
     }
 
     private static func outputSettingsPreset(
@@ -1295,7 +1343,16 @@ final class VideoExporter: @unchecked Sendable {
                 }
                 try vcTrack.insertTimeRange(r, of: vt, at: insertTime)
             }
-            if let at = t.first(where: { $0.mediaType == .audio }) { try? acTrack?.insertTimeRange(r, of: at, at: insertTime) }
+            if let at = t.first(where: { $0.mediaType == .audio }) {
+                guard let acTrack else {
+                    throw ExportError.exportFailed("音声トラックを結合出力に追加できませんでした")
+                }
+                do {
+                    try acTrack.insertTimeRange(r, of: at, at: insertTime)
+                } catch {
+                    throw ExportError.exportFailed(Self.audioTransferFailureMessage(error: error))
+                }
+            }
             insertTime = CMTimeAdd(insertTime, d)
         }
 
