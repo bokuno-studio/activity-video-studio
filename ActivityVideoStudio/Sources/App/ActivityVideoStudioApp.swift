@@ -545,6 +545,7 @@ enum HeadlessExporter {
         }
         let renderer = OverlayRenderer(videoSize: CGSize(width: w, height: h), settings: overlaySettings)
         renderer.allDataPoints = pts
+        renderer.buildElevationGainCache()
         renderer.trackCoordinates = pts.compactMap { $0.coordinate }
         let textSize = try optionalDouble("--text-size", in: args)
         let textPosition = try value("--text-pos", in: args)

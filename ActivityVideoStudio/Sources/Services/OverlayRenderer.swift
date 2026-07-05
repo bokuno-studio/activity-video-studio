@@ -13,6 +13,7 @@ final class OverlayRenderer {
         didSet {
             hasDistanceData = allDataPoints.contains { $0.distance != nil }
             invalidateElevationProfileCache()
+            buildElevationGainCache()
         }
     }
     var textOverlays: [TextOverlay] = []
