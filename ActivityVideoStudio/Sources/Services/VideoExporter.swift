@@ -4,6 +4,7 @@ import CoreGraphics
 import CoreImage
 import AppKit
 import OSLog
+import VideoToolbox
 
 private let exportLogger = Logger(subsystem: "com.avs", category: "Export")
 
@@ -30,7 +31,7 @@ private func locked<T>(_ lock: NSLock, _ body: () throws -> T) rethrows -> T {
 
 // MARK: - VideoExporter
 
-/// Exports video with overlay composited using AVVideoComposition + AVAssetExportSession.
+/// Exports video with overlay composited using AVVideoComposition + AVAssetWriter.
 ///
 /// ## macOS 26 note
 /// `AVMutableVideoComposition` + `customVideoCompositorClass` is deprecated in macOS 26 and
@@ -48,7 +49,7 @@ final class VideoExporter: @unchecked Sendable {
         var errorDescription: String? {
             switch self {
             case .noVideos:             return "エクスポートする動画がありません"
-            case .cannotCreateWriter:   return "エクスポートセッションを作成できませんでした"
+            case .cannotCreateWriter:   return "エクスポート処理を作成できませんでした"
             case .exportFailed(let m):  return "エクスポート失敗: \(m)"
             case .cancelled:            return "エクスポートがキャンセルされました"
             }
@@ -59,7 +60,7 @@ final class VideoExporter: @unchecked Sendable {
         var outputURL: URL
         var width: Int  = 1920
         var height: Int = 1080
-        var bitRate: Int = 10_000_000   // informational; preset controls actual quality
+        var bitRate: Int = 10_000_000
         var frameRate: Int = 30
         var overlayCacheQuantum: TimeInterval = 0.25
     }
@@ -210,16 +211,81 @@ final class VideoExporter: @unchecked Sendable {
         let statusMessage: String
     }
 
+    private struct SourceColorProperties {
+        let primaries: String
+        let transferFunction: String
+        let yCbCrMatrix: String
+
+        var videoSettings: [String: String] {
+            [
+                AVVideoColorPrimariesKey: primaries,
+                AVVideoTransferFunctionKey: transferFunction,
+                AVVideoYCbCrMatrixKey: yCbCrMatrix
+            ]
+        }
+
+        var isHDR: Bool {
+            transferFunction == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String) ||
+            transferFunction == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String)
+        }
+
+        static let defaultHLG = SourceColorProperties(
+            primaries: AVVideoColorPrimaries_ITU_R_2020,
+            transferFunction: AVVideoTransferFunction_ITU_R_2100_HLG,
+            yCbCrMatrix: AVVideoYCbCrMatrix_ITU_R_2020
+        )
+    }
+
+    private struct SourceVideoProperties {
+        let formatDescription: CMFormatDescription?
+        let colorProperties: SourceColorProperties?
+        let is10Bit: Bool
+
+        var isHDR: Bool {
+            colorProperties?.isHDR == true
+        }
+
+        var requiresHEVCMain10: Bool {
+            is10Bit || isHDR
+        }
+
+        var writerColorProperties: SourceColorProperties? {
+            if let colorProperties { return colorProperties }
+            return isHDR ? .defaultHLG : nil
+        }
+    }
+
+    private struct SourceAudioProperties {
+        let formatDescription: CMFormatDescription?
+        let sampleRate: Double?
+        let channelCount: Int?
+
+        static let none = SourceAudioProperties(
+            formatDescription: nil,
+            sampleRate: nil,
+            channelCount: nil
+        )
+    }
+
+    private struct WriterOutputSettings {
+        let videoSettings: [String: Any]
+        let audioSettings: [String: Any]?
+        let videoReaderSettings: [String: Any]
+        let codec: AVVideoCodecType
+    }
+
     private var isCancelled = false
     private var activeExportSessions: [ObjectIdentifier: AVAssetExportSession] = [:]
+    private var activeAssetReaders: [ObjectIdentifier: AVAssetReader] = [:]
     private let stateLock = NSLock()
 
     func cancel() {
-        let sessions = locked(stateLock) { () -> [AVAssetExportSession] in
+        let active = locked(stateLock) { () -> ([AVAssetExportSession], [AVAssetReader]) in
             isCancelled = true
-            return Array(activeExportSessions.values)
+            return (Array(activeExportSessions.values), Array(activeAssetReaders.values))
         }
-        sessions.forEach { $0.cancelExport() }
+        active.0.forEach { $0.cancelExport() }
+        active.1.forEach { $0.cancelReading() }
     }
 
     private var cancellationRequested: Bool {
@@ -242,9 +308,30 @@ final class VideoExporter: @unchecked Sendable {
         }
     }
 
+    private func registerAssetReader(_ reader: AVAssetReader) {
+        let shouldCancel = locked(stateLock) { () -> Bool in
+            activeAssetReaders[ObjectIdentifier(reader)] = reader
+            return isCancelled
+        }
+        if shouldCancel {
+            reader.cancelReading()
+        }
+    }
+
+    private func unregisterAssetReader(_ reader: AVAssetReader) {
+        _ = locked(stateLock) {
+            activeAssetReaders.removeValue(forKey: ObjectIdentifier(reader))
+        }
+    }
+
     private func cancelActiveExportSessions() {
         let sessions = locked(stateLock) { Array(activeExportSessions.values) }
         sessions.forEach { $0.cancelExport() }
+    }
+
+    private func cancelActiveAssetReaders() {
+        let readers = locked(stateLock) { Array(activeAssetReaders.values) }
+        readers.forEach { $0.cancelReading() }
     }
 
     private static let minimumInternalChunkDuration: TimeInterval = 120
@@ -411,10 +498,14 @@ final class VideoExporter: @unchecked Sendable {
         let timeRange = CMTimeRange(start: startTime, duration: rangeDuration)
         try compVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
 
+        let compAudioTrack: AVMutableCompositionTrack?
         if let audioTrack,
-           let compAudioTrack = composition.addMutableTrack(
+           let audioCompositionTrack = composition.addMutableTrack(
                withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
-            try? compAudioTrack.insertTimeRange(timeRange, of: audioTrack, at: .zero)
+            try? audioCompositionTrack.insertTimeRange(timeRange, of: audioTrack, at: .zero)
+            compAudioTrack = audioCompositionTrack
+        } else {
+            compAudioTrack = nil
         }
 
         // Per-frame overlay compositing.
@@ -478,51 +569,20 @@ final class VideoExporter: @unchecked Sendable {
             try FileManager.default.removeItem(at: config.outputURL)
         }
 
-        let preset = Self.exportPreset(for: config)
-        guard let exportSession = AVAssetExportSession(asset: composition, presetName: preset) else {
-            throw ExportError.cannotCreateWriter
-        }
-        exportSession.videoComposition        = videoComposition
-        exportSession.outputURL               = config.outputURL
-        exportSession.outputFileType          = .mp4
-        exportSession.shouldOptimizeForNetworkUse = true
-        registerExportSession(exportSession)
-        defer { unregisterExportSession(exportSession) }
-
-        exportLog("starting AVAssetExportSession (preset=\(preset))...")
-
-        let exportStart = Date()
-        let progressTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                let fraction = Double(exportSession.progress)
-                let elapsed  = Date().timeIntervalSince(exportStart)
-                let estimated: TimeInterval? = fraction > 0.01 ? elapsed / fraction - elapsed : nil
-                progress(fraction, estimated)
-            }
-        }
-
-        await withTaskCancellationHandler {
-            await exportSession.export()
-        } onCancel: {
-            exportSession.cancelExport()
-        }
-        progressTask.cancel()
-
-        if let err = exportSession.error as NSError? {
-            exportLog("export finished: status=\(exportSession.status.rawValue) error domain=\(err.domain) code=\(err.code) desc=\(err.localizedDescription) userInfo=\(err.userInfo)")
-        } else {
-            exportLog("export finished: status=\(exportSession.status.rawValue) error=none")
-        }
-
-        if cancellationRequested || Task.isCancelled || exportSession.status == .cancelled {
-            throw ExportError.cancelled
-        }
-        guard exportSession.status == .completed else {
-            throw ExportError.exportFailed(
-                exportSession.error?.localizedDescription ?? "エクスポート失敗"
-            )
-        }
+        let sourceVideoProperties = await Self.sourceVideoProperties(for: videoTrack)
+        let sourceAudioProperties = await Self.sourceAudioProperties(for: audioTrack)
+        try await exportCompositionWithWriter(
+            composition: composition,
+            videoComposition: videoComposition,
+            videoTrack: compVideoTrack,
+            audioTrack: compAudioTrack,
+            sourceVideoProperties: sourceVideoProperties,
+            sourceAudioProperties: sourceAudioProperties,
+            duration: rangeDuration,
+            config: config,
+            sourceFrameRate: sourceFrameRate,
+            progress: progress
+        )
 
         progress(1.0, 0)
         exportLog("DONE seg=\(segmentIndex)")
@@ -534,6 +594,426 @@ final class VideoExporter: @unchecked Sendable {
             return nominalFrameRate
         }
         return fallback.isFinite && fallback > 0 ? fallback : 30
+    }
+
+    private func exportCompositionWithWriter(
+        composition: AVAsset,
+        videoComposition: AVVideoComposition,
+        videoTrack: AVAssetTrack,
+        audioTrack: AVAssetTrack?,
+        sourceVideoProperties: SourceVideoProperties,
+        sourceAudioProperties: SourceAudioProperties,
+        duration: CMTime,
+        config: ExportConfig,
+        sourceFrameRate: TimeInterval,
+        progress: @escaping ProgressCallback
+    ) async throws {
+        let writerSettings = Self.writerOutputSettings(
+            for: config,
+            sourceVideoProperties: sourceVideoProperties,
+            sourceAudioProperties: sourceAudioProperties,
+            sourceFrameRate: sourceFrameRate,
+            hasAudio: audioTrack != nil
+        )
+
+        let reader = try AVAssetReader(asset: composition)
+        reader.timeRange = CMTimeRange(start: .zero, duration: duration)
+
+        let videoOutput = AVAssetReaderVideoCompositionOutput(
+            videoTracks: [videoTrack],
+            videoSettings: writerSettings.videoReaderSettings
+        )
+        videoOutput.videoComposition = videoComposition
+        videoOutput.alwaysCopiesSampleData = false
+        guard reader.canAdd(videoOutput) else {
+            throw ExportError.cannotCreateWriter
+        }
+        reader.add(videoOutput)
+
+        var audioOutput: AVAssetReaderTrackOutput?
+        if let audioTrack {
+            let output = AVAssetReaderTrackOutput(
+                track: audioTrack,
+                outputSettings: Self.audioReaderOutputSettings()
+            )
+            output.alwaysCopiesSampleData = false
+            if reader.canAdd(output) {
+                reader.add(output)
+                audioOutput = output
+            }
+        }
+
+        let writer = try AVAssetWriter(outputURL: config.outputURL, fileType: .mp4)
+        writer.shouldOptimizeForNetworkUse = true
+
+        let videoInput = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: writerSettings.videoSettings
+        )
+        videoInput.expectsMediaDataInRealTime = false
+        guard writer.canAdd(videoInput) else {
+            throw ExportError.cannotCreateWriter
+        }
+        writer.add(videoInput)
+
+        var audioInput: AVAssetWriterInput?
+        if audioOutput != nil, let audioSettings = writerSettings.audioSettings {
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            input.expectsMediaDataInRealTime = false
+            guard writer.canAdd(input) else {
+                throw ExportError.cannotCreateWriter
+            }
+            writer.add(input)
+            audioInput = input
+        }
+
+        registerAssetReader(reader)
+        defer { unregisterAssetReader(reader) }
+
+        exportLog(
+            "starting AVAssetWriter codec=\(writerSettings.codec.rawValue) " +
+            "bitrate=\(config.bitRate) hdr=\(sourceVideoProperties.isHDR) " +
+            "10bit=\(sourceVideoProperties.is10Bit)"
+        )
+
+        guard writer.startWriting() else {
+            throw ExportError.exportFailed(writer.error?.localizedDescription ?? "書き出し開始に失敗しました")
+        }
+        guard reader.startReading() else {
+            writer.cancelWriting()
+            throw ExportError.exportFailed(reader.error?.localizedDescription ?? "読み込み開始に失敗しました")
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        let exportStart = Date()
+        do {
+            try await withTaskCancellationHandler {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        try await self.appendSamples(
+                            from: videoOutput,
+                            to: videoInput,
+                            reader: reader,
+                            writer: writer,
+                            duration: duration,
+                            exportStart: exportStart,
+                            reportProgress: true,
+                            progress: progress
+                        )
+                    }
+
+                    if let audioOutput, let audioInput {
+                        group.addTask {
+                            try await self.appendSamples(
+                                from: audioOutput,
+                                to: audioInput,
+                                reader: reader,
+                                writer: writer,
+                                duration: duration,
+                                exportStart: exportStart,
+                                reportProgress: false,
+                                progress: progress
+                            )
+                        }
+                    }
+
+                    do {
+                        try await group.waitForAll()
+                    } catch {
+                        group.cancelAll()
+                        throw error
+                    }
+                }
+            } onCancel: {
+                reader.cancelReading()
+            }
+        } catch {
+            reader.cancelReading()
+            writer.cancelWriting()
+            if cancellationRequested || Task.isCancelled {
+                throw ExportError.cancelled
+            }
+            throw error
+        }
+
+        if cancellationRequested || Task.isCancelled || reader.status == .cancelled {
+            writer.cancelWriting()
+            throw ExportError.cancelled
+        }
+        if reader.status == .failed {
+            writer.cancelWriting()
+            throw ExportError.exportFailed(reader.error?.localizedDescription ?? "映像の読み込みに失敗しました")
+        }
+        guard writer.status == .writing else {
+            throw ExportError.exportFailed(writer.error?.localizedDescription ?? "映像の書き込みに失敗しました")
+        }
+
+        await Self.finishWriting(writer)
+
+        if cancellationRequested || Task.isCancelled || writer.status == .cancelled {
+            throw ExportError.cancelled
+        }
+        guard writer.status == .completed else {
+            throw ExportError.exportFailed(writer.error?.localizedDescription ?? "エクスポート失敗")
+        }
+        exportLog("writer finished: status=\(writer.status.rawValue) error=none")
+    }
+
+    private func appendSamples(
+        from output: AVAssetReaderOutput,
+        to input: AVAssetWriterInput,
+        reader: AVAssetReader,
+        writer: AVAssetWriter,
+        duration: CMTime,
+        exportStart: Date,
+        reportProgress: Bool,
+        progress: @escaping ProgressCallback
+    ) async throws {
+        let durationSeconds = CMTimeGetSeconds(duration)
+
+        while true {
+            if cancellationRequested || Task.isCancelled || reader.status == .cancelled || writer.status == .cancelled {
+                throw ExportError.cancelled
+            }
+            if writer.status == .failed {
+                throw ExportError.exportFailed(writer.error?.localizedDescription ?? "映像の書き込みに失敗しました")
+            }
+            if reader.status == .failed {
+                throw ExportError.exportFailed(reader.error?.localizedDescription ?? "映像の読み込みに失敗しました")
+            }
+
+            while !input.isReadyForMoreMediaData {
+                if cancellationRequested || Task.isCancelled || reader.status == .cancelled || writer.status == .cancelled {
+                    throw ExportError.cancelled
+                }
+                if writer.status == .failed {
+                    throw ExportError.exportFailed(writer.error?.localizedDescription ?? "映像の書き込みに失敗しました")
+                }
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+
+            guard let sampleBuffer = output.copyNextSampleBuffer() else {
+                input.markAsFinished()
+                return
+            }
+
+            if !input.append(sampleBuffer) {
+                throw ExportError.exportFailed(writer.error?.localizedDescription ?? "映像の書き込みに失敗しました")
+            }
+
+            if reportProgress, durationSeconds.isFinite, durationSeconds > 0 {
+                let sampleTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                let seconds = CMTimeGetSeconds(sampleTime)
+                if seconds.isFinite {
+                    let fraction = Swift.min(Swift.max(seconds / durationSeconds, 0), 0.99)
+                    let elapsed = Date().timeIntervalSince(exportStart)
+                    let estimated = fraction > 0.01 ? elapsed / fraction - elapsed : nil
+                    progress(fraction, estimated)
+                }
+            }
+        }
+    }
+
+    private static func finishWriting(_ writer: AVAssetWriter) async {
+        await withCheckedContinuation { continuation in
+            writer.finishWriting {
+                continuation.resume()
+            }
+        }
+    }
+
+    private static func writerOutputSettings(
+        for config: ExportConfig,
+        sourceVideoProperties: SourceVideoProperties,
+        sourceAudioProperties: SourceAudioProperties,
+        sourceFrameRate: TimeInterval,
+        hasAudio: Bool
+    ) -> WriterOutputSettings {
+        let codec: AVVideoCodecType = sourceVideoProperties.requiresHEVCMain10 ? .hevc : .h264
+        let assistant = AVOutputSettingsAssistant(
+            preset: outputSettingsPreset(for: config, codec: codec)
+        )
+        if let formatDescription = sourceVideoProperties.formatDescription {
+            assistant?.sourceVideoFormat = formatDescription
+        }
+        if let formatDescription = sourceAudioProperties.formatDescription {
+            assistant?.sourceAudioFormat = formatDescription
+        }
+        let frameRate = sourceFrameRate.isFinite && sourceFrameRate > 0 ? sourceFrameRate : TimeInterval(config.frameRate)
+        let roundedFrameRate = Swift.max(Int(frameRate.rounded()), 1)
+        assistant?.sourceVideoAverageFrameDuration = CMTime(value: 1, timescale: CMTimeScale(roundedFrameRate))
+
+        var videoSettings = assistant?.videoSettings ?? fallbackVideoSettings(
+            config: config,
+            codec: codec
+        )
+        videoSettings[AVVideoCodecKey] = codec
+        videoSettings[AVVideoWidthKey] = config.width
+        videoSettings[AVVideoHeightKey] = config.height
+
+        var compression = videoSettings[AVVideoCompressionPropertiesKey] as? [String: Any] ?? [:]
+        compression[AVVideoAverageBitRateKey] = config.bitRate
+        compression[AVVideoExpectedSourceFrameRateKey] = roundedFrameRate
+        compression[AVVideoMaxKeyFrameIntervalDurationKey] = 2
+        if codec == .hevc {
+            compression[AVVideoProfileLevelKey] = kVTProfileLevel_HEVC_Main10_AutoLevel as String
+            compression[kVTCompressionPropertyKey_HDRMetadataInsertionMode as String] = kVTHDRMetadataInsertionMode_Auto as String
+            compression[kVTCompressionPropertyKey_PreserveDynamicHDRMetadata as String] = true
+            videoSettings[AVVideoAllowWideColorKey] = true
+            if let colorProperties = sourceVideoProperties.writerColorProperties {
+                videoSettings[AVVideoColorPropertiesKey] = colorProperties.videoSettings
+            }
+        } else {
+            compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
+        }
+        videoSettings[AVVideoCompressionPropertiesKey] = compression
+
+        var videoReaderSettings: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: sourceVideoProperties.requiresHEVCMain10
+                ? Int(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
+                : Int(kCVPixelFormatType_32BGRA),
+            kCVPixelBufferWidthKey as String: config.width,
+            kCVPixelBufferHeightKey as String: config.height
+        ]
+        if sourceVideoProperties.requiresHEVCMain10 {
+            videoReaderSettings[AVVideoAllowWideColorKey] = true
+            if let colorProperties = sourceVideoProperties.writerColorProperties {
+                videoReaderSettings[AVVideoColorPropertiesKey] = colorProperties.videoSettings
+            }
+        }
+
+        let audioSettings = hasAudio
+            ? (assistant?.audioSettings ?? fallbackAudioSettings(sourceAudioProperties))
+            : nil
+
+        return WriterOutputSettings(
+            videoSettings: videoSettings,
+            audioSettings: audioSettings,
+            videoReaderSettings: videoReaderSettings,
+            codec: codec
+        )
+    }
+
+    private static func fallbackVideoSettings(
+        config: ExportConfig,
+        codec: AVVideoCodecType
+    ) -> [String: Any] {
+        [
+            AVVideoCodecKey: codec,
+            AVVideoWidthKey: config.width,
+            AVVideoHeightKey: config.height,
+            AVVideoCompressionPropertiesKey: [
+                AVVideoAverageBitRateKey: config.bitRate
+            ]
+        ]
+    }
+
+    private static func fallbackAudioSettings(_ properties: SourceAudioProperties) -> [String: Any] {
+        [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVEncoderBitRateKey: 192_000,
+            AVSampleRateKey: properties.sampleRate ?? 48_000,
+            AVNumberOfChannelsKey: properties.channelCount ?? 2
+        ]
+    }
+
+    private static func audioReaderOutputSettings() -> [String: Any] {
+        [
+            AVFormatIDKey: kAudioFormatLinearPCM
+        ]
+    }
+
+    private static func outputSettingsPreset(
+        for config: ExportConfig,
+        codec: AVVideoCodecType
+    ) -> AVOutputSettingsPreset {
+        if codec == .hevc {
+            return config.width >= 3840 ? .hevc3840x2160 : .hevc1920x1080
+        }
+        if config.width >= 3840 { return .preset3840x2160 }
+        if config.width >= 1920 { return .preset1920x1080 }
+        return .preset1280x720
+    }
+
+    private static func sourceVideoProperties(for track: AVAssetTrack) async -> SourceVideoProperties {
+        let formatDescriptions = (try? await track.load(.formatDescriptions)) ?? []
+        let formatDescription = formatDescriptions.first
+        var detectedColorProperties: SourceColorProperties?
+        for formatDescription in formatDescriptions {
+            if let properties = sourceColorProperties(from: formatDescription) {
+                detectedColorProperties = properties
+                break
+            }
+        }
+        let is10Bit = formatDescriptions.contains { formatDescription in
+            bitDepth(from: formatDescription).map { $0 >= 10 } ?? false
+        }
+        let inferredHDR = detectedColorProperties?.isHDR == true ||
+            formatDescriptions.contains { isHDRTagged(formatDescription: $0) }
+
+        return SourceVideoProperties(
+            formatDescription: formatDescription,
+            colorProperties: detectedColorProperties ?? (inferredHDR ? .defaultHLG : nil),
+            is10Bit: is10Bit || inferredHDR
+        )
+    }
+
+    private static func sourceAudioProperties(for track: AVAssetTrack?) async -> SourceAudioProperties {
+        guard let track else { return .none }
+        let formatDescription = (try? await track.load(.formatDescriptions))?.first
+        guard let formatDescription,
+              let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) else {
+            return SourceAudioProperties(formatDescription: formatDescription, sampleRate: nil, channelCount: nil)
+        }
+
+        let audioStreamDescription = streamDescription.pointee
+        return SourceAudioProperties(
+            formatDescription: formatDescription,
+            sampleRate: audioStreamDescription.mSampleRate > 0 ? audioStreamDescription.mSampleRate : nil,
+            channelCount: audioStreamDescription.mChannelsPerFrame > 0
+                ? Int(audioStreamDescription.mChannelsPerFrame)
+                : nil
+        )
+    }
+
+    private static func bitDepth(from formatDescription: CMFormatDescription) -> Int? {
+        guard let extensions = CMFormatDescriptionGetExtensions(formatDescription) as NSDictionary? else {
+            return nil
+        }
+        return (extensions[kCMFormatDescriptionExtension_BitsPerComponent] as? NSNumber)?.intValue
+    }
+
+    private static func isHDRTagged(formatDescription: CMFormatDescription) -> Bool {
+        guard let extensions = CMFormatDescriptionGetExtensions(formatDescription) as NSDictionary? else {
+            return false
+        }
+
+        let primaries = extensions[kCMFormatDescriptionExtension_ColorPrimaries] as? String
+        let transferFunction = extensions[kCMFormatDescriptionExtension_TransferFunction] as? String
+
+        return primaries == (kCMFormatDescriptionColorPrimaries_ITU_R_2020 as String) ||
+            transferFunction == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String) ||
+            transferFunction == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String)
+    }
+
+    private static func sourceColorProperties(from formatDescription: CMFormatDescription) -> SourceColorProperties? {
+        guard let extensions = CMFormatDescriptionGetExtensions(formatDescription) as NSDictionary? else {
+            return nil
+        }
+
+        let primaries = extensions[kCMFormatDescriptionExtension_ColorPrimaries] as? String
+        let transferFunction = extensions[kCMFormatDescriptionExtension_TransferFunction] as? String
+        let yCbCrMatrix = extensions[kCMFormatDescriptionExtension_YCbCrMatrix] as? String
+
+        guard let primaries, let transferFunction, let yCbCrMatrix else {
+            return nil
+        }
+
+        return SourceColorProperties(
+            primaries: primaries,
+            transferFunction: transferFunction,
+            yCbCrMatrix: yCbCrMatrix
+        )
     }
 
     private func exportSingleVideoInRanges(
@@ -620,6 +1100,7 @@ final class VideoExporter: @unchecked Sendable {
             } catch {
                 group.cancelAll()
                 cancelActiveExportSessions()
+                cancelActiveAssetReaders()
                 throw error
             }
         }
@@ -772,6 +1253,7 @@ final class VideoExporter: @unchecked Sendable {
             } catch {
                 group.cancelAll()
                 cancelActiveExportSessions()
+                cancelActiveAssetReaders()
                 throw error
             }
         }
@@ -833,12 +1315,6 @@ final class VideoExporter: @unchecked Sendable {
             throw ExportError.exportFailed(
                 concatSession.error?.localizedDescription ?? "結合に失敗しました")
         }
-    }
-
-    private static func exportPreset(for config: ExportConfig) -> String {
-        if config.width >= 3840 { return AVAssetExportPreset3840x2160 }
-        if config.width >= 1920 { return AVAssetExportPreset1920x1080 }
-        return AVAssetExportPreset1280x720
     }
 
     private static func validOverlayRenderSize(_ renderSize: CGSize, fallback: CGSize) -> CGSize {
