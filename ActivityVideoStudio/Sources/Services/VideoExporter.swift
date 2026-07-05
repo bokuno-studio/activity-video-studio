@@ -9,6 +9,10 @@ import VideoToolbox
 private let exportLogger = Logger(subsystem: "com.avs", category: "Export")
 private let finalConcatenationProgressStart = 0.99
 private let finalConcatenationProgressSpan = 1.0 - finalConcatenationProgressStart
+private let finalVideoOnlyConcatenationProgressStart = 0.99
+private let finalVideoOnlyConcatenationProgressSpan = 0.005
+private let finalAudioMuxProgressStart = 0.995
+private let finalAudioMuxProgressSpan = 1.0 - finalAudioMuxProgressStart
 private let concatenationProgressPollInterval: UInt64 = 250_000_000
 
 /// Log export progress; DEBUG builds also mirror to /tmp/avs_export.log for CLI runs.
@@ -222,9 +226,78 @@ final class VideoExporter: @unchecked Sendable {
     }
 
     private struct SourceExportRange: Sendable {
-        let sourceStartTime: TimeInterval
-        let outputStartTime: TimeInterval
-        let duration: TimeInterval
+        let sourceStartValue: CMTimeValue
+        let sourceDurationValue: CMTimeValue
+        let sourceTimescale: CMTimeScale
+        let outputStartValue: CMTimeValue
+        let outputStartTimescale: CMTimeScale
+
+        init(
+            sourceStartFrame: Int64,
+            frameCount: Int64,
+            sourceFrameDuration: CMTime,
+            outputStart: CMTime
+        ) {
+            sourceStartValue = sourceFrameDuration.value * sourceStartFrame
+            sourceDurationValue = sourceFrameDuration.value * frameCount
+            sourceTimescale = sourceFrameDuration.timescale
+            outputStartValue = outputStart.value
+            outputStartTimescale = outputStart.timescale
+        }
+
+        init(sourceStart: CMTime, sourceDuration: CMTime, outputStart: CMTime) {
+            let normalizedDuration = CMTimeConvertScale(
+                sourceDuration,
+                timescale: sourceStart.timescale,
+                method: .roundHalfAwayFromZero
+            )
+            sourceStartValue = sourceStart.value
+            sourceDurationValue = normalizedDuration.value
+            sourceTimescale = sourceStart.timescale
+            outputStartValue = outputStart.value
+            outputStartTimescale = outputStart.timescale
+        }
+
+        var sourceStart: CMTime {
+            CMTime(value: sourceStartValue, timescale: sourceTimescale)
+        }
+
+        var sourceDuration: CMTime {
+            CMTime(value: sourceDurationValue, timescale: sourceTimescale)
+        }
+
+        var sourceEnd: CMTime {
+            CMTimeAdd(sourceStart, sourceDuration)
+        }
+
+        var sourceTimeRange: CMTimeRange {
+            CMTimeRange(start: sourceStart, duration: sourceDuration)
+        }
+
+        var outputStart: CMTime {
+            CMTime(value: outputStartValue, timescale: outputStartTimescale)
+        }
+
+        var outputEnd: CMTime {
+            CMTimeAdd(outputStart, sourceDuration)
+        }
+
+        var sourceStartTime: TimeInterval {
+            CMTimeGetSeconds(sourceStart)
+        }
+
+        var outputStartTime: TimeInterval {
+            CMTimeGetSeconds(outputStart)
+        }
+
+        var duration: TimeInterval {
+            CMTimeGetSeconds(sourceDuration)
+        }
+    }
+
+    private struct SourceAudioExportRange: Sendable {
+        let videoURL: URL
+        let range: SourceExportRange
     }
 
     private struct TimeRangeExportJob: Sendable {
@@ -362,6 +435,7 @@ final class VideoExporter: @unchecked Sendable {
     private static let minimumExportableDuration: TimeInterval = 0.05
     private static let temporaryExportFilePrefix = ".avs_tmp_"
     private static let estimatedAudioBitRate = 192_000
+    private static let fallbackFrameDurationTimescale: CMTimeScale = 600_000
 
     private static func adaptiveExportConcurrencyLimit() -> Int {
         let cores = Swift.max(ProcessInfo.processInfo.activeProcessorCount, 1)
@@ -382,42 +456,120 @@ final class VideoExporter: @unchecked Sendable {
     private static func sourceExportRanges(
         sourceStartTime: TimeInterval,
         trimmedDuration: TimeInterval,
-        outputTimeOffset: TimeInterval,
-        maxChunkCount: Int
+        outputTimeOffset: CMTime,
+        maxChunkCount: Int,
+        sourceFrameDuration: CMTime
     ) -> [SourceExportRange] {
-        let duration = Swift.max(trimmedDuration, 0)
-        guard duration >= minimumExportableDuration else { return [] }
+        let requestedDuration = Swift.max(trimmedDuration, 0)
+        guard requestedDuration >= minimumExportableDuration else { return [] }
+
+        let frameDurationSeconds = CMTimeGetSeconds(sourceFrameDuration)
+        guard frameDurationSeconds.isFinite, frameDurationSeconds > 0 else { return [] }
+
+        let requestedStart = Swift.max(sourceStartTime, 0)
+        let requestedEnd = requestedStart + requestedDuration
+        let startFrame = Swift.max(
+            0,
+            frameIndex(
+                at: requestedStart,
+                frameDurationSeconds: frameDurationSeconds,
+                rounding: .up
+            )
+        )
+        let endFrame = Swift.max(
+            startFrame,
+            frameIndex(
+                at: requestedEnd,
+                frameDurationSeconds: frameDurationSeconds,
+                rounding: .down
+            )
+        )
+        let totalFrameCount = endFrame - startFrame
+        guard totalFrameCount > 0 else { return [] }
+
+        let alignedDuration = Double(totalFrameCount) * frameDurationSeconds
+        guard alignedDuration >= minimumExportableDuration else { return [] }
 
         let chunkLimit = Swift.max(maxChunkCount, 1)
-        let chunksAllowedByDuration = Swift.max(1, Int(duration / minimumInternalChunkDuration))
-        let chunkCount = Swift.min(chunkLimit, chunksAllowedByDuration)
+        let chunksAllowedByDuration = Swift.max(1, Int(alignedDuration / minimumInternalChunkDuration))
+        let chunksAllowedByFrames = totalFrameCount > Int64(Int.max)
+            ? Int.max
+            : Swift.max(1, Int(totalFrameCount))
+        let chunkCount = Swift.min(chunkLimit, chunksAllowedByDuration, chunksAllowedByFrames)
 
         guard chunkCount > 1 else {
             return [SourceExportRange(
-                sourceStartTime: sourceStartTime,
-                outputStartTime: outputTimeOffset,
-                duration: duration
+                sourceStartFrame: startFrame,
+                frameCount: totalFrameCount,
+                sourceFrameDuration: sourceFrameDuration,
+                outputStart: outputTimeOffset
             )]
         }
 
-        let nominalChunkDuration = duration / Double(chunkCount)
-        var consumed: TimeInterval = 0
+        let baseFrameCount = totalFrameCount / Int64(chunkCount)
+        let remainderFrames = totalFrameCount % Int64(chunkCount)
+        var nextSourceStartFrame = startFrame
+        var nextOutputStart = outputTimeOffset
         var ranges: [SourceExportRange] = []
         ranges.reserveCapacity(chunkCount)
 
         for chunkIndex in 0..<chunkCount {
-            let chunkDuration = chunkIndex == chunkCount - 1
-                ? duration - consumed
-                : nominalChunkDuration
-            ranges.append(SourceExportRange(
-                sourceStartTime: sourceStartTime + consumed,
-                outputStartTime: outputTimeOffset + consumed,
-                duration: chunkDuration
-            ))
-            consumed += chunkDuration
+            let chunkFrameCount = baseFrameCount + (Int64(chunkIndex) < remainderFrames ? 1 : 0)
+            let range = SourceExportRange(
+                sourceStartFrame: nextSourceStartFrame,
+                frameCount: chunkFrameCount,
+                sourceFrameDuration: sourceFrameDuration,
+                outputStart: nextOutputStart
+            )
+            ranges.append(range)
+            nextSourceStartFrame += chunkFrameCount
+            nextOutputStart = range.outputEnd
         }
 
         return ranges
+    }
+
+    private static func frameIndex(
+        at seconds: TimeInterval,
+        frameDurationSeconds: TimeInterval,
+        rounding: FloatingPointRoundingRule
+    ) -> Int64 {
+        let rawFrame = seconds / frameDurationSeconds
+        let tolerance = 1e-7
+        switch rounding {
+        case .up:
+            return Int64(ceil(rawFrame - tolerance))
+        case .down:
+            return Int64(floor(rawFrame + tolerance))
+        default:
+            return Int64(rawFrame.rounded(rounding))
+        }
+    }
+
+    private static func outputTimeOffset(_ seconds: TimeInterval) -> CMTime {
+        CMTime(
+            seconds: Swift.max(seconds, 0),
+            preferredTimescale: fallbackFrameDurationTimescale
+        )
+    }
+
+    private static func mergedAudioExportRanges(
+        videoURL: URL,
+        ranges: [SourceExportRange]
+    ) -> [SourceAudioExportRange] {
+        guard let first = ranges.first, let last = ranges.last else { return [] }
+        let duration = CMTimeSubtract(last.sourceEnd, first.sourceStart)
+        guard CMTimeGetSeconds(duration) > 0 else { return [] }
+        return [
+            SourceAudioExportRange(
+                videoURL: videoURL,
+                range: SourceExportRange(
+                    sourceStart: first.sourceStart,
+                    sourceDuration: duration,
+                    outputStart: first.outputStart
+                )
+            )
+        ]
     }
 
     // MARK: - Single Video Export
@@ -437,14 +589,24 @@ final class VideoExporter: @unchecked Sendable {
         try Self.cleanUpAbandonedTemporaryFiles(in: config.outputURL.deletingLastPathComponent())
 
         let timeSyncSnapshot = await timeSync.makeExportCopy()
-        let assetDuration = try await AVURLAsset(url: videoURL).load(.duration)
+        let asset = AVURLAsset(url: videoURL)
+        let assetDuration = try await asset.load(.duration)
+        let tracks = try await asset.load(.tracks)
+        guard let videoTrack = tracks.first(where: { $0.mediaType == .video }) else {
+            throw ExportError.noVideos
+        }
+        let sourceFrameDuration = await Self.sourceFrameDuration(
+            for: videoTrack,
+            fallback: TimeInterval(config.frameRate)
+        )
         let totalSeconds = CMTimeGetSeconds(assetDuration)
         let trimmedDuration = trimSettings.trimmedDuration(original: totalSeconds)
         let ranges = Self.sourceExportRanges(
             sourceStartTime: trimSettings.startTrim,
             trimmedDuration: trimmedDuration,
-            outputTimeOffset: outputTimeOffset,
-            maxChunkCount: Self.adaptiveExportConcurrencyLimit()
+            outputTimeOffset: Self.outputTimeOffset(outputTimeOffset),
+            maxChunkCount: Self.adaptiveExportConcurrencyLimit(),
+            sourceFrameDuration: sourceFrameDuration
         )
         guard !ranges.isEmpty else {
             throw ExportError.exportFailed("カットの結果、書き出せる映像がありません")
@@ -473,11 +635,10 @@ final class VideoExporter: @unchecked Sendable {
                 videoURL: videoURL,
                 timeSync: timeSyncSnapshot,
                 segmentIndex: segmentIndex,
-                sourceStartTime: range.sourceStartTime,
-                duration: range.duration,
+                sourceRange: range,
+                includeAudio: true,
                 overlayRenderer: overlayRenderer,
                 config: config,
-                outputTimeOffset: range.outputStartTime,
                 progress: progress
             )
         }
@@ -487,18 +648,21 @@ final class VideoExporter: @unchecked Sendable {
         videoURL: URL,
         timeSync: TimeSync.ExportSnapshot,
         segmentIndex: Int,
-        sourceStartTime: TimeInterval,
-        duration: TimeInterval,
+        sourceRange: SourceExportRange,
+        includeAudio: Bool,
         overlayRenderer: OverlayRenderer,
         config: ExportConfig,
-        outputTimeOffset: TimeInterval,
         progress: @escaping ProgressCallback
     ) async throws {
         if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
+        let sourceStartTime = sourceRange.sourceStartTime
+        let duration = sourceRange.duration
+        let outputTimeOffset = sourceRange.outputStartTime
         exportLog(
             "START seg=\(segmentIndex) url=\(videoURL.lastPathComponent) " +
             "sourceStart=\(String(format: "%.1f", sourceStartTime))s " +
-            "duration=\(String(format: "%.1f", duration))s"
+            "duration=\(String(format: "%.1f", duration))s " +
+            "audio=\(includeAudio)"
         )
 
         let asset    = AVURLAsset(url: videoURL)
@@ -508,7 +672,7 @@ final class VideoExporter: @unchecked Sendable {
         guard let videoTrack = tracks.first(where: { $0.mediaType == .video }) else {
             throw ExportError.noVideos
         }
-        let audioTrack   = tracks.first(where: { $0.mediaType == .audio })
+        let audioTrack = includeAudio ? tracks.first(where: { $0.mediaType == .audio }) : nil
         let sourceFrameRate = await Self.sourceFrameRate(
             for: videoTrack,
             fallback: TimeInterval(config.frameRate)
@@ -529,9 +693,11 @@ final class VideoExporter: @unchecked Sendable {
             withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid
         ) else { throw ExportError.cannotCreateWriter }
 
-        let startTime = CMTime(seconds: clampedSourceStart, preferredTimescale: 600)
-        let rangeDuration = CMTime(seconds: exportDuration, preferredTimescale: 600)
-        let timeRange = CMTimeRange(start: startTime, duration: rangeDuration)
+        let boundedDuration = CMTimeCompare(sourceRange.sourceDuration, CMTime(seconds: exportDuration, preferredTimescale: sourceRange.sourceTimescale)) <= 0
+            ? sourceRange.sourceDuration
+            : CMTime(seconds: exportDuration, preferredTimescale: sourceRange.sourceTimescale)
+        let timeRange = CMTimeRange(start: sourceRange.sourceStart, duration: boundedDuration)
+        let rangeDuration = timeRange.duration
         compVideoTrack.preferredTransform = try await videoTrack.load(.preferredTransform)
         try compVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
 
@@ -645,6 +811,22 @@ final class VideoExporter: @unchecked Sendable {
             return nominalFrameRate
         }
         return fallback.isFinite && fallback > 0 ? fallback : 30
+    }
+
+    private static func sourceFrameDuration(for track: AVAssetTrack, fallback: TimeInterval) async -> CMTime {
+        if let minFrameDuration = try? await track.load(.minFrameDuration) {
+            let seconds = CMTimeGetSeconds(minFrameDuration)
+            if seconds.isFinite, seconds > 0, minFrameDuration.value > 0, minFrameDuration.timescale > 0 {
+                return minFrameDuration
+            }
+        }
+
+        let frameRate = await sourceFrameRate(for: track, fallback: fallback)
+        let fps = frameRate.isFinite && frameRate > 0 ? frameRate : 30
+        return CMTime(
+            seconds: 1.0 / fps,
+            preferredTimescale: fallbackFrameDurationTimescale
+        )
     }
 
     private func exportCompositionWithWriter(
@@ -1129,7 +1311,13 @@ final class VideoExporter: @unchecked Sendable {
                 .appendingPathComponent(".avs_tmp_" + UUID().uuidString)
                 .appendingPathExtension("mp4")
         }
-        defer { tempURLs.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let videoOnlyURL = tempDir
+            .appendingPathComponent(".avs_tmp_" + UUID().uuidString)
+            .appendingPathExtension("mp4")
+        defer {
+            tempURLs.forEach { try? FileManager.default.removeItem(at: $0) }
+            try? FileManager.default.removeItem(at: videoOnlyURL)
+        }
 
         let rangeDurations = ranges.map { $0.duration }
         let totalDuration = rangeDurations.reduce(0, +)
@@ -1166,11 +1354,10 @@ final class VideoExporter: @unchecked Sendable {
                         videoURL: videoURL,
                         timeSync: timeSync,
                         segmentIndex: segmentIndex,
-                        sourceStartTime: range.sourceStartTime,
-                        duration: range.duration,
+                        sourceRange: range,
+                        includeAudio: false,
                         overlayRenderer: rangeRenderer,
-                        config: rangeConfig,
-                        outputTimeOffset: range.outputStartTime
+                        config: rangeConfig
                     ) { fraction, _ in
                         progressAggregator.update(
                             segmentIndex: rangeIndex,
@@ -1201,7 +1388,23 @@ final class VideoExporter: @unchecked Sendable {
 
         if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
         onStatus("動画を結合中...")
-        try await concatenateExportedFiles(tempURLs, outputURL: config.outputURL, progress: progress)
+        try await concatenateExportedFiles(
+            tempURLs,
+            outputURL: videoOnlyURL,
+            progressStart: finalVideoOnlyConcatenationProgressStart,
+            progressSpan: finalVideoOnlyConcatenationProgressSpan,
+            progress: progress
+        )
+        if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
+        onStatus("音声を処理中...")
+        try await muxVideoWithSinglePassAudio(
+            videoOnlyURL: videoOnlyURL,
+            audioRanges: Self.mergedAudioExportRanges(videoURL: videoURL, ranges: ranges),
+            outputURL: config.outputURL,
+            progressStart: finalAudioMuxProgressStart,
+            progressSpan: finalAudioMuxProgressSpan,
+            progress: progress
+        )
         progress(1.0, 0)
     }
 
@@ -1231,38 +1434,48 @@ final class VideoExporter: @unchecked Sendable {
 
         let timeSyncSnapshot = await timeSync.makeExportCopy()
 
-        // Phase 1: pre-load durations
+        // Phase 1: pre-load durations and source frame cadence.
         var segmentDurations: [Double] = []
+        var segmentFrameDurations: [CMTime] = []
         for (segIdx, url) in videoURLs.enumerated() {
-            let dur = CMTimeGetSeconds(try await AVURLAsset(url: url).load(.duration))
+            let asset = AVURLAsset(url: url)
+            let dur = CMTimeGetSeconds(try await asset.load(.duration))
+            let tracks = try await asset.load(.tracks)
+            guard let videoTrack = tracks.first(where: { $0.mediaType == .video }) else {
+                throw ExportError.noVideos
+            }
             let trim = segIdx < trimSettings.count ? trimSettings[segIdx] : TrimSettings()
             segmentDurations.append(Swift.max(trim.trimmedDuration(original: dur), 0))
+            segmentFrameDurations.append(await Self.sourceFrameDuration(
+                for: videoTrack,
+                fallback: TimeInterval(config.frameRate)
+            ))
         }
 
         // Phase 2: export each segment/range to temp file.
         // Keep intermediates next to the final output so large exports stay on
         // the user-selected volume instead of filling the system drive.
         let tempDir = config.outputURL.deletingLastPathComponent()
-        var outputOffsets = Array(repeating: 0.0, count: videoURLs.count)
-        var runningOffset = 0.0
-        for idx in videoURLs.indices {
-            outputOffsets[idx] = runningOffset
-            runningOffset += segmentDurations[idx]
-        }
-
         let concurrencyLimit = Self.adaptiveExportConcurrencyLimit()
         let chunkBudgetPerSegment = videoURLs.count < concurrencyLimit
             ? Swift.max(1, Int(ceil(Double(concurrencyLimit) / Double(videoURLs.count))))
             : 1
         var jobs: [TimeRangeExportJob] = []
+        var audioRanges: [SourceAudioExportRange] = []
+        var runningOutputTime = CMTime.zero
         for (segIdx, url) in videoURLs.enumerated() {
             let trim = segIdx < trimSettings.count ? trimSettings[segIdx] : TrimSettings()
             let ranges = Self.sourceExportRanges(
                 sourceStartTime: trim.startTrim,
                 trimmedDuration: segmentDurations[segIdx],
-                outputTimeOffset: outputOffsets[segIdx],
-                maxChunkCount: chunkBudgetPerSegment
+                outputTimeOffset: runningOutputTime,
+                maxChunkCount: chunkBudgetPerSegment,
+                sourceFrameDuration: segmentFrameDurations[segIdx]
             )
+            audioRanges.append(contentsOf: Self.mergedAudioExportRanges(videoURL: url, ranges: ranges))
+            if let lastRange = ranges.last {
+                runningOutputTime = lastRange.outputEnd
+            }
 
             for (rangeIdx, range) in ranges.enumerated() {
                 let statusMessage = ranges.count == 1
@@ -1291,7 +1504,13 @@ final class VideoExporter: @unchecked Sendable {
             )
         )
         let tempURLs = jobs.map { $0.tempURL }
-        defer { tempURLs.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let videoOnlyURL = tempDir
+            .appendingPathComponent(".avs_tmp_" + UUID().uuidString)
+            .appendingPathExtension("mp4")
+        defer {
+            tempURLs.forEach { try? FileManager.default.removeItem(at: $0) }
+            try? FileManager.default.removeItem(at: videoOnlyURL)
+        }
 
         let jobDurations = jobs.map { $0.range.duration }
         let totalDuration = jobDurations.reduce(0, +)
@@ -1329,11 +1548,10 @@ final class VideoExporter: @unchecked Sendable {
                         videoURL: job.videoURL,
                         timeSync: timeSyncSnapshot,
                         segmentIndex: job.segmentIndex,
-                        sourceStartTime: job.range.sourceStartTime,
-                        duration: job.range.duration,
+                        sourceRange: job.range,
+                        includeAudio: false,
                         overlayRenderer: jobRenderer,
-                        config: jobConfig,
-                        outputTimeOffset: job.range.outputStartTime
+                        config: jobConfig
                     ) { fraction, _ in
                         progressAggregator.update(
                             segmentIndex: jobIndex,
@@ -1366,7 +1584,23 @@ final class VideoExporter: @unchecked Sendable {
         if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
         onStatus("動画を結合中...")
 
-        try await concatenateExportedFiles(tempURLs, outputURL: config.outputURL, progress: progress)
+        try await concatenateExportedFiles(
+            tempURLs,
+            outputURL: videoOnlyURL,
+            progressStart: finalVideoOnlyConcatenationProgressStart,
+            progressSpan: finalVideoOnlyConcatenationProgressSpan,
+            progress: progress
+        )
+        if cancellationRequested || Task.isCancelled { throw ExportError.cancelled }
+        onStatus("音声を処理中...")
+        try await muxVideoWithSinglePassAudio(
+            videoOnlyURL: videoOnlyURL,
+            audioRanges: audioRanges,
+            outputURL: config.outputURL,
+            progressStart: finalAudioMuxProgressStart,
+            progressSpan: finalAudioMuxProgressSpan,
+            progress: progress
+        )
         progress(1.0, 0)
     }
 
@@ -1375,6 +1609,8 @@ final class VideoExporter: @unchecked Sendable {
     private func concatenateExportedFiles(
         _ tempURLs: [URL],
         outputURL: URL,
+        progressStart: Double = finalConcatenationProgressStart,
+        progressSpan: Double = finalConcatenationProgressSpan,
         progress: @escaping ProgressCallback
     ) async throws {
         guard !tempURLs.isEmpty else {
@@ -1428,13 +1664,12 @@ final class VideoExporter: @unchecked Sendable {
             registerExportSession(concatSession)
             defer { unregisterExportSession(concatSession) }
 
-            progress(finalConcatenationProgressStart, nil)
+            progress(progressStart, nil)
             let concatStart = Date()
             let progressPollingTask = Task {
                 while !Task.isCancelled {
                     let phaseProgress = Swift.min(Swift.max(Double(concatSession.progress), 0), 1)
-                    let overallProgress = finalConcatenationProgressStart
-                        + phaseProgress * finalConcatenationProgressSpan
+                    let overallProgress = progressStart + phaseProgress * progressSpan
                     let elapsed = Date().timeIntervalSince(concatStart)
                     let remaining = phaseProgress > 0.01 && phaseProgress < 1
                         ? Swift.max(elapsed / phaseProgress - elapsed, 0)
@@ -1463,6 +1698,135 @@ final class VideoExporter: @unchecked Sendable {
         } catch {
             Self.removePartialOutputIfNeeded(at: outputURL)
             throw error
+        }
+    }
+
+    private func muxVideoWithSinglePassAudio(
+        videoOnlyURL: URL,
+        audioRanges: [SourceAudioExportRange],
+        outputURL: URL,
+        progressStart: Double,
+        progressSpan: Double,
+        progress: @escaping ProgressCallback
+    ) async throws {
+        let finalComp = AVMutableComposition()
+
+        let videoAsset = AVURLAsset(url: videoOnlyURL)
+        let videoDuration = try await videoAsset.load(.duration)
+        let videoTracks = try await videoAsset.load(.tracks)
+        guard let sourceVideoTrack = videoTracks.first(where: { $0.mediaType == .video }),
+              let compVideoTrack = finalComp.addMutableTrack(
+                withMediaType: .video,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+              ) else {
+            throw ExportError.cannotCreateWriter
+        }
+
+        compVideoTrack.preferredTransform = try await sourceVideoTrack.load(.preferredTransform)
+        try compVideoTrack.insertTimeRange(
+            CMTimeRange(start: .zero, duration: videoDuration),
+            of: sourceVideoTrack,
+            at: .zero
+        )
+
+        var compAudioTrack: AVMutableCompositionTrack?
+        var hasAudio = false
+        for audioRange in audioRanges {
+            let sourceAsset = AVURLAsset(url: audioRange.videoURL)
+            let sourceTracks = try await sourceAsset.load(.tracks)
+            guard let sourceAudioTrack = sourceTracks.first(where: { $0.mediaType == .audio }) else {
+                continue
+            }
+
+            if compAudioTrack == nil {
+                compAudioTrack = finalComp.addMutableTrack(
+                    withMediaType: .audio,
+                    preferredTrackID: kCMPersistentTrackID_Invalid
+                )
+            }
+            guard let compAudioTrack else {
+                throw ExportError.exportFailed("音声トラックを結合出力に追加できませんでした")
+            }
+
+            do {
+                try compAudioTrack.insertTimeRange(
+                    audioRange.range.sourceTimeRange,
+                    of: sourceAudioTrack,
+                    at: audioRange.range.outputStart
+                )
+                hasAudio = true
+            } catch {
+                throw ExportError.exportFailed(Self.audioTransferFailureMessage(error: error))
+            }
+        }
+
+        guard hasAudio else {
+            try Self.replaceOutput(withTemporaryFile: videoOnlyURL, outputURL: outputURL)
+            progress(1.0, 0)
+            return
+        }
+
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            try FileManager.default.removeItem(at: outputURL)
+        }
+
+        do {
+            guard let muxSession = AVAssetExportSession(
+                asset: finalComp,
+                presetName: AVAssetExportPresetPassthrough
+            ) else {
+                throw ExportError.cannotCreateWriter
+            }
+            muxSession.outputURL = outputURL
+            muxSession.outputFileType = .mp4
+            registerExportSession(muxSession)
+            defer { unregisterExportSession(muxSession) }
+
+            progress(progressStart, nil)
+            let muxStart = Date()
+            let progressPollingTask = Task {
+                while !Task.isCancelled {
+                    let phaseProgress = Swift.min(Swift.max(Double(muxSession.progress), 0), 1)
+                    let overallProgress = progressStart + phaseProgress * progressSpan
+                    let elapsed = Date().timeIntervalSince(muxStart)
+                    let remaining = phaseProgress > 0.01 && phaseProgress < 1
+                        ? Swift.max(elapsed / phaseProgress - elapsed, 0)
+                        : nil
+                    progress(overallProgress, remaining)
+
+                    try? await Task.sleep(nanoseconds: concatenationProgressPollInterval)
+                }
+            }
+
+            await withTaskCancellationHandler {
+                await muxSession.export()
+            } onCancel: {
+                muxSession.cancelExport()
+            }
+            progressPollingTask.cancel()
+            await progressPollingTask.value
+
+            if cancellationRequested || Task.isCancelled || muxSession.status == .cancelled {
+                throw ExportError.cancelled
+            }
+            guard muxSession.status == .completed else {
+                throw ExportError.exportFailed(
+                    muxSession.error?.localizedDescription ?? "音声の処理に失敗しました")
+            }
+        } catch {
+            Self.removePartialOutputIfNeeded(at: outputURL)
+            throw error
+        }
+    }
+
+    private static func replaceOutput(withTemporaryFile sourceURL: URL, outputURL: URL) throws {
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            try FileManager.default.removeItem(at: outputURL)
+        }
+        do {
+            try FileManager.default.moveItem(at: sourceURL, to: outputURL)
+        } catch {
+            throw ExportError.exportFailed("出力ファイルの配置に失敗しました: \(error.localizedDescription)")
         }
     }
 
