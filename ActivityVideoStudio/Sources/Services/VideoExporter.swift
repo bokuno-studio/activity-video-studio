@@ -707,19 +707,32 @@ final class VideoExporter: @unchecked Sendable {
 
         let compAudioTrack: AVMutableCompositionTrack?
         if let audioTrack {
-            guard let audioCompositionTrack = composition.addMutableTrack(
-                withMediaType: .audio,
-                preferredTrackID: kCMPersistentTrackID_Invalid
-            ) else {
-                throw ExportError.exportFailed("音声トラックを出力に追加できませんでした")
-            }
+            let audioTrackTimeRange = try await audioTrack.load(.timeRange)
+            if let audioInsertion = Self.clampedAudioInsertion(
+                requestedRange: timeRange,
+                audioTrackTimeRange: audioTrackTimeRange,
+                destinationStart: .zero
+            ) {
+                guard let audioCompositionTrack = composition.addMutableTrack(
+                    withMediaType: .audio,
+                    preferredTrackID: kCMPersistentTrackID_Invalid
+                ) else {
+                    throw ExportError.exportFailed("音声トラックを出力に追加できませんでした")
+                }
 
-            do {
-                try audioCompositionTrack.insertTimeRange(timeRange, of: audioTrack, at: .zero)
-            } catch {
-                throw ExportError.exportFailed(Self.audioTransferFailureMessage(error: error))
+                do {
+                    try audioCompositionTrack.insertTimeRange(
+                        audioInsertion.range,
+                        of: audioTrack,
+                        at: audioInsertion.start
+                    )
+                } catch {
+                    throw ExportError.exportFailed(Self.audioTransferFailureMessage(error: error))
+                }
+                compAudioTrack = audioCompositionTrack
+            } else {
+                compAudioTrack = nil
             }
-            compAudioTrack = audioCompositionTrack
         } else {
             compAudioTrack = nil
         }
@@ -1190,6 +1203,21 @@ final class VideoExporter: @unchecked Sendable {
 
     private static func audioTransferFailureMessage(error: Error) -> String {
         "音声のコピーに失敗しました: \(error.localizedDescription)"
+    }
+
+    private static func clampedAudioInsertion(
+        requestedRange: CMTimeRange,
+        audioTrackTimeRange: CMTimeRange,
+        destinationStart: CMTime
+    ) -> (range: CMTimeRange, start: CMTime)? {
+        let clampedRange = CMTimeRangeGetIntersection(requestedRange, otherRange: audioTrackTimeRange)
+        guard !clampedRange.isEmpty else { return nil }
+
+        let clippedSourceOffset = CMTimeSubtract(clampedRange.start, requestedRange.start)
+        return (
+            range: clampedRange,
+            start: CMTimeAdd(destinationStart, clippedSourceOffset)
+        )
     }
 
     private static func mediaFailureMessage(
@@ -1747,6 +1775,15 @@ final class VideoExporter: @unchecked Sendable {
             guard let sourceAudioTrack = sourceTracks.first(where: { $0.mediaType == .audio }) else {
                 continue
             }
+            let sourceAudioTimeRange = try await sourceAudioTrack.load(.timeRange)
+
+            guard let audioInsertion = Self.clampedAudioInsertion(
+                requestedRange: audioRange.range.sourceTimeRange,
+                audioTrackTimeRange: sourceAudioTimeRange,
+                destinationStart: audioRange.range.outputStart
+            ) else {
+                continue
+            }
 
             if compAudioTrack == nil {
                 compAudioTrack = finalComp.addMutableTrack(
@@ -1760,9 +1797,9 @@ final class VideoExporter: @unchecked Sendable {
 
             do {
                 try compAudioTrack.insertTimeRange(
-                    audioRange.range.sourceTimeRange,
+                    audioInsertion.range,
                     of: sourceAudioTrack,
-                    at: audioRange.range.outputStart
+                    at: audioInsertion.start
                 )
                 hasAudio = true
             } catch {
