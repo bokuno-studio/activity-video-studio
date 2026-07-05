@@ -1408,6 +1408,8 @@ private struct OverlayThemeColor: Codable {
     var blue: Double
     var alpha: Double
 
+    private static let sRGBColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+
     private enum CodingKeys: String, CodingKey {
         case red
         case green
@@ -1423,7 +1425,7 @@ private struct OverlayThemeColor: Codable {
     }
 
     init(_ color: CGColor) {
-        let nsColor = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) ?? .black
+        let nsColor = NSColor(cgColor: color)?.usingColorSpace(.sRGB) ?? .black
         red = Double(nsColor.redComponent)
         green = Double(nsColor.greenComponent)
         blue = Double(nsColor.blueComponent)
@@ -1439,12 +1441,14 @@ private struct OverlayThemeColor: Codable {
     }
 
     var cgColor: CGColor {
-        CGColor(
-            red: clampedCGFloat(red),
-            green: clampedCGFloat(green),
-            blue: clampedCGFloat(blue),
-            alpha: clampedCGFloat(alpha)
-        )
+        let components = [
+            clampedCGFloat(red),
+            clampedCGFloat(green),
+            clampedCGFloat(blue),
+            clampedCGFloat(alpha)
+        ]
+        return CGColor(colorSpace: Self.sRGBColorSpace, components: components)
+            ?? CGColor(red: components[0], green: components[1], blue: components[2], alpha: components[3])
     }
 
     private func clampedCGFloat(_ value: Double) -> CGFloat {

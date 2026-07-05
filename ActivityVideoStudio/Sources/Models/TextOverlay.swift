@@ -264,9 +264,10 @@ private struct RGBAColor: Codable {
     var blue: CGFloat
     var alpha: CGFloat
 
+    private static let sRGBColorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+
     init(_ color: CGColor) {
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-        let converted = color.converted(to: colorSpace, intent: .defaultIntent, options: nil)
+        let converted = color.converted(to: Self.sRGBColorSpace, intent: .defaultIntent, options: nil)
         let components = converted?.components ?? color.components ?? [1, 1, 1, 1]
 
         if components.count >= 4 {
@@ -283,6 +284,17 @@ private struct RGBAColor: Codable {
     }
 
     var cgColor: CGColor {
-        CGColor(red: red, green: green, blue: blue, alpha: alpha)
+        let components = [
+            Self.clampedCGFloat(red),
+            Self.clampedCGFloat(green),
+            Self.clampedCGFloat(blue),
+            Self.clampedCGFloat(alpha)
+        ]
+        return CGColor(colorSpace: Self.sRGBColorSpace, components: components)
+            ?? CGColor(red: components[0], green: components[1], blue: components[2], alpha: components[3])
+    }
+
+    private static func clampedCGFloat(_ value: CGFloat) -> CGFloat {
+        min(max(value, 0), 1)
     }
 }
