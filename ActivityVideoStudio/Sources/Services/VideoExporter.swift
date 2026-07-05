@@ -104,6 +104,7 @@ final class VideoExporter: @unchecked Sendable {
         let sourceBucket: Int64
         let playbackBucket: Int64
         let fitRecordingActive: Bool
+        let textVisibility: [Bool]
     }
 
     private enum OverlayCacheContentKind: Equatable {
@@ -205,7 +206,8 @@ final class VideoExporter: @unchecked Sendable {
                 contentKind: .full,
                 sourceBucket: Self.bucket(for: sourceVideoTime, quantum: baseQuantum),
                 playbackBucket: Self.bucket(for: globalPlaybackTime, quantum: playbackQuantum),
-                fitRecordingActive: fitRecordingActive
+                fitRecordingActive: fitRecordingActive,
+                textVisibility: textVisibility(at: globalPlaybackTime)
             )
         }
 
@@ -218,8 +220,13 @@ final class VideoExporter: @unchecked Sendable {
                 contentKind: .textOnly,
                 sourceBucket: 0,
                 playbackBucket: Self.bucket(for: globalPlaybackTime, quantum: playbackQuantum),
-                fitRecordingActive: false
+                fitRecordingActive: false,
+                textVisibility: textVisibility(at: globalPlaybackTime)
             )
+        }
+
+        private func textVisibility(at globalPlaybackTime: TimeInterval) -> [Bool] {
+            textOverlays.map { $0.isVisible(at: globalPlaybackTime) }
         }
 
         private static func bucket(for time: TimeInterval, quantum: TimeInterval) -> Int64 {

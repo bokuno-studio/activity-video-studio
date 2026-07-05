@@ -233,6 +233,10 @@ struct TextOverlay: Identifiable, Codable {
         return false
     }
 
+    func isVisible(at time: TimeInterval) -> Bool {
+        opacity(at: time) > 0
+    }
+
     /// Opacity at a given playback time (handles fade in/out).
     func opacity(at time: TimeInterval) -> Double {
         let displayDuration = Self.finiteNonnegative(duration)

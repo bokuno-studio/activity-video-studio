@@ -1170,7 +1170,9 @@ final class OverlayRenderer {
         let line = CTLineCreateWithAttributedString(str)
 
         ctx.saveGState()
-        ctx.textPosition = CGPoint(x: 30 * scale, y: videoSize.height - 40 * scale)
+        let topOffset = 24 * scale
+        let baselineY = videoSize.height - topOffset - CTFontGetAscent(font)
+        ctx.textPosition = CGPoint(x: 30 * scale, y: baselineY)
         CTLineDraw(line, ctx)
         ctx.restoreGState()
     }
@@ -1459,6 +1461,8 @@ private struct OverlayThemeColor: Codable {
 
 private enum OverlayThemeStyleClamp {
     static let fontSize: ClosedRange<CGFloat> = 8...300
+    static let cornerRadius: ClosedRange<CGFloat> = 0...64
+    static let layoutMargin: ClosedRange<CGFloat> = 0...200
     static let mapRatio: ClosedRange<CGFloat> = 0.05...0.75
     static let panelWidthScale: ClosedRange<CGFloat> = 0.25...3
     static let positionFraction: ClosedRange<CGFloat> = 0...1
@@ -1578,7 +1582,11 @@ extension OverlayPresetRenderStyle {
             default: distancePanelWidthScale,
             range: OverlayThemeStyleClamp.panelWidthScale
         )
-        metricsCornerRadius = try container.decodeFiniteCGFloat(forKey: .metricsCornerRadius, default: metricsCornerRadius)
+        metricsCornerRadius = try container.decodeClampedCGFloat(
+            forKey: .metricsCornerRadius,
+            default: metricsCornerRadius,
+            range: OverlayThemeStyleClamp.cornerRadius
+        )
         mapWidthRatio = try container.decodeClampedCGFloat(
             forKey: .mapWidthRatio,
             default: mapWidthRatio,
@@ -1589,12 +1597,32 @@ extension OverlayPresetRenderStyle {
             default: mapHeightRatio,
             range: OverlayThemeStyleClamp.mapRatio
         )
-        mapMargin = try container.decodeFiniteCGFloat(forKey: .mapMargin, default: mapMargin)
-        mapCornerRadius = try container.decodeFiniteCGFloat(forKey: .mapCornerRadius, default: mapCornerRadius)
+        mapMargin = try container.decodeClampedCGFloat(
+            forKey: .mapMargin,
+            default: mapMargin,
+            range: OverlayThemeStyleClamp.layoutMargin
+        )
+        mapCornerRadius = try container.decodeClampedCGFloat(
+            forKey: .mapCornerRadius,
+            default: mapCornerRadius,
+            range: OverlayThemeStyleClamp.cornerRadius
+        )
         mapPlacement = try container.decodeIfPresent(OverlayMapPlacement.self, forKey: .mapPlacement) ?? mapPlacement
-        profileGap = try container.decodeFiniteCGFloat(forKey: .profileGap, default: profileGap)
-        profileBottomPadding = try container.decodeFiniteCGFloat(forKey: .profileBottomPadding, default: profileBottomPadding)
-        profileCornerRadius = try container.decodeFiniteCGFloat(forKey: .profileCornerRadius, default: profileCornerRadius)
+        profileGap = try container.decodeClampedCGFloat(
+            forKey: .profileGap,
+            default: profileGap,
+            range: OverlayThemeStyleClamp.layoutMargin
+        )
+        profileBottomPadding = try container.decodeClampedCGFloat(
+            forKey: .profileBottomPadding,
+            default: profileBottomPadding,
+            range: OverlayThemeStyleClamp.layoutMargin
+        )
+        profileCornerRadius = try container.decodeClampedCGFloat(
+            forKey: .profileCornerRadius,
+            default: profileCornerRadius,
+            range: OverlayThemeStyleClamp.cornerRadius
+        )
     }
 
     func encode(to encoder: Encoder) throws {
