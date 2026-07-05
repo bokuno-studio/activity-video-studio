@@ -100,9 +100,15 @@ final class VideoExporter: @unchecked Sendable {
     typealias StatusCallback   = @Sendable (String) -> Void
 
     private struct OverlayCacheKey: Equatable {
+        let contentKind: OverlayCacheContentKind
         let sourceBucket: Int64
         let playbackBucket: Int64
         let fitRecordingActive: Bool
+    }
+
+    private enum OverlayCacheContentKind: Equatable {
+        case full
+        case textOnly
     }
 
     private final class OverlayFrameCache: @unchecked Sendable {
@@ -162,6 +168,30 @@ final class VideoExporter: @unchecked Sendable {
             }
         }
 
+        func textOnlyImage(
+            globalPlaybackTime: TimeInterval,
+            renderer: OverlayRenderer
+        ) -> CIImage? {
+            let key = textOnlyCacheKey(globalPlaybackTime: globalPlaybackTime)
+            if let cached = locked(lock, { entry }), cached.key == key {
+                return cached.ciImage
+            }
+
+            return locked(lock) {
+                if let cached = entry, cached.key == key {
+                    return cached.ciImage
+                }
+
+                guard let cgImage = renderer.renderTextOverlaysOnly(globalPlaybackTime: globalPlaybackTime) else {
+                    return nil
+                }
+
+                let ciImage = CIImage(cgImage: cgImage)
+                entry = Entry(key: key, cgImage: cgImage, ciImage: ciImage)
+                return ciImage
+            }
+        }
+
         private func cacheKey(
             sourceVideoTime: TimeInterval,
             globalPlaybackTime: TimeInterval,
@@ -172,9 +202,23 @@ final class VideoExporter: @unchecked Sendable {
                 : baseQuantum
 
             return OverlayCacheKey(
+                contentKind: .full,
                 sourceBucket: Self.bucket(for: sourceVideoTime, quantum: baseQuantum),
                 playbackBucket: Self.bucket(for: globalPlaybackTime, quantum: playbackQuantum),
                 fitRecordingActive: fitRecordingActive
+            )
+        }
+
+        private func textOnlyCacheKey(globalPlaybackTime: TimeInterval) -> OverlayCacheKey {
+            let playbackQuantum = textOverlays.contains { $0.isOpacityAnimating(at: globalPlaybackTime) }
+                ? Swift.min(baseQuantum, frameQuantum)
+                : baseQuantum
+
+            return OverlayCacheKey(
+                contentKind: .textOnly,
+                sourceBucket: 0,
+                playbackBucket: Self.bucket(for: globalPlaybackTime, quantum: playbackQuantum),
+                fitRecordingActive: false
             )
         }
 
@@ -758,10 +802,31 @@ final class VideoExporter: @unchecked Sendable {
             let sourceVideoTime = capturedSourceStart + t
             let globalPlaybackTime = capturedOutputOffset + t
 
-            guard let renderer = rendererHolder.get(),
-                  let dp       = capturedTimeSync.dataPoint(segmentIndex: capturedSegIdx, playbackTime: sourceVideoTime),
-                  let elapsed  = capturedTimeSync.elapsedTime(segmentIndex: capturedSegIdx, playbackTime: sourceVideoTime) else {
+            guard let renderer = rendererHolder.get() else {
                 request.finish(with: request.sourceImage, context: nil)
+                return
+            }
+            let dp = capturedTimeSync.dataPoint(segmentIndex: capturedSegIdx, playbackTime: sourceVideoTime)
+            let elapsed = capturedTimeSync.elapsedTime(segmentIndex: capturedSegIdx, playbackTime: sourceVideoTime)
+
+            guard let dp, let elapsed else {
+                guard !renderer.textOverlays.isEmpty else {
+                    request.finish(with: request.sourceImage, context: nil)
+                    return
+                }
+
+                autoreleasepool {
+                    if let overlayCI = overlayCache.textOnlyImage(
+                        globalPlaybackTime: globalPlaybackTime,
+                        renderer: renderer
+                    ) {
+                        let composited = overlayCI.composited(over: request.sourceImage)
+                                                  .cropped(to: request.sourceImage.extent)
+                        request.finish(with: composited, context: nil)
+                    } else {
+                        request.finish(with: request.sourceImage, context: nil)
+                    }
+                }
                 return
             }
 

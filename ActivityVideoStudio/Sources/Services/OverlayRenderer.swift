@@ -271,13 +271,23 @@ final class OverlayRenderer {
             drawGPSTrack(ctx: ctx, currentPoint: dataPoint)
         }
 
-        // Text overlays
-        for textOverlay in textOverlays {
-            let opacity = textOverlay.opacity(at: globalPlaybackTime)
-            if opacity > 0 { drawTextOverlay(ctx: ctx, overlay: textOverlay, opacity: opacity) }
-        }
+        _ = drawTextOverlays(ctx: ctx, globalPlaybackTime: globalPlaybackTime)
 
         guard let overlayImage = ctx.makeImage() else { return nil }
+        return imageByApplyingOverlayOpacity(overlayImage, width: w, height: h)
+    }
+
+    func renderTextOverlaysOnly(globalPlaybackTime: TimeInterval) -> CGImage? {
+        let w = Int(videoSize.width), h = Int(videoSize.height)
+        guard let ctx = Self.bitmapContext(width: w, height: h, cache: &renderContextCache) else { return nil }
+
+        Self.prepareBitmapContext(ctx, width: w, height: h)
+        ctx.textMatrix = .identity
+
+        guard drawTextOverlays(ctx: ctx, globalPlaybackTime: globalPlaybackTime),
+              let overlayImage = ctx.makeImage() else {
+            return nil
+        }
         return imageByApplyingOverlayOpacity(overlayImage, width: w, height: h)
     }
 
@@ -1023,6 +1033,18 @@ final class OverlayRenderer {
     }
 
     // MARK: - Text overlay
+
+    private func drawTextOverlays(ctx: CGContext, globalPlaybackTime: TimeInterval) -> Bool {
+        var drewOverlay = false
+        for textOverlay in textOverlays {
+            let opacity = textOverlay.opacity(at: globalPlaybackTime)
+            if opacity > 0 {
+                drawTextOverlay(ctx: ctx, overlay: textOverlay, opacity: opacity)
+                drewOverlay = true
+            }
+        }
+        return drewOverlay
+    }
 
     private func drawTextOverlay(ctx: CGContext, overlay: TextOverlay, opacity: Double) {
         let fontSize = max(1, overlay.fontSize * scale)
