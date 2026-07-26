@@ -166,11 +166,12 @@ struct PreviewView: View {
     private var sidebar: some View {
         VStack(spacing: 0) {
             FileListView(
-                fitURL: viewModel.fitURL,
-                fitPointCount: viewModel.fitDataPoints.count,
+                fitURLs: viewModel.fitURLs,
+                fitPointCounts: viewModel.fitPointCounts,
                 videoURLs: viewModel.videoURLs,
                 videoDurations: viewModel.videoMetadatas.map { $0.duration },
-                onRemoveVideo: { viewModel.removeVideo(at: $0, undoManager: undoManager) }
+                onRemoveVideo: { viewModel.removeVideo(at: $0, undoManager: undoManager) },
+                onRemoveFIT: { viewModel.removeFIT(at: $0) }
             )
 
             Divider()
@@ -203,7 +204,7 @@ struct PreviewView: View {
                             frame: viewModel.liveOverlayFrame,
                             settings: viewModel.overlaySettings,
                             allDataPoints: viewModel.fitDataPoints,
-                            trackCoordinates: viewModel.trackCoordinates,
+                            trackSegments: viewModel.trackSegments,
                             textOverlays: viewModel.textOverlays,
                             textPlaybackTime: viewModel.trimmedPlaybackTime()
                         )
@@ -707,7 +708,7 @@ struct PreviewView: View {
             var duplicateNames: [String] = []
             var seenDropKeys = Set<String>()
             let existingVideoKeys = Set(viewModel.videoURLs.map { resolvedFileKey(for: $0) })
-            let existingFITKey = viewModel.fitURL.map { resolvedFileKey(for: $0) }
+            var existingFITKeys = Set(viewModel.fitURLs.map { resolvedFileKey(for: $0) })
 
             for url in droppedFiles.urls {
                 let resolvedURL = resolvedFileURL(for: url)
@@ -719,10 +720,11 @@ struct PreviewView: View {
 
                 switch droppedFileKind(for: resolvedURL) {
                 case .fit:
-                    if existingFITKey == key {
+                    if existingFITKeys.contains(key) {
                         duplicateNames.append(resolvedURL.lastPathComponent)
                     } else {
                         viewModel.loadFITFile(url: resolvedURL)
+                        existingFITKeys.insert(key)
                     }
                 case .video:
                     if existingVideoKeys.contains(key) {

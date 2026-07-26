@@ -27,15 +27,19 @@ final class TimeSync {
     }
 
     private let dataPoints: [FITDataPoint]
+    /// Computed once per FIT timeline; queried for every preview/export frame.
+    private let gaps: [FITRecordingGap]
     private(set) var segments: [VideoSegment] = []
-    private static let maximumInterpolationGap: TimeInterval = 5
+    static let maximumInterpolationGap: TimeInterval = FITMerger.gapThreshold
 
     struct ExportSnapshot: @unchecked Sendable {
         private let dataPoints: [FITDataPoint]
+        private let gaps: [FITRecordingGap]
         private let segments: [VideoSegment]
 
-        fileprivate init(dataPoints: [FITDataPoint], segments: [VideoSegment]) {
+        fileprivate init(dataPoints: [FITDataPoint], gaps: [FITRecordingGap], segments: [VideoSegment]) {
             self.dataPoints = dataPoints
+            self.gaps = gaps
             self.segments = segments
         }
 
@@ -60,6 +64,10 @@ final class TimeSync {
         func interpolatedDataPoint(at date: Date) -> FITDataPoint? {
             TimeSync.interpolatedDataPoint(at: date, dataPoints: dataPoints)
         }
+
+        func recordingState(segmentIndex: Int, playbackTime: TimeInterval) -> FITRecordingState {
+            TimeSync.recordingState(segmentIndex: segmentIndex, playbackTime: playbackTime, dataPoints: dataPoints, gaps: gaps, segments: segments)
+        }
     }
 
     /// Activity start time from the first FIT data point.
@@ -71,11 +79,12 @@ final class TimeSync {
 
     init(dataPoints: [FITDataPoint]) {
         self.dataPoints = dataPoints.sorted { $0.timestamp < $1.timestamp }
+        gaps = FITMerger.gaps(in: self.dataPoints)
     }
 
     @MainActor
     func makeExportCopy() -> ExportSnapshot {
-        ExportSnapshot(dataPoints: dataPoints, segments: segments)
+        ExportSnapshot(dataPoints: dataPoints, gaps: gaps, segments: segments)
     }
 
     // MARK: - Setup
@@ -162,6 +171,15 @@ final class TimeSync {
     /// Get interpolated FIT data for an absolute FIT timestamp.
     func interpolatedDataPoint(at date: Date) -> FITDataPoint? {
         Self.interpolatedDataPoint(at: date, dataPoints: dataPoints)
+    }
+
+    func recordingState(segmentIndex: Int, playbackTime: TimeInterval) -> FITRecordingState {
+        Self.recordingState(segmentIndex: segmentIndex, playbackTime: playbackTime, dataPoints: dataPoints, gaps: gaps, segments: segments)
+    }
+
+    private static func recordingState(segmentIndex: Int, playbackTime: TimeInterval, dataPoints: [FITDataPoint], gaps: [FITRecordingGap], segments: [VideoSegment]) -> FITRecordingState {
+        guard segments.indices.contains(segmentIndex), let start = segments[segmentIndex].fitStartTime else { return .waitingForStart }
+        return FITMerger.recordingState(at: start.addingTimeInterval(playbackTime), firstTimestamp: dataPoints.first?.timestamp, gaps: gaps)
     }
 
     private static func dataPoint(
@@ -289,6 +307,8 @@ final class TimeSync {
         let lookback = min(index, 10)
         let prev = dataPoints[index - lookback]
         let curr = dataPoints[index]
+
+        guard !(index - lookback + 1 ... index).contains(where: { dataPoints[$0].timestamp.timeIntervalSince(dataPoints[$0 - 1].timestamp) > maximumInterpolationGap }) else { return result }
 
         guard let altPrev = prev.altitude, let altCurr = curr.altitude,
               let distPrev = prev.distance, let distCurr = curr.distance else {

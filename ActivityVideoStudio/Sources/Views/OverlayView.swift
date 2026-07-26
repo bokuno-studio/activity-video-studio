@@ -9,7 +9,7 @@ struct LivePreviewOverlayView: View {
     let frame: LivePreviewOverlayFrame?
     @ObservedObject var settings: OverlaySettings
     let allDataPoints: [FITDataPoint]
-    let trackCoordinates: [CLLocationCoordinate2D]
+    let trackSegments: [[CLLocationCoordinate2D]]
     let textOverlays: [TextOverlay]
     let textPlaybackTime: TimeInterval
     @StateObject private var geometryCache = LivePreviewOverlayGeometryCache()
@@ -26,7 +26,7 @@ struct LivePreviewOverlayView: View {
                         frame: frame,
                         settings: settings,
                         allDataPoints: allDataPoints,
-                        trackCoordinates: trackCoordinates,
+                        trackSegments: trackSegments,
                         size: size,
                         scale: scale,
                         geometryCache: geometryCache
@@ -52,7 +52,7 @@ private struct LiveActivityDataLayer: View {
     let frame: LivePreviewOverlayFrame
     @ObservedObject var settings: OverlaySettings
     let allDataPoints: [FITDataPoint]
-    let trackCoordinates: [CLLocationCoordinate2D]
+    let trackSegments: [[CLLocationCoordinate2D]]
     let size: CGSize
     let scale: CGFloat
     @ObservedObject var geometryCache: LivePreviewOverlayGeometryCache
@@ -63,7 +63,15 @@ private struct LiveActivityDataLayer: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            if !frame.fitRecordingActive {
+            if frame.recordingState == .noRecording {
+                Text("記録なし")
+                    .font(.system(size: 34 * scale, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 30 * scale)
+                    .padding(.vertical, 16 * scale)
+                    .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 12 * scale))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else if frame.recordingState == .waitingForStart {
                 hudText(
                     "FIT 記録開始待ち",
                     size: 16 * scale,
@@ -101,7 +109,7 @@ private struct LiveActivityDataLayer: View {
             if settings.showMiniMap, hasDrawableTrack {
                 let displayRect = displayRect(fromRendererRect: mapRect(), in: size)
                 LiveGPSTrackMapView(
-                    trackCoordinates: trackCoordinates,
+                    trackSegments: trackSegments,
                     currentCoordinate: frame.dataPoint.coordinate,
                     style: style,
                     scale: scale,
@@ -373,7 +381,7 @@ private struct LiveActivityDataLayer: View {
     }
 
     private var hasDrawableTrack: Bool {
-        geometryCache.hasDrawableTrack(for: trackCoordinates)
+        geometryCache.hasDrawableTrack(for: trackSegments)
     }
 
     private func topForBaseline(_ baselineY: CGFloat, fontSize: CGFloat) -> CGFloat {
@@ -416,17 +424,17 @@ private struct LiveActivityDataLayer: View {
 }
 
 private struct LiveGPSTrackMapView: View {
-    let trackCoordinates: [CLLocationCoordinate2D]
+    let trackSegments: [[CLLocationCoordinate2D]]
     let currentCoordinate: CLLocationCoordinate2D?
     let style: OverlayPresetRenderStyle
     let scale: CGFloat
     @ObservedObject var geometryCache: LivePreviewOverlayGeometryCache
 
     var body: some View {
-        if geometryCache.hasDrawableTrack(for: trackCoordinates) {
+        if geometryCache.hasDrawableTrack(for: trackSegments) {
             Canvas { context, size in
                 guard let drawing = geometryCache.trackDrawing(
-                    for: trackCoordinates,
+                    for: trackSegments,
                     size: size,
                     scale: scale
                 ) else { return }
@@ -636,16 +644,16 @@ private final class LivePreviewOverlayGeometryCache: ObservableObject {
     private var elevationSourceCache: (key: DataPointSignature, source: PreviewElevationSource?)?
     private var elevationDrawingCache: (key: PreviewElevationDrawingKey, drawing: PreviewElevationDrawing)?
 
-    func hasDrawableTrack(for coordinates: [CLLocationCoordinate2D]) -> Bool {
-        trackSource(for: coordinates) != nil
+    func hasDrawableTrack(for segments: [[CLLocationCoordinate2D]]) -> Bool {
+        trackSource(for: segments) != nil
     }
 
     func trackDrawing(
-        for coordinates: [CLLocationCoordinate2D],
+        for segments: [[CLLocationCoordinate2D]],
         size: CGSize,
         scale: CGFloat
     ) -> PreviewTrackDrawing? {
-        guard let source = trackSource(for: coordinates) else { return nil }
+        guard let source = trackSource(for: segments) else { return nil }
         let key = PreviewTrackDrawingKey(sourceKey: source.key, size: size, scale: scale)
         if let cached = trackDrawingCache, cached.key == key {
             return cached.drawing
@@ -675,13 +683,13 @@ private final class LivePreviewOverlayGeometryCache: ObservableObject {
         return drawing
     }
 
-    private func trackSource(for coordinates: [CLLocationCoordinate2D]) -> PreviewTrackSource? {
-        let key = CoordinateSignature(coordinates)
+    private func trackSource(for segments: [[CLLocationCoordinate2D]]) -> PreviewTrackSource? {
+        let key = CoordinateSignature(segments)
         if let cached = trackSourceCache, cached.key == key {
             return cached.source
         }
 
-        let source = Self.makeTrackSource(coordinates: coordinates, key: key)
+        let source = Self.makeTrackSource(segments: segments, key: key)
         trackSourceCache = (key, source)
         trackDrawingCache = nil
         return source
@@ -700,19 +708,25 @@ private final class LivePreviewOverlayGeometryCache: ObservableObject {
     }
 
     private static func makeTrackSource(
-        coordinates: [CLLocationCoordinate2D],
+        segments: [[CLLocationCoordinate2D]],
         key: CoordinateSignature
     ) -> PreviewTrackSource? {
         var validCoordinates: [CLLocationCoordinate2D] = []
-        validCoordinates.reserveCapacity(coordinates.count)
+        var pathSegments: [[CLLocationCoordinate2D]] = []
+        validCoordinates.reserveCapacity(segments.reduce(0) { $0 + $1.count })
 
         var minLat = Double.greatestFiniteMagnitude
         var maxLat = -Double.greatestFiniteMagnitude
 
-        for coordinate in coordinates where CLLocationCoordinate2DIsValid(coordinate) {
-            validCoordinates.append(coordinate)
-            minLat = min(minLat, coordinate.latitude)
-            maxLat = max(maxLat, coordinate.latitude)
+        for segment in segments {
+            let validSegment = downsampled(segment.filter(CLLocationCoordinate2DIsValid), maxCount: maxPreviewTrackPoints)
+            guard !validSegment.isEmpty else { continue }
+            pathSegments.append(validSegment)
+            for coordinate in validSegment {
+                validCoordinates.append(coordinate)
+                minLat = min(minLat, coordinate.latitude)
+                maxLat = max(maxLat, coordinate.latitude)
+            }
         }
 
         guard validCoordinates.count >= 2 else { return nil }
@@ -734,7 +748,7 @@ private final class LivePreviewOverlayGeometryCache: ObservableObject {
 
         return PreviewTrackSource(
             key: key,
-            coordinates: downsampled(validCoordinates, maxCount: maxPreviewTrackPoints),
+            segments: pathSegments,
             minLat: minLat,
             maxLat: maxLat,
             minProjectedLon: minProjectedLon,
@@ -748,7 +762,7 @@ private final class LivePreviewOverlayGeometryCache: ObservableObject {
         size: CGSize,
         scale: CGFloat
     ) -> PreviewTrackDrawing? {
-        guard size.width > 0, size.height > 0, let first = source.coordinates.first else { return nil }
+        guard size.width > 0, size.height > 0, source.segments.contains(where: { !$0.isEmpty }) else { return nil }
 
         let inset = 10 * scale
         let drawRect = CGRect(origin: .zero, size: size).insetBy(dx: inset, dy: inset)
@@ -770,9 +784,9 @@ private final class LivePreviewOverlayGeometryCache: ObservableObject {
         }
 
         var path = Path()
-        path.move(to: project(first))
-        for coordinate in source.coordinates.dropFirst() {
-            path.addLine(to: project(coordinate))
+        for segment in source.segments where !segment.isEmpty {
+            path.move(to: project(segment[0]))
+            for coordinate in segment.dropFirst() { path.addLine(to: project(coordinate)) }
         }
 
         return PreviewTrackDrawing(
@@ -876,7 +890,7 @@ private struct ElevationProfileSample {
 
 private struct PreviewTrackSource {
     let key: CoordinateSignature
-    let coordinates: [CLLocationCoordinate2D]
+    let segments: [[CLLocationCoordinate2D]]
     let minLat: Double
     let maxLat: Double
     let minProjectedLon: Double
@@ -957,6 +971,7 @@ private struct PreviewElevationDrawingKey: Hashable {
 
 private struct CoordinateSignature: Hashable {
     let count: Int
+    let segmentCounts: [Int]
     let firstLatitude: Int64
     let firstLongitude: Int64
     let middleLatitude: Int64
@@ -964,8 +979,11 @@ private struct CoordinateSignature: Hashable {
     let lastLatitude: Int64
     let lastLongitude: Int64
 
-    init(_ coordinates: [CLLocationCoordinate2D]) {
+    init(_ segments: [[CLLocationCoordinate2D]]) {
+        let coordinates = segments.flatMap { $0 }
         count = coordinates.count
+        // The segment layout is part of the visual output, not just its points.
+        segmentCounts = segments.map(\.count)
         let first = coordinates.first
         let middle = coordinates.isEmpty ? nil : coordinates[coordinates.count / 2]
         let last = coordinates.last

@@ -557,13 +557,16 @@ enum HeadlessExporter {
         warnUnknownFlags(in: args)
         let textPosition = try textOverlayPosition(from: value("--text-pos", in: args))
 
-        guard let fitPath = try value("--fit", in: args) else { throw Err.missing("--fit") }
+        let fitPaths = try values("--fit", in: args)
+        guard !fitPaths.isEmpty else { throw Err.missing("--fit") }
         let videoPaths = try values("--video", in: args)
         guard !videoPaths.isEmpty else { throw Err.missing("--video") }
         guard let outPath = try value("--export-to", in: args) else { throw Err.missing("--export-to") }
 
         // FIT
-        let pts = try FITParser().parseDataPoints(url: URL(fileURLWithPath: fitPath))
+        let parser = FITParser()
+        let parsedFITs = try fitPaths.map { try parser.parse(url: URL(fileURLWithPath: $0)) }
+        let pts = FITMerger.merge(parsedFITs.map { FITMerger.Source(dataPoints: $0.dataPoints, hrZoneConfig: $0.hrZoneConfig) }).dataPoints
         guard let fitStart = pts.first?.timestamp else { throw Err.empty("FITに記録がありません") }
         logLine("[Headless] FIT points: \(pts.count)")
 
@@ -652,7 +655,7 @@ enum HeadlessExporter {
         let renderer = OverlayRenderer(videoSize: CGSize(width: w, height: h), settings: overlaySettings)
         renderer.allDataPoints = pts
         renderer.buildElevationGainCache()
-        renderer.trackCoordinates = pts.compactMap { $0.coordinate }
+        renderer.trackSegments = FITMerger.trackSegments(from: pts)
         let textSize = try optionalDouble("--text-size", in: args)
         if let text = try value("--text", in: args), !text.isEmpty {
             var ov = TextOverlay(text: text, startTime: 0, duration: 9999)

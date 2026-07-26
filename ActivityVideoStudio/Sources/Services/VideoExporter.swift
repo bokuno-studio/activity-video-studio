@@ -103,7 +103,7 @@ final class VideoExporter: @unchecked Sendable {
         let contentKind: OverlayCacheContentKind
         let sourceBucket: Int64
         let playbackBucket: Int64
-        let fitRecordingActive: Bool
+        let recordingState: FITRecordingState
         let textVisibility: [Bool]
     }
 
@@ -137,13 +137,13 @@ final class VideoExporter: @unchecked Sendable {
             dataPoint: FITDataPoint,
             elapsedTime: TimeInterval,
             globalPlaybackTime: TimeInterval,
-            fitRecordingActive: Bool,
+            recordingState: FITRecordingState,
             renderer: OverlayRenderer
         ) -> CIImage? {
             let key = cacheKey(
                 sourceVideoTime: sourceVideoTime,
                 globalPlaybackTime: globalPlaybackTime,
-                fitRecordingActive: fitRecordingActive
+                recordingState: recordingState
             )
             if let cached = locked(lock, { entry }), cached.key == key {
                 return cached.ciImage
@@ -158,7 +158,7 @@ final class VideoExporter: @unchecked Sendable {
                     dataPoint: dataPoint,
                     elapsedTime: elapsedTime,
                     globalPlaybackTime: globalPlaybackTime,
-                    fitRecordingActive: fitRecordingActive
+                    recordingState: recordingState
                 ) else {
                     return nil
                 }
@@ -196,7 +196,7 @@ final class VideoExporter: @unchecked Sendable {
         private func cacheKey(
             sourceVideoTime: TimeInterval,
             globalPlaybackTime: TimeInterval,
-            fitRecordingActive: Bool
+            recordingState: FITRecordingState
         ) -> OverlayCacheKey {
             let playbackQuantum = textOverlays.contains { $0.isOpacityAnimating(at: globalPlaybackTime) }
                 ? Swift.min(baseQuantum, frameQuantum)
@@ -206,7 +206,7 @@ final class VideoExporter: @unchecked Sendable {
                 contentKind: .full,
                 sourceBucket: Self.bucket(for: sourceVideoTime, quantum: baseQuantum),
                 playbackBucket: Self.bucket(for: globalPlaybackTime, quantum: playbackQuantum),
-                fitRecordingActive: fitRecordingActive,
+                recordingState: recordingState,
                 textVisibility: textVisibility(at: globalPlaybackTime)
             )
         }
@@ -220,7 +220,7 @@ final class VideoExporter: @unchecked Sendable {
                 contentKind: .textOnly,
                 sourceBucket: 0,
                 playbackBucket: Self.bucket(for: globalPlaybackTime, quantum: playbackQuantum),
-                fitRecordingActive: false,
+                recordingState: .waitingForStart,
                 textVisibility: textVisibility(at: globalPlaybackTime)
             )
         }
@@ -838,13 +838,14 @@ final class VideoExporter: @unchecked Sendable {
             }
 
             autoreleasepool {
-                let fitRecordingActive = renderer.isFitRecordingActive(dataPoint: dp, elapsedTime: elapsed)
+                let recordingState = capturedTimeSync.recordingState(segmentIndex: capturedSegIdx, playbackTime: sourceVideoTime)
+                let displayedDataPoint = recordingState == .noRecording ? dp.withoutLiveMetrics() : dp
                 if let overlayCI = overlayCache.image(
                     sourceVideoTime: sourceVideoTime,
-                    dataPoint: dp,
+                    dataPoint: displayedDataPoint,
                     elapsedTime: elapsed,
                     globalPlaybackTime: globalPlaybackTime,
-                    fitRecordingActive: fitRecordingActive,
+                    recordingState: recordingState,
                     renderer: renderer
                 ) {
                     let composited = overlayCI.composited(over: request.sourceImage)

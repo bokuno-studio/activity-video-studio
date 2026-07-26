@@ -17,6 +17,19 @@ struct FITDataPoint {
     let coreTemperature: Double?   // °C (CORE body temperature sensor, developer field)
     let skinTemperature: Double?   // °C (CORE skin temperature, developer field)
 
+    func withDistance(_ distance: Double?) -> FITDataPoint {
+        FITDataPoint(timestamp: timestamp, coordinate: coordinate, heartRate: heartRate, speed: speed,
+                     altitude: altitude, cadence: cadence, distance: distance, grade: grade,
+                     temperature: temperature, coreTemperature: coreTemperature, skinTemperature: skinTemperature)
+    }
+
+    /// Preserve only the values that are intentionally held during a recording gap.
+    func withoutLiveMetrics() -> FITDataPoint {
+        FITDataPoint(timestamp: timestamp, coordinate: nil, heartRate: nil, speed: nil,
+                     altitude: nil, cadence: nil, distance: distance, grade: nil,
+                     temperature: nil, coreTemperature: nil, skinTemperature: nil)
+    }
+
     /// Running cadence: Garmin stores single-foot strides, double for total spm
     var runningCadence: Int? {
         guard let cadence = cadence, cadence > 0 else { return nil }
@@ -52,6 +65,8 @@ struct FITDataPoint {
         let previous = dataPoints[anchorIndex - lookback]
         let anchor = dataPoints[anchorIndex]
 
+        guard !Self.hasGap(from: anchorIndex - lookback, through: anchorIndex, in: dataPoints) else { return nil }
+
         guard let previousAltitude = previous.altitude,
               let previousDistance = previous.distance,
               let currentAltitude = altitude ?? anchor.altitude else {
@@ -63,6 +78,11 @@ struct FITDataPoint {
 
         let computedGrade = ((currentAltitude - previousAltitude) / distanceDelta) * 100.0
         return computedGrade.isFinite ? computedGrade : nil
+    }
+
+    private static func hasGap(from start: Int, through end: Int, in points: [FITDataPoint]) -> Bool {
+        guard start >= 0, end < points.count, start < end else { return false }
+        return (start + 1 ... end).contains { points[$0].timestamp.timeIntervalSince(points[$0 - 1].timestamp) > FITMerger.gapThreshold }
     }
 
     private static func lastIndex(in dataPoints: [FITDataPoint], atOrBeforeDistance target: Double) -> Int? {

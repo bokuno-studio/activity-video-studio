@@ -11,19 +11,17 @@ final class OverlayRenderer {
     var settings: OverlaySettings
     var allDataPoints: [FITDataPoint] = [] {
         didSet {
-            hasDistanceData = allDataPoints.contains { $0.distance != nil }
             invalidateElevationProfileCache()
             buildElevationGainCache()
         }
     }
     var textOverlays: [TextOverlay] = []
-    var trackCoordinates: [CLLocationCoordinate2D] = [] {
+    var trackSegments: [[CLLocationCoordinate2D]] = [] {
         didSet {
             invalidateTrackCache()
         }
     }
-    var fitRecordingActive = true
-    private var hasDistanceData = false
+    var recordingState: FITRecordingState = .recording
 
     private var scale: CGFloat { videoSize.width / 1920.0 }
 
@@ -38,13 +36,7 @@ final class OverlayRenderer {
     private var elevationDrawingCache: (key: RendererElevationDrawingKey, drawing: RendererElevationDrawing)?
 
     func buildElevationGainCache() {
-        elevationGainCache = []
-        var gain = 0.0
-        var prevAlt: Double?
-        for dp in allDataPoints {
-            if let a = dp.altitude { if let pa = prevAlt, a > pa { gain += a - pa }; prevAlt = a }
-            elevationGainCache.append(gain)
-        }
+        elevationGainCache = FITMerger.cumulativeElevationGains(in: allDataPoints)
     }
 
     func cumulativeElevationGain(upTo distance: Double?) -> Double {
@@ -78,16 +70,10 @@ final class OverlayRenderer {
         let copy = OverlayRenderer(videoSize: exportVideoSize ?? videoSize, settings: settings.snapshot())
         copy.allDataPoints = allDataPoints
         copy.textOverlays = textOverlays
-        copy.trackCoordinates = trackCoordinates
-        copy.fitRecordingActive = fitRecordingActive
+        copy.trackSegments = trackSegments
+        copy.recordingState = recordingState
         copy.elevationGainCache = elevationGainCache
         return copy
-    }
-
-    func isFitRecordingActive(dataPoint: FITDataPoint, elapsedTime: TimeInterval) -> Bool {
-        guard elapsedTime >= 0 else { return false }
-        guard hasDistanceData else { return true }
-        return (dataPoint.distance ?? 0) > 0
     }
 
     // MARK: - Render
@@ -96,7 +82,7 @@ final class OverlayRenderer {
         dataPoint: FITDataPoint,
         elapsedTime: TimeInterval,
         globalPlaybackTime: TimeInterval = 0,
-        fitRecordingActive: Bool? = nil
+        recordingState: FITRecordingState? = nil
     ) -> CGImage? {
         let w = Int(videoSize.width), h = Int(videoSize.height)
         guard let ctx = Self.bitmapContext(width: w, height: h, cache: &renderContextCache) else { return nil }
@@ -105,9 +91,11 @@ final class OverlayRenderer {
         ctx.textMatrix = .identity
         ctx.setShadow(offset: CGSize(width: 1.5 * scale, height: -1.5 * scale), blur: 3 * scale, color: shadowColor)
 
-        let effectiveFITRecordingActive = fitRecordingActive ?? self.fitRecordingActive
-        if !effectiveFITRecordingActive {
-            drawWaitingIndicator(ctx: ctx)
+        let effectiveRecordingState = recordingState ?? self.recordingState
+        if effectiveRecordingState == .noRecording {
+            drawNoRecordingIndicator(ctx: ctx)
+        } else if effectiveRecordingState == .waitingForStart {
+            drawWaitingIndicator(ctx: ctx, message: "FIT 記録開始待ち")
         }
 
         let style = renderStyle
@@ -616,12 +604,12 @@ final class OverlayRenderer {
     }
 
     private func trackSource() -> RendererTrackSource? {
-        let key = CoordinateSignature(coordinates: trackCoordinates)
+        let key = CoordinateSignature(segments: trackSegments)
         if let cached = trackSourceCache, cached.key == key {
             return cached.source
         }
 
-        let source = Self.makeTrackSource(coordinates: trackCoordinates, key: key)
+        let source = Self.makeTrackSource(segments: trackSegments, key: key)
         trackSourceCache = (key, source)
         trackDrawingCache = nil
         return source
@@ -657,19 +645,25 @@ final class OverlayRenderer {
     }
 
     private static func makeTrackSource(
-        coordinates: [CLLocationCoordinate2D],
+        segments: [[CLLocationCoordinate2D]],
         key: CoordinateSignature
     ) -> RendererTrackSource? {
         var validCoordinates: [CLLocationCoordinate2D] = []
-        validCoordinates.reserveCapacity(coordinates.count)
+        var pathSegments: [[CLLocationCoordinate2D]] = []
+        validCoordinates.reserveCapacity(segments.reduce(0) { $0 + $1.count })
 
         var minLat = Double.greatestFiniteMagnitude
         var maxLat = -Double.greatestFiniteMagnitude
 
-        for coordinate in coordinates where CLLocationCoordinate2DIsValid(coordinate) {
-            validCoordinates.append(coordinate)
-            minLat = min(minLat, coordinate.latitude)
-            maxLat = max(maxLat, coordinate.latitude)
+        for segment in segments {
+            let validSegment = segment.filter(CLLocationCoordinate2DIsValid)
+            guard !validSegment.isEmpty else { continue }
+            pathSegments.append(validSegment)
+            for coordinate in validSegment {
+                validCoordinates.append(coordinate)
+                minLat = min(minLat, coordinate.latitude)
+                maxLat = max(maxLat, coordinate.latitude)
+            }
         }
 
         guard validCoordinates.count >= 2 else { return nil }
@@ -691,7 +685,7 @@ final class OverlayRenderer {
 
         return RendererTrackSource(
             key: key,
-            coordinates: validCoordinates,
+            segments: pathSegments,
             minLat: minLat,
             maxLat: maxLat,
             minProjectedLon: minProjectedLon,
@@ -706,7 +700,7 @@ final class OverlayRenderer {
         scale: CGFloat,
         cornerRadius: CGFloat
     ) -> RendererTrackDrawing? {
-        guard let first = source.coordinates.first else { return nil }
+        guard source.segments.contains(where: { !$0.isEmpty }) else { return nil }
 
         // Preserve aspect ratio inside the map area with an inset.
         let inset = 10 * scale
@@ -733,9 +727,9 @@ final class OverlayRenderer {
         }
 
         let polyline = CGMutablePath()
-        polyline.move(to: project(first))
-        for coordinate in source.coordinates.dropFirst() {
-            polyline.addLine(to: project(coordinate))
+        for segment in source.segments where !segment.isEmpty {
+            polyline.move(to: project(segment[0]))
+            for coordinate in segment.dropFirst() { polyline.addLine(to: project(coordinate)) }
         }
 
         return RendererTrackDrawing(
@@ -821,7 +815,7 @@ final class OverlayRenderer {
 
     private struct RendererTrackSource {
         let key: CoordinateSignature
-        let coordinates: [CLLocationCoordinate2D]
+        let segments: [[CLLocationCoordinate2D]]
         let minLat: Double
         let maxLat: Double
         let minProjectedLon: Double
@@ -896,6 +890,7 @@ final class OverlayRenderer {
 
     private struct CoordinateSignature: Hashable {
         let count: Int
+        let segmentCounts: [Int]
         let firstLatitude: Int64
         let firstLongitude: Int64
         let middleLatitude: Int64
@@ -903,8 +898,11 @@ final class OverlayRenderer {
         let lastLatitude: Int64
         let lastLongitude: Int64
 
-        init(coordinates: [CLLocationCoordinate2D]) {
+        init(segments: [[CLLocationCoordinate2D]]) {
+            let coordinates = segments.flatMap { $0 }
             count = coordinates.count
+            // Segment boundaries are visual data: changing one must invalidate the map cache.
+            segmentCounts = segments.map(\.count)
             let first = coordinates.first
             let middle = coordinates.isEmpty ? nil : coordinates[coordinates.count / 2]
             let last = coordinates.last
@@ -1156,7 +1154,7 @@ final class OverlayRenderer {
 
     // MARK: - Waiting indicator
 
-    private func drawWaitingIndicator(ctx: CGContext) {
+    private func drawWaitingIndicator(ctx: CGContext, message: String) {
         let fontName = "Helvetica"
         let fontSize = 16 * scale
         let font = cachedFont(name: fontName, size: fontSize) {
@@ -1166,13 +1164,41 @@ final class OverlayRenderer {
             .font: font,
             .foregroundColor: NSColor(white: 0.6, alpha: 0.8)
         ]
-        let str = NSAttributedString(string: "FIT 記録開始待ち", attributes: attrs)
+        let str = NSAttributedString(string: message, attributes: attrs)
         let line = CTLineCreateWithAttributedString(str)
 
         ctx.saveGState()
         let topOffset = 24 * scale
         let baselineY = videoSize.height - topOffset - CTFontGetAscent(font)
         ctx.textPosition = CGPoint(x: 30 * scale, y: baselineY)
+        CTLineDraw(line, ctx)
+        ctx.restoreGState()
+    }
+
+    private func drawNoRecordingIndicator(ctx: CGContext) {
+        let fontSize = 34 * scale
+        let font = cachedFont(name: "NoRecording", size: fontSize) {
+            CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
+        }
+        let text = NSAttributedString(string: "記録なし", attributes: [
+            .font: font,
+            .foregroundColor: NSColor.white
+        ])
+        let line = CTLineCreateWithAttributedString(text)
+        let bounds = CTLineGetBoundsWithOptions(line, .useOpticalBounds)
+        let horizontalPadding = 30 * scale
+        let verticalPadding = 16 * scale
+        let panel = CGRect(
+            x: (videoSize.width - bounds.width - horizontalPadding * 2) / 2,
+            y: (videoSize.height - bounds.height - verticalPadding * 2) / 2,
+            width: bounds.width + horizontalPadding * 2,
+            height: bounds.height + verticalPadding * 2
+        )
+        ctx.saveGState()
+        ctx.setFillColor(NSColor.black.withAlphaComponent(0.72).cgColor)
+        ctx.addPath(CGPath(roundedRect: panel, cornerWidth: 12 * scale, cornerHeight: 12 * scale, transform: nil))
+        ctx.fillPath()
+        ctx.textPosition = CGPoint(x: panel.midX - bounds.width / 2 - bounds.origin.x, y: panel.midY - bounds.height / 2 - bounds.origin.y)
         CTLineDraw(line, ctx)
         ctx.restoreGState()
     }

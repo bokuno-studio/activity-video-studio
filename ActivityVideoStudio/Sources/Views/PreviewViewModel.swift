@@ -18,7 +18,7 @@ struct LivePreviewOverlayFrame {
     let dataPoint: FITDataPoint
     let elapsedTime: TimeInterval
     let globalPlaybackTime: TimeInterval
-    let fitRecordingActive: Bool
+    let recordingState: FITRecordingState
     let currentElevationGain: Double
     let totalDistance: Double
 }
@@ -49,7 +49,7 @@ final class PreviewViewModel: ObservableObject {
     @Published var syncOffset: Double = 0
     @Published var showFileList = false
     @Published var currentCoordinate: CLLocationCoordinate2D?
-    @Published var trackCoordinates: [CLLocationCoordinate2D] = []
+    @Published var trackSegments: [[CLLocationCoordinate2D]] = []
     @Published var statusMessage: String?
     @Published var alert: UserFacingAlert?
     @Published var isLoading = false
@@ -142,7 +142,14 @@ final class PreviewViewModel: ObservableObject {
     private var projectSecurityScopedURLs: [URL] = []
     private var refreshedProjectFileReferencesByPath: [String: ProjectFileReference] = [:]
     private(set) var fitDataPoints: [FITDataPoint] = []
-    private(set) var fitURL: URL?
+    private(set) var fitURLs: [URL] = []
+    var fitPointCounts: [Int] {
+        fitURLs.map { url in
+            fitSources.first { $0.url.standardizedFileURL == url.standardizedFileURL }?.result.dataPoints.count ?? 0
+        }
+    }
+    var fitURL: URL? { fitURLs.first }
+    private var fitSources: [(url: URL, result: FITParser.ParseResult)] = []
     private(set) var videoURLs: [URL] = []
     private(set) var videoMetadatas: [VideoMetadata] = []
     private var didInitializeYouTubeDescription = false
@@ -191,7 +198,7 @@ final class PreviewViewModel: ObservableObject {
     ///        --export-to /path/output.mp4   (optional: auto-start export without save panel)
     private func autoLoadDebugFiles() async {
         let args = ProcessInfo.processInfo.arguments
-        var fitPath: String?
+        var fitPaths: [String] = []
         var videoPaths: [String] = []
         var exportPath: String?
         var trimStart: TimeInterval = 0
@@ -207,7 +214,7 @@ final class PreviewViewModel: ObservableObject {
         while i < args.count {
             switch args[i] {
             case "--fit":
-                if i + 1 < args.count { fitPath = args[i + 1]; i += 1 }
+                if i + 1 < args.count { fitPaths.append(args[i + 1]); i += 1 }
             case "--video":
                 if i + 1 < args.count { videoPaths.append(args[i + 1]); i += 1 }
             case "--trim-start":
@@ -260,9 +267,7 @@ final class PreviewViewModel: ObservableObject {
             overlaySettings.overlayPreset = overlayPreset
         }
 
-        if let fp = fitPath {
-            loadFITFile(url: URL(fileURLWithPath: fp))
-        }
+        for fp in fitPaths { loadFITFile(url: URL(fileURLWithPath: fp)) }
         for vp in videoPaths {
             await loadVideo(url: URL(fileURLWithPath: vp))
         }
@@ -512,11 +517,12 @@ final class PreviewViewModel: ObservableObject {
 
         do {
             var bookmarkWarnings: [String] = []
-            let fitFile = fitURL.map { projectFileReference(for: $0, warnings: &bookmarkWarnings) }
+            let fitFiles = fitURLs.map { projectFileReference(for: $0, warnings: &bookmarkWarnings) }
             let videoFiles = videoURLs.map { projectFileReference(for: $0, warnings: &bookmarkWarnings) }
             let document = ProjectDocument(
                 version: ProjectDocument.currentVersion,
-                fitFile: fitFile,
+                fitFile: fitFiles.first,
+                fitFiles: fitFiles,
                 videoFiles: videoFiles,
                 syncOffset: syncOffset,
                 trimSettings: trimSettings,
@@ -579,7 +585,7 @@ final class PreviewViewModel: ObservableObject {
             warnings.append("新しいプロジェクト形式です")
         }
 
-        if let fitFile = document.fitFile {
+        for fitFile in document.fitFiles ?? document.fitFile.map({ [$0] }) ?? [] {
             if let url = resolveProjectFile(
                 fitFile,
                 warnings: &warnings,
@@ -630,7 +636,7 @@ final class PreviewViewModel: ObservableObject {
         if videoLoaded {
             if await rebuildComposition() {
                 overlayRenderer?.textOverlays = textOverlays
-                overlayRenderer?.trackCoordinates = trackCoordinates
+                overlayRenderer?.trackSegments = trackSegments
                 overlayRenderer?.allDataPoints = fitDataPoints
                 overlayRenderer?.buildElevationGainCache()
             } else {
@@ -658,11 +664,12 @@ final class PreviewViewModel: ObservableObject {
         duration = 0
         liveOverlayFrame = nil
         currentCoordinate = nil
-        trackCoordinates = []
+        trackSegments = []
         fitDataPoints = []
         fitLoaded = false
         videoLoaded = false
-        fitURL = nil
+        fitURLs = []
+        fitSources = []
         videoURLs = []
         videoMetadatas = []
         trimSettings = []
@@ -845,29 +852,25 @@ final class PreviewViewModel: ObservableObject {
 
     func loadFITFile(url: URL) {
         do {
-            let isReplacingFIT = fitURL != nil || fitLoaded || !fitDataPoints.isEmpty
             let parser = FITParser()
             let result = try parser.parse(url: url)
-            if isReplacingFIT {
-                resetSyncOffsetForAutomaticAlignment()
-            }
             guard !result.dataPoints.isEmpty else {
-                fitDataPoints = []
-                fitLoaded = false
-                fitURL = nil
                 showError(
                     title: "FITを読み込めませんでした",
                     message: "\(url.lastPathComponent) にデータポイントがありません。別のFITファイルを選択してください。"
                 )
                 return
             }
-
-            fitDataPoints = result.dataPoints
+            guard !fitURLs.contains(where: { $0.standardizedFileURL == url.standardizedFileURL }) else { return }
+            let wasEmpty = fitSources.isEmpty
+            fitSources.append((url, result))
+            let merged = FITMerger.merge(fitSources.map { FITMerger.Source(dataPoints: $0.result.dataPoints, hrZoneConfig: $0.result.hrZoneConfig) })
+            fitDataPoints = merged.dataPoints
             fitLoaded = !fitDataPoints.isEmpty
-            fitURL = url
+            fitURLs = merged.chronologicalSourceIndices.map { fitSources[$0].url }
 
             // Apply HR zones from FIT
-            if let zoneConfig = result.hrZoneConfig {
+            if let zoneConfig = merged.hrZoneConfig {
                 overlaySettings.z1Max = zoneConfig.z1Max
                 overlaySettings.z2Max = zoneConfig.z2Max
                 overlaySettings.z3Max = zoneConfig.z3Max
@@ -875,15 +878,15 @@ final class PreviewViewModel: ObservableObject {
                 statusMessage = "FIT: \(fitDataPoints.count) データポイント, HR Zone: max \(zoneConfig.maxHeartRate)bpm"
             }
 
-            trackCoordinates = fitDataPoints.compactMap { $0.coordinate }
+            trackSegments = FITMerger.trackSegments(from: fitDataPoints)
 
             setupTimeSync()
-            applyDefaultFITStartAlignmentIfPossible()
+            if wasEmpty { applyDefaultFITStartAlignmentIfPossible() }
 
             // Update renderer if already exists
             if let renderer = overlayRenderer {
                 renderer.allDataPoints = fitDataPoints
-                renderer.trackCoordinates = trackCoordinates
+                renderer.trackSegments = trackSegments
                 renderer.buildElevationGainCache()
             }
 
@@ -896,6 +899,16 @@ final class PreviewViewModel: ObservableObject {
                 recovery: "対応している.fitファイルか確認してください。"
             )
         }
+    }
+
+    func removeFIT(at index: Int) {
+        guard fitURLs.indices.contains(index) else { return }
+        let url = fitURLs.remove(at: index)
+        fitSources.removeAll { $0.url.standardizedFileURL == url.standardizedFileURL }
+        let merged = FITMerger.merge(fitSources.map { FITMerger.Source(dataPoints: $0.result.dataPoints, hrZoneConfig: $0.result.hrZoneConfig) })
+        fitDataPoints = merged.dataPoints; fitLoaded = !fitDataPoints.isEmpty
+        trackSegments = FITMerger.trackSegments(from: fitDataPoints)
+        setupTimeSync(); markProjectEdited()
     }
 
     func loadVideo(url: URL) async {
@@ -1248,7 +1261,7 @@ final class PreviewViewModel: ObservableObject {
         let urls = videoURLs
         let durations = segmentDurations
         let dataPoints = fitDataPoints
-        let coordinates = trackCoordinates
+        let trackSegments = trackSegments
 
         guard !urls.isEmpty else {
             guard isCurrentRebuild(generation) else { return false }
@@ -1281,7 +1294,7 @@ final class PreviewViewModel: ObservableObject {
                 configureOverlayRenderer(
                     videoSize: videoSize,
                     dataPoints: dataPoints,
-                    coordinates: coordinates
+                    trackSegments: trackSegments
                 )
             } else {
                 // Multiple videos: compose into one timeline
@@ -1327,7 +1340,7 @@ final class PreviewViewModel: ObservableObject {
                 configureOverlayRenderer(
                     videoSize: firstVideoSize,
                     dataPoints: dataPoints,
-                    coordinates: coordinates
+                    trackSegments: trackSegments
                 )
             }
             return true
@@ -1351,7 +1364,7 @@ final class PreviewViewModel: ObservableObject {
     private func configureOverlayRenderer(
         videoSize: CGSize?,
         dataPoints: [FITDataPoint],
-        coordinates: [CLLocationCoordinate2D]
+        trackSegments: [[CLLocationCoordinate2D]]
     ) {
         guard let videoSize else {
             overlayRenderer = nil
@@ -1360,7 +1373,7 @@ final class PreviewViewModel: ObservableObject {
 
         overlayRenderer = OverlayRenderer(videoSize: videoSize, settings: overlaySettings)
         overlayRenderer?.allDataPoints = dataPoints
-        overlayRenderer?.trackCoordinates = coordinates
+        overlayRenderer?.trackSegments = trackSegments
         overlayRenderer?.buildElevationGainCache()
     }
 
@@ -1828,7 +1841,7 @@ final class PreviewViewModel: ObservableObject {
         vm.resetOutputFileName()
         vm.timeSync = timeSync
         overlayRenderer?.textOverlays = textOverlays
-        overlayRenderer?.trackCoordinates = trackCoordinates
+        overlayRenderer?.trackSegments = trackSegments
         vm.overlayRenderer = overlayRenderer?.makeExportCopy()
         vm.onExportingChanged = { [weak self] isExporting in
             self?.isExporting = isExporting
@@ -1951,18 +1964,19 @@ final class PreviewViewModel: ObservableObject {
 
         if let dataPoint = timeSync.dataPoint(segmentIndex: segmentIndex, playbackTime: segmentPlaybackTime),
            let elapsed = timeSync.elapsedTime(segmentIndex: segmentIndex, playbackTime: segmentPlaybackTime) {
-            let fitRecordingActive = renderer.isFitRecordingActive(dataPoint: dataPoint, elapsedTime: elapsed)
-            renderer.fitRecordingActive = fitRecordingActive
+            let recordingState = timeSync.recordingState(segmentIndex: segmentIndex, playbackTime: segmentPlaybackTime)
+            let displayedDataPoint = recordingState == .noRecording ? dataPoint.withoutLiveMetrics() : dataPoint
+            renderer.recordingState = recordingState
             renderer.textOverlays = textOverlays
             liveOverlayFrame = LivePreviewOverlayFrame(
-                dataPoint: dataPoint,
+                dataPoint: displayedDataPoint,
                 elapsedTime: elapsed,
                 globalPlaybackTime: trimmedPlaybackTime(),
-                fitRecordingActive: fitRecordingActive,
-                currentElevationGain: renderer.cumulativeElevationGain(upTo: dataPoint.distance),
+                recordingState: recordingState,
+                currentElevationGain: renderer.cumulativeElevationGain(upTo: displayedDataPoint.distance),
                 totalDistance: renderer.totalDistance
             )
-            currentCoordinate = dataPoint.coordinate
+            currentCoordinate = displayedDataPoint.coordinate
         } else {
             liveOverlayFrame = nil
             currentCoordinate = nil
@@ -2112,10 +2126,11 @@ final class PreviewViewModel: ObservableObject {
 }
 
 private struct ProjectDocument: Codable {
-    static let currentVersion = 2
+    static let currentVersion = 3
 
     var version: Int
     var fitFile: ProjectFileReference?
+    var fitFiles: [ProjectFileReference]?
     var videoFiles: [ProjectFileReference]
     var syncOffset: Double
     var trimSettings: [TrimSettings]

@@ -2,30 +2,36 @@ import SwiftUI
 
 /// Sidebar showing loaded files and their metadata.
 struct FileListView: View {
-    let fitURL: URL?
-    let fitPointCount: Int
+    let fitURLs: [URL]
+    let fitPointCounts: [Int]
     let videoURLs: [URL]
     let videoDurations: [TimeInterval]
     let onRemoveVideo: (Int) -> Void
+    let onRemoveFIT: (Int) -> Void
 
     var body: some View {
         List {
             // FIT file
             Section("FIT ファイル") {
-                if let url = fitURL {
-                    HStack {
-                        Image(systemName: "waveform.path")
-                            .foregroundStyle(.orange)
-                        VStack(alignment: .leading) {
-                            Text(url.lastPathComponent)
-                                .font(.subheadline)
-                            Text("\(fitPointCount) データポイント")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                if !fitURLs.isEmpty {
+                    ForEach(Array(fitURLs.enumerated()), id: \.offset) { index, url in
+                        HStack {
+                            Image(systemName: "waveform.path")
+                                .foregroundStyle(.orange)
+                            VStack(alignment: .leading) {
+                                Text(url.lastPathComponent)
+                                    .font(.subheadline)
+                                Text("\(fitPointCounts.indices.contains(index) ? fitPointCounts[index] : 0) データポイント")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("FITファイル \(url.lastPathComponent)、\(fitPointCounts.indices.contains(index) ? fitPointCounts[index] : 0) データポイント")
+                        .contextMenu {
+                            Button(role: .destructive) { onRemoveFIT(index) } label: { Label("削除", systemImage: "trash") }
                         }
                     }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("FITファイル \(url.lastPathComponent)、\(fitPointCount) データポイント")
                 } else {
                     Text(".fit ファイルをドロップ")
                         .font(.caption)

@@ -25,14 +25,7 @@ final class YouTubeDescriptionGenerator {
         let totalDistance = last.distance ?? 0
         let totalDuration = last.timestamp.timeIntervalSince(first.timestamp)
 
-        var elevGain = 0.0
-        var prevAlt: Double?
-        for dp in dataPoints {
-            if let alt = dp.altitude {
-                if let prev = prevAlt, alt > prev { elevGain += alt - prev }
-                prevAlt = alt
-            }
-        }
+        let elevGain = FITMerger.cumulativeElevationGains(in: dataPoints).last ?? 0
 
         let avgHR = hrs.isEmpty ? 0 : hrs.reduce(0) { $0 + Int($1) } / hrs.count
         let maxHR = hrs.isEmpty ? 0 : Int(hrs.max()!)
