@@ -63,15 +63,7 @@ private struct LiveActivityDataLayer: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            if frame.recordingState == .noRecording {
-                Text("記録なし")
-                    .font(.system(size: 34 * scale, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 30 * scale)
-                    .padding(.vertical, 16 * scale)
-                    .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 12 * scale))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            } else if frame.recordingState == .waitingForStart {
+            if frame.recordingState == .waitingForStart {
                 hudText(
                     "FIT 記録開始待ち",
                     size: 16 * scale,
@@ -166,19 +158,19 @@ private struct LiveActivityDataLayer: View {
         return ZStack(alignment: .topLeading) {
             if settings.showDistance {
                 let current = frame.dataPoint.distance.map { String(format: "%.1f", $0 / 1000.0) } ?? "--"
-                let total = String(format: "%.1f KM", frame.totalDistance / 1000.0)
+                let total = frame.totalDistance.map { String(format: "%.1f KM", $0 / 1000.0) } ?? "-- KM"
                 hudText("\(current) / \(total)", size: style.distanceFontSize * scale, color: .white)
                     .offset(x: rightX, y: topForBaseline(y, fontSize: style.distanceFontSize * scale))
             }
 
             if settings.showTime {
-                labelValue(label: "TIME", value: formatElapsedTime(frame.elapsedTime), x: rightX, y: rightTimeY())
+                labelValue(label: "TIME", value: frame.elapsedTime.map(formatElapsedTime) ?? "--:--:--", x: rightX, y: rightTimeY())
             }
 
             if settings.showElevationGain {
                 labelValue(
                     label: "ELEV GAIN",
-                    value: String(format: "+%.0f m", frame.currentElevationGain),
+                    value: frame.currentElevationGain.map { String(format: "+%.0f m", $0) } ?? "-- m",
                     x: rightX,
                     y: rightElevationGainY(),
                     valueColor: color(style.elevationColor)

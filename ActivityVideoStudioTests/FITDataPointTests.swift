@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 import XCTest
 
 final class FITDataPointTests: XCTestCase {
@@ -26,6 +27,32 @@ final class FITDataPointTests: XCTestCase {
 
         XCTAssertEqual(current.resolvedGrade(fallbackDataPoints: dataPoints) ?? 0, 10, accuracy: 0.001)
         XCTAssertEqual(current.gradeFormatted(fallbackDataPoints: dataPoints), "+10.0%")
+    }
+
+    func testWithoutLiveMetricsRemovesDistanceAndPositionData() {
+        let original = FITDataPoint(
+            timestamp: Date(timeIntervalSince1970: 1),
+            coordinate: CLLocationCoordinate2D(latitude: 35, longitude: 138),
+            heartRate: 150,
+            speed: 3,
+            altitude: 1_200,
+            cadence: 80,
+            distance: 2_500,
+            grade: 8,
+            temperature: 20,
+            coreTemperature: 38,
+            skinTemperature: 34
+        )
+
+        let sanitized = original.withoutLiveMetrics()
+
+        XCTAssertNil(sanitized.coordinate)
+        XCTAssertNil(sanitized.distance)
+        XCTAssertNil(sanitized.heartRate)
+        XCTAssertNil(sanitized.speed)
+        XCTAssertNil(sanitized.altitude)
+        XCTAssertNil(sanitized.cadence)
+        XCTAssertNil(sanitized.grade)
     }
 
     private func point(

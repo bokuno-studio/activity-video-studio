@@ -16,11 +16,11 @@ struct UserFacingAlert: Identifiable {
 /// layers; export still burns overlays with `OverlayRenderer`.
 struct LivePreviewOverlayFrame {
     let dataPoint: FITDataPoint
-    let elapsedTime: TimeInterval
+    let elapsedTime: TimeInterval?
     let globalPlaybackTime: TimeInterval
     let recordingState: FITRecordingState
-    let currentElevationGain: Double
-    let totalDistance: Double
+    let currentElevationGain: Double?
+    let totalDistance: Double?
 }
 
 #if DEBUG
@@ -1970,11 +1970,11 @@ final class PreviewViewModel: ObservableObject {
             renderer.textOverlays = textOverlays
             liveOverlayFrame = LivePreviewOverlayFrame(
                 dataPoint: displayedDataPoint,
-                elapsedTime: elapsed,
+                elapsedTime: recordingState == .noRecording ? nil : elapsed,
                 globalPlaybackTime: trimmedPlaybackTime(),
                 recordingState: recordingState,
-                currentElevationGain: renderer.cumulativeElevationGain(upTo: displayedDataPoint.distance),
-                totalDistance: renderer.totalDistance
+                currentElevationGain: displayedDataPoint.distance.map { renderer.cumulativeElevationGain(upTo: $0) },
+                totalDistance: recordingState == .noRecording ? nil : renderer.totalDistance
             )
             currentCoordinate = displayedDataPoint.coordinate
         } else {

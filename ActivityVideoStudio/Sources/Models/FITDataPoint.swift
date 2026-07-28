@@ -23,10 +23,10 @@ struct FITDataPoint {
                      temperature: temperature, coreTemperature: coreTemperature, skinTemperature: skinTemperature)
     }
 
-    /// Preserve only the values that are intentionally held during a recording gap.
+    /// Remove values that must not be displayed during a recording gap.
     func withoutLiveMetrics() -> FITDataPoint {
         FITDataPoint(timestamp: timestamp, coordinate: nil, heartRate: nil, speed: nil,
-                     altitude: nil, cadence: nil, distance: distance, grade: nil,
+                     altitude: nil, cadence: nil, distance: nil, grade: nil,
                      temperature: nil, coreTemperature: nil, skinTemperature: nil)
     }
 

@@ -135,7 +135,7 @@ final class VideoExporter: @unchecked Sendable {
         func image(
             sourceVideoTime: TimeInterval,
             dataPoint: FITDataPoint,
-            elapsedTime: TimeInterval,
+            elapsedTime: TimeInterval?,
             globalPlaybackTime: TimeInterval,
             recordingState: FITRecordingState,
             renderer: OverlayRenderer
@@ -843,7 +843,7 @@ final class VideoExporter: @unchecked Sendable {
                 if let overlayCI = overlayCache.image(
                     sourceVideoTime: sourceVideoTime,
                     dataPoint: displayedDataPoint,
-                    elapsedTime: elapsed,
+                    elapsedTime: recordingState == .noRecording ? nil : elapsed,
                     globalPlaybackTime: globalPlaybackTime,
                     recordingState: recordingState,
                     renderer: renderer

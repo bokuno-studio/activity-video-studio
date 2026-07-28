@@ -80,7 +80,7 @@ final class OverlayRenderer {
 
     func render(
         dataPoint: FITDataPoint,
-        elapsedTime: TimeInterval,
+        elapsedTime: TimeInterval?,
         globalPlaybackTime: TimeInterval = 0,
         recordingState: FITRecordingState? = nil
     ) -> CGImage? {
@@ -92,10 +92,8 @@ final class OverlayRenderer {
         ctx.setShadow(offset: CGSize(width: 1.5 * scale, height: -1.5 * scale), blur: 3 * scale, color: shadowColor)
 
         let effectiveRecordingState = recordingState ?? self.recordingState
-        if effectiveRecordingState == .noRecording {
-            drawNoRecordingIndicator(ctx: ctx)
-        } else if effectiveRecordingState == .waitingForStart {
-            drawWaitingIndicator(ctx: ctx, message: "FIT 記録開始待ち")
+        if effectiveRecordingState == .waitingForStart {
+            drawWaitingIndicator(ctx: ctx)
         }
 
         let style = renderStyle
@@ -215,7 +213,9 @@ final class OverlayRenderer {
 
         if settings.showDistance {
             let current = dataPoint.distance.map { String(format: "%.1f", $0 / 1000.0) } ?? "--"
-            let total = String(format: "%.1f KM", totalDistance / 1000.0)
+            let total = effectiveRecordingState == .noRecording
+                ? "-- KM"
+                : String(format: "%.1f KM", totalDistance / 1000.0)
             // Show as "X.X / Y.Y KM" on a single line to avoid visual confusion
             let distText = "\(current) / \(total)"
             drawText(ctx: ctx, text: distText, x: rightX, y: rightY, fontSize: distanceFontSize, color: white, bold: true)
@@ -224,15 +224,14 @@ final class OverlayRenderer {
 
         // TIME - right, below distance
         if settings.showTime {
-            let value = formatElapsedTime(elapsedTime)
+            let value = elapsedTime.map(formatElapsedTime) ?? "--:--:--"
             drawLabelValue(ctx: ctx, label: "TIME", value: value, x: rightX, y: rightY, labelColor: accentColor, valueSize: valueFontSize, labelSize: labelFontSize)
             rightY += rightAdvance
         }
 
         // ELEV GAIN - right, below time
         if settings.showElevationGain {
-            let gain = cumulativeElevationGain(upTo: dataPoint.distance)
-            let value = String(format: "+%.0f m", gain)
+            let value = dataPoint.distance.map { String(format: "+%.0f m", cumulativeElevationGain(upTo: $0)) } ?? "-- m"
             drawLabelValue(ctx: ctx, label: "ELEV GAIN", value: value, x: rightX, y: rightY, labelColor: accentColor, valueSize: valueFontSize, valueColor: style.elevationColor, labelSize: labelFontSize)
             rightY += rightAdvance
         }
@@ -1154,7 +1153,7 @@ final class OverlayRenderer {
 
     // MARK: - Waiting indicator
 
-    private func drawWaitingIndicator(ctx: CGContext, message: String) {
+    private func drawWaitingIndicator(ctx: CGContext) {
         let fontName = "Helvetica"
         let fontSize = 16 * scale
         let font = cachedFont(name: fontName, size: fontSize) {
@@ -1164,41 +1163,13 @@ final class OverlayRenderer {
             .font: font,
             .foregroundColor: NSColor(white: 0.6, alpha: 0.8)
         ]
-        let str = NSAttributedString(string: message, attributes: attrs)
+        let str = NSAttributedString(string: "FIT 記録開始待ち", attributes: attrs)
         let line = CTLineCreateWithAttributedString(str)
 
         ctx.saveGState()
         let topOffset = 24 * scale
         let baselineY = videoSize.height - topOffset - CTFontGetAscent(font)
         ctx.textPosition = CGPoint(x: 30 * scale, y: baselineY)
-        CTLineDraw(line, ctx)
-        ctx.restoreGState()
-    }
-
-    private func drawNoRecordingIndicator(ctx: CGContext) {
-        let fontSize = 34 * scale
-        let font = cachedFont(name: "NoRecording", size: fontSize) {
-            CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
-        }
-        let text = NSAttributedString(string: "記録なし", attributes: [
-            .font: font,
-            .foregroundColor: NSColor.white
-        ])
-        let line = CTLineCreateWithAttributedString(text)
-        let bounds = CTLineGetBoundsWithOptions(line, .useOpticalBounds)
-        let horizontalPadding = 30 * scale
-        let verticalPadding = 16 * scale
-        let panel = CGRect(
-            x: (videoSize.width - bounds.width - horizontalPadding * 2) / 2,
-            y: (videoSize.height - bounds.height - verticalPadding * 2) / 2,
-            width: bounds.width + horizontalPadding * 2,
-            height: bounds.height + verticalPadding * 2
-        )
-        ctx.saveGState()
-        ctx.setFillColor(NSColor.black.withAlphaComponent(0.72).cgColor)
-        ctx.addPath(CGPath(roundedRect: panel, cornerWidth: 12 * scale, cornerHeight: 12 * scale, transform: nil))
-        ctx.fillPath()
-        ctx.textPosition = CGPoint(x: panel.midX - bounds.width / 2 - bounds.origin.x, y: panel.midY - bounds.height / 2 - bounds.origin.y)
         CTLineDraw(line, ctx)
         ctx.restoreGState()
     }
