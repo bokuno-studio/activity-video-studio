@@ -82,7 +82,8 @@ final class OverlayRenderer {
         dataPoint: FITDataPoint,
         elapsedTime: TimeInterval?,
         globalPlaybackTime: TimeInterval = 0,
-        recordingState: FITRecordingState? = nil
+        recordingState: FITRecordingState? = nil,
+        activityTime: Date? = nil
     ) -> CGImage? {
         let w = Int(videoSize.width), h = Int(videoSize.height)
         guard let ctx = Self.bitmapContext(width: w, height: h, cache: &renderContextCache) else { return nil }
@@ -251,7 +252,7 @@ final class OverlayRenderer {
 
         // Elevation profile - directly under the top-right mini-map
         if settings.showElevationProfile {
-            drawElevationProfile(ctx: ctx, currentPoint: dataPoint, metricsTopY: rightBackgroundRect?.maxY)
+            drawElevationProfile(ctx: ctx, currentPoint: dataPoint, activityTime: activityTime, metricsTopY: rightBackgroundRect?.maxY)
         }
 
         // GPS track (top-right mini-map)
@@ -349,7 +350,7 @@ final class OverlayRenderer {
     /// its width and right edge. The height is fit into the gap between the map's
     /// bottom and the top of the right metrics block (`metricsTopY`), so the graph
     /// never overlaps the map above it or the metrics below it.
-    private func drawElevationProfile(ctx: CGContext, currentPoint: FITDataPoint, metricsTopY: CGFloat?) {
+    private func drawElevationProfile(ctx: CGContext, currentPoint: FITDataPoint, activityTime: Date?, metricsTopY: CGFloat?) {
         guard let profileData = elevationProfileSource() else { return }
 
         let style = renderStyle
@@ -402,9 +403,8 @@ final class OverlayRenderer {
         ctx.strokePath()
 
         // Current position marker
-        if let cd = currentPoint.distance, profileData.totalDistance > 0 {
-            let progress = min(max(cd / profileData.totalDistance, 0), 1)
-            let mx = profileRect.minX + CGFloat(progress) * profileRect.width
+        if let progress = profileData.profile.timeRatio(at: activityTime ?? currentPoint.timestamp) {
+            let mx = profileRect.minX + progress * profileRect.width
             ctx.setStrokeColor(accentRed)
             ctx.setLineWidth(2.5 * scale)
             ctx.beginPath()
@@ -466,37 +466,8 @@ final class OverlayRenderer {
         dataPoints: [FITDataPoint],
         key: DataPointSignature
     ) -> RendererElevationSource? {
-        var rawSamples: [(distance: Double, altitude: Double)] = []
-        rawSamples.reserveCapacity(dataPoints.count)
-
-        var totalDistance = 0.0
-        var minAltitude = Double.greatestFiniteMagnitude
-        var maxAltitude = -Double.greatestFiniteMagnitude
-
-        for point in dataPoints {
-            guard let altitude = point.altitude, let distance = point.distance else { continue }
-            rawSamples.append((distance, altitude))
-            totalDistance = max(totalDistance, distance)
-            minAltitude = min(minAltitude, altitude)
-            maxAltitude = max(maxAltitude, altitude)
-        }
-
-        guard rawSamples.count >= 2, totalDistance > 0, maxAltitude > minAltitude else { return nil }
-
-        let samples = rawSamples.map { sample in
-            ElevationProfileSample(
-                distanceRatio: CGFloat(min(max(sample.distance / totalDistance, 0), 1)),
-                altitude: sample.altitude
-            )
-        }
-
-        return RendererElevationSource(
-            key: key,
-            samples: samples,
-            totalDistance: totalDistance,
-            minAltitude: minAltitude,
-            maxAltitude: maxAltitude
-        )
+        guard let profile = ElevationProfile.make(dataPoints: dataPoints) else { return nil }
+        return RendererElevationSource(key: key, profile: profile)
     }
 
     private static func makeElevationDrawing(
@@ -504,32 +475,36 @@ final class OverlayRenderer {
         profileRect: CGRect,
         cornerRadius: CGFloat
     ) -> RendererElevationDrawing? {
-        let range = source.maxAltitude - source.minAltitude
-        guard range > 0, let first = source.samples.first else { return nil }
+        let range = source.profile.maxAltitude - source.profile.minAltitude
+        guard range > 0 else { return nil }
 
-        func point(for sample: ElevationProfileSample) -> CGPoint {
+        func point(for sample: ElevationProfile.Sample) -> CGPoint {
             CGPoint(
-                x: profileRect.minX + sample.distanceRatio * profileRect.width,
-                y: profileRect.minY + CGFloat((sample.altitude - source.minAltitude) / range) * profileRect.height
+                x: profileRect.minX + sample.timeRatio * profileRect.width,
+                y: profileRect.minY + CGFloat((sample.altitude - source.profile.minAltitude) / range) * profileRect.height
             )
         }
 
         let fillPath = CGMutablePath()
         let linePath = CGMutablePath()
-        let firstPoint = point(for: first)
-
-        fillPath.move(to: CGPoint(x: firstPoint.x, y: profileRect.minY))
-        fillPath.addLine(to: firstPoint)
-        linePath.move(to: firstPoint)
-
-        for sample in source.samples.dropFirst() {
-            let p = point(for: sample)
-            fillPath.addLine(to: p)
-            linePath.addLine(to: p)
+        for segment in source.profile.segments where !segment.isEmpty {
+            let firstPoint = point(for: segment[0])
+            fillPath.move(to: CGPoint(x: firstPoint.x, y: profileRect.minY))
+            fillPath.addLine(to: firstPoint)
+            linePath.move(to: firstPoint)
+            if segment.count == 1 {
+                linePath.addLine(to: CGPoint(x: firstPoint.x + 1, y: firstPoint.y))
+            } else {
+                for sample in segment.dropFirst() {
+                    let p = point(for: sample)
+                    fillPath.addLine(to: p)
+                    linePath.addLine(to: p)
+                }
+            }
+            let lastPoint = point(for: segment[segment.count - 1])
+            fillPath.addLine(to: CGPoint(x: lastPoint.x, y: profileRect.minY))
+            fillPath.closeSubpath()
         }
-
-        fillPath.addLine(to: CGPoint(x: profileRect.maxX, y: profileRect.minY))
-        fillPath.closeSubpath()
 
         return RendererElevationDrawing(
             backgroundPath: CGPath(
@@ -541,8 +516,8 @@ final class OverlayRenderer {
             fillPath: fillPath,
             linePath: linePath,
             profileRect: profileRect,
-            minAltitude: source.minAltitude,
-            maxAltitude: source.maxAltitude
+            minAltitude: source.profile.minAltitude,
+            maxAltitude: source.profile.maxAltitude
         )
     }
 
@@ -786,17 +761,9 @@ final class OverlayRenderer {
         let context: CGContext
     }
 
-    private struct ElevationProfileSample {
-        let distanceRatio: CGFloat
-        let altitude: Double
-    }
-
     private struct RendererElevationSource {
         let key: DataPointSignature
-        let samples: [ElevationProfileSample]
-        let totalDistance: Double
-        let minAltitude: Double
-        let maxAltitude: Double
+        let profile: ElevationProfile
     }
 
     private struct RendererElevationDrawing {

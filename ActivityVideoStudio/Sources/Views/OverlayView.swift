@@ -90,6 +90,7 @@ private struct LiveActivityDataLayer: View {
                 LiveElevationProfileView(
                     dataPoints: allDataPoints,
                     currentPoint: frame.dataPoint,
+                    activityTime: frame.activityTime,
                     style: style,
                     scale: scale,
                     geometryCache: geometryCache
@@ -459,6 +460,7 @@ private struct LiveGPSTrackMapView: View {
 private struct LiveElevationProfileView: View {
     let dataPoints: [FITDataPoint]
     let currentPoint: FITDataPoint
+    let activityTime: Date?
     let style: OverlayPresetRenderStyle
     let scale: CGFloat
     @ObservedObject var geometryCache: LivePreviewOverlayGeometryCache
@@ -470,8 +472,8 @@ private struct LiveElevationProfileView: View {
             context.fill(drawing.fillPath, with: .color(color(style.elevationFillColor)))
             context.stroke(drawing.linePath, with: .color(color(style.elevationLineColor)), lineWidth: 2 * scale)
 
-            if let currentDistance = currentPoint.distance, drawing.totalDistance > 0 {
-                let markerX = CGFloat(min(max(currentDistance / drawing.totalDistance, 0), 1)) * size.width
+            if let markerRatio = drawing.profile.timeRatio(at: activityTime ?? currentPoint.timestamp) {
+                let markerX = markerRatio * size.width
                 var marker = Path()
                 marker.move(to: CGPoint(x: markerX, y: 0))
                 marker.addLine(to: CGPoint(x: markerX, y: size.height))
@@ -796,70 +798,44 @@ private final class LivePreviewOverlayGeometryCache: ObservableObject {
         dataPoints: [FITDataPoint],
         key: DataPointSignature
     ) -> PreviewElevationSource? {
-        var rawSamples: [(distance: Double, altitude: Double)] = []
-        rawSamples.reserveCapacity(dataPoints.count)
-
-        var totalDistance = 0.0
-        var minAltitude = Double.greatestFiniteMagnitude
-        var maxAltitude = -Double.greatestFiniteMagnitude
-
-        for point in dataPoints {
-            guard let altitude = point.altitude, let distance = point.distance else { continue }
-            rawSamples.append((distance, altitude))
-            totalDistance = max(totalDistance, distance)
-            minAltitude = min(minAltitude, altitude)
-            maxAltitude = max(maxAltitude, altitude)
-        }
-
-        guard rawSamples.count >= 2, totalDistance > 0, maxAltitude > minAltitude else { return nil }
-
-        let samples = rawSamples.map { sample in
-            ElevationProfileSample(
-                distanceRatio: CGFloat(min(max(sample.distance / totalDistance, 0), 1)),
-                altitude: sample.altitude
-            )
-        }
-
-        return PreviewElevationSource(
-            key: key,
-            samples: downsampled(samples, maxCount: maxPreviewElevationSamples),
-            totalDistance: totalDistance,
-            minAltitude: minAltitude,
-            maxAltitude: maxAltitude
-        )
+        guard let profile = ElevationProfile.make(dataPoints: dataPoints) else { return nil }
+        return PreviewElevationSource(key: key, profile: profile.downsampled(maxSamples: maxPreviewElevationSamples))
     }
 
     private static func makeElevationDrawing(
         source: PreviewElevationSource,
         size: CGSize
     ) -> PreviewElevationDrawing {
-        let range = source.maxAltitude - source.minAltitude
+        let range = source.profile.maxAltitude - source.profile.minAltitude
         var fillPath = Path()
         var linePath = Path()
 
-        for (index, sample) in source.samples.enumerated() {
-            let x = sample.distanceRatio * size.width
-            let y = size.height - CGFloat((sample.altitude - source.minAltitude) / range) * size.height
+        for segment in source.profile.segments where !segment.isEmpty {
+            for (index, sample) in segment.enumerated() {
+                let x = sample.timeRatio * size.width
+                let y = size.height - CGFloat((sample.altitude - source.profile.minAltitude) / range) * size.height
 
-            if index == 0 {
-                fillPath.move(to: CGPoint(x: x, y: size.height))
-                fillPath.addLine(to: CGPoint(x: x, y: y))
-                linePath.move(to: CGPoint(x: x, y: y))
-            } else {
-                fillPath.addLine(to: CGPoint(x: x, y: y))
-                linePath.addLine(to: CGPoint(x: x, y: y))
+                if index == 0 {
+                    fillPath.move(to: CGPoint(x: x, y: size.height))
+                    fillPath.addLine(to: CGPoint(x: x, y: y))
+                    linePath.move(to: CGPoint(x: x, y: y))
+                    if segment.count == 1 {
+                        linePath.addLine(to: CGPoint(x: x + 1, y: y))
+                    }
+                } else {
+                    fillPath.addLine(to: CGPoint(x: x, y: y))
+                    linePath.addLine(to: CGPoint(x: x, y: y))
+                }
             }
+            let last = segment[segment.count - 1]
+            fillPath.addLine(to: CGPoint(x: last.timeRatio * size.width, y: size.height))
+            fillPath.closeSubpath()
         }
-
-        fillPath.addLine(to: CGPoint(x: size.width, y: size.height))
-        fillPath.closeSubpath()
 
         return PreviewElevationDrawing(
             fillPath: fillPath,
             linePath: linePath,
-            totalDistance: source.totalDistance,
-            minAltitude: source.minAltitude,
-            maxAltitude: source.maxAltitude
+            profile: source.profile
         )
     }
 
@@ -873,11 +849,6 @@ private final class LivePreviewOverlayGeometryCache: ObservableObject {
             return values[min(sourceIndex, lastSourceIndex)]
         }
     }
-}
-
-private struct ElevationProfileSample {
-    let distanceRatio: CGFloat
-    let altitude: Double
 }
 
 private struct PreviewTrackSource {
@@ -916,22 +887,17 @@ private struct PreviewTrackDrawing {
 
 private struct PreviewElevationSource {
     let key: DataPointSignature
-    let samples: [ElevationProfileSample]
-    let totalDistance: Double
-    let minAltitude: Double
-    let maxAltitude: Double
+    let profile: ElevationProfile
 }
 
 private struct PreviewElevationDrawing {
     let fillPath: Path
     let linePath: Path
-    let totalDistance: Double
-    let minAltitude: Double
-    let maxAltitude: Double
+    let profile: ElevationProfile
 
     func y(forAltitude altitude: Double, in size: CGSize) -> CGFloat {
-        let range = maxAltitude - minAltitude
-        return size.height - CGFloat((altitude - minAltitude) / range) * size.height
+        let range = profile.maxAltitude - profile.minAltitude
+        return size.height - CGFloat((altitude - profile.minAltitude) / range) * size.height
     }
 }
 

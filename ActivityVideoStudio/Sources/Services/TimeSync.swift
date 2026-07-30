@@ -61,6 +61,10 @@ final class TimeSync {
             )
         }
 
+        func activityTime(segmentIndex: Int, playbackTime: TimeInterval) -> Date? {
+            TimeSync.activityTime(segmentIndex: segmentIndex, playbackTime: playbackTime, segments: segments)
+        }
+
         func interpolatedDataPoint(at date: Date) -> FITDataPoint? {
             TimeSync.interpolatedDataPoint(at: date, dataPoints: dataPoints)
         }
@@ -175,6 +179,15 @@ final class TimeSync {
 
     func recordingState(segmentIndex: Int, playbackTime: TimeInterval) -> FITRecordingState {
         Self.recordingState(segmentIndex: segmentIndex, playbackTime: playbackTime, dataPoints: dataPoints, gaps: gaps, segments: segments)
+    }
+
+    func activityTime(segmentIndex: Int, playbackTime: TimeInterval) -> Date? {
+        Self.activityTime(segmentIndex: segmentIndex, playbackTime: playbackTime, segments: segments)
+    }
+
+    private static func activityTime(segmentIndex: Int, playbackTime: TimeInterval, segments: [VideoSegment]) -> Date? {
+        guard segments.indices.contains(segmentIndex), let start = segments[segmentIndex].fitStartTime else { return nil }
+        return start.addingTimeInterval(playbackTime)
     }
 
     private static func recordingState(segmentIndex: Int, playbackTime: TimeInterval, dataPoints: [FITDataPoint], gaps: [FITRecordingGap], segments: [VideoSegment]) -> FITRecordingState {

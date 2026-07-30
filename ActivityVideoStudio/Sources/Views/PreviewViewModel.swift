@@ -16,6 +16,7 @@ struct UserFacingAlert: Identifiable {
 /// layers; export still burns overlays with `OverlayRenderer`.
 struct LivePreviewOverlayFrame {
     let dataPoint: FITDataPoint
+    let activityTime: Date?
     let elapsedTime: TimeInterval?
     let globalPlaybackTime: TimeInterval
     let recordingState: FITRecordingState
@@ -1970,6 +1971,7 @@ final class PreviewViewModel: ObservableObject {
             renderer.textOverlays = textOverlays
             liveOverlayFrame = LivePreviewOverlayFrame(
                 dataPoint: displayedDataPoint,
+                activityTime: timeSync.activityTime(segmentIndex: segmentIndex, playbackTime: segmentPlaybackTime),
                 elapsedTime: recordingState == .noRecording ? nil : elapsed,
                 globalPlaybackTime: trimmedPlaybackTime(),
                 recordingState: recordingState,

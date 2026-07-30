@@ -138,6 +138,7 @@ final class VideoExporter: @unchecked Sendable {
             elapsedTime: TimeInterval?,
             globalPlaybackTime: TimeInterval,
             recordingState: FITRecordingState,
+            activityTime: Date?,
             renderer: OverlayRenderer
         ) -> CIImage? {
             let key = cacheKey(
@@ -158,7 +159,8 @@ final class VideoExporter: @unchecked Sendable {
                     dataPoint: dataPoint,
                     elapsedTime: elapsedTime,
                     globalPlaybackTime: globalPlaybackTime,
-                    recordingState: recordingState
+                    recordingState: recordingState,
+                    activityTime: activityTime
                 ) else {
                     return nil
                 }
@@ -839,6 +841,7 @@ final class VideoExporter: @unchecked Sendable {
 
             autoreleasepool {
                 let recordingState = capturedTimeSync.recordingState(segmentIndex: capturedSegIdx, playbackTime: sourceVideoTime)
+                let activityTime = capturedTimeSync.activityTime(segmentIndex: capturedSegIdx, playbackTime: sourceVideoTime)
                 let displayedDataPoint = recordingState == .noRecording ? dp.withoutLiveMetrics() : dp
                 if let overlayCI = overlayCache.image(
                     sourceVideoTime: sourceVideoTime,
@@ -846,6 +849,7 @@ final class VideoExporter: @unchecked Sendable {
                     elapsedTime: recordingState == .noRecording ? nil : elapsed,
                     globalPlaybackTime: globalPlaybackTime,
                     recordingState: recordingState,
+                    activityTime: activityTime,
                     renderer: renderer
                 ) {
                     let composited = overlayCI.composited(over: request.sourceImage)

@@ -10,6 +10,8 @@
 		A10000010000000000000001 /* ActivityVideoStudioApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000001 /* ActivityVideoStudioApp.swift */; };
 		A10000010000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000002 /* ContentView.swift */; };
 		A10000010000000000000003 /* FITDataPoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000003 /* FITDataPoint.swift */; };
+
+		A10000010000000000000022 /* ElevationProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000022 /* ElevationProfile.swift */; };
 		A10000010000000000000004 /* VideoMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000004 /* VideoMetadata.swift */; };
 		A10000010000000000000005 /* FITParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000005 /* FITParser.swift */; };
 		A10000010000000000000006 /* VideoMetadataReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000006 /* VideoMetadataReader.swift */; };
@@ -46,12 +48,17 @@
 		B10000010000000000000021 /* FITMerger.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000021 /* FITMerger.swift */; };
 		B10000010000000000000008 /* FITDataPointTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000004 /* FITDataPointTests.swift */; };
 		B10000010000000000000009 /* FITMergerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000005 /* FITMergerTests.swift */; };
+
+		B10000010000000000000022 /* ElevationProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000022 /* ElevationProfile.swift */; };
+		B10000010000000000000023 /* ElevationProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000006 /* ElevationProfileTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A20000010000000000000001 /* ActivityVideoStudioApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityVideoStudioApp.swift; sourceTree = "<group>"; };
 		A20000010000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A20000010000000000000003 /* FITDataPoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDataPoint.swift; sourceTree = "<group>"; };
+
+		A20000010000000000000022 /* ElevationProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ElevationProfile.swift; sourceTree = "<group>"; };
 		A20000010000000000000004 /* VideoMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoMetadata.swift; sourceTree = "<group>"; };
 		A20000010000000000000005 /* FITParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITParser.swift; sourceTree = "<group>"; };
 		A20000010000000000000006 /* VideoMetadataReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoMetadataReader.swift; sourceTree = "<group>"; };
@@ -85,6 +92,8 @@
 		B20000010000000000000003 /* TimeSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeSyncTests.swift; sourceTree = "<group>"; };
 		B20000010000000000000004 /* FITDataPointTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDataPointTests.swift; sourceTree = "<group>"; };
 		B20000010000000000000005 /* FITMergerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITMergerTests.swift; sourceTree = "<group>"; };
+
+		B20000010000000000000006 /* ElevationProfileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ElevationProfileTests.swift; sourceTree = "<group>"; };
 		B30000010000000000000001 /* ActivityVideoStudioTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ActivityVideoStudioTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -145,6 +154,8 @@
 			isa = PBXGroup;
 			children = (
 				A20000010000000000000003 /* FITDataPoint.swift */,
+
+				A20000010000000000000022 /* ElevationProfile.swift */,
 				A20000010000000000000004 /* VideoMetadata.swift */,
 				A2000001000000000000000D /* OverlaySettings.swift */,
 				A20000010000000000000013 /* TextOverlay.swift */,
@@ -192,6 +203,8 @@
 				B20000010000000000000005 /* FITMergerTests.swift */,
 				B20000010000000000000002 /* FITParserTests.swift */,
 				B20000010000000000000003 /* TimeSyncTests.swift */,
+
+				B20000010000000000000006 /* ElevationProfileTests.swift */,
 			);
 			path = ActivityVideoStudioTests;
 			sourceTree = "<group>";
@@ -277,6 +290,8 @@
 				A10000010000000000000001 /* ActivityVideoStudioApp.swift in Sources */,
 				A10000010000000000000002 /* ContentView.swift in Sources */,
 				A10000010000000000000003 /* FITDataPoint.swift in Sources */,
+
+				A10000010000000000000022 /* ElevationProfile.swift in Sources */,
 				A10000010000000000000004 /* VideoMetadata.swift in Sources */,
 				A10000010000000000000005 /* FITParser.swift in Sources */,
 				A10000010000000000000006 /* VideoMetadataReader.swift in Sources */,
@@ -318,6 +333,9 @@
 				B10000010000000000000006 /* FITParser.swift in Sources */,
 				B10000010000000000000007 /* TimeSync.swift in Sources */,
 				B10000010000000000000021 /* FITMerger.swift in Sources */,
+
+				B10000010000000000000022 /* ElevationProfile.swift in Sources */,
+				B10000010000000000000023 /* ElevationProfileTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
