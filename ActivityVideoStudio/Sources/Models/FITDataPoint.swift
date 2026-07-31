@@ -23,6 +23,12 @@ struct FITDataPoint {
                      temperature: temperature, coreTemperature: coreTemperature, skinTemperature: skinTemperature)
     }
 
+    func withGrade(_ grade: Double?) -> FITDataPoint {
+        FITDataPoint(timestamp: timestamp, coordinate: coordinate, heartRate: heartRate, speed: speed,
+                     altitude: altitude, cadence: cadence, distance: distance, grade: grade,
+                     temperature: temperature, coreTemperature: coreTemperature, skinTemperature: skinTemperature)
+    }
+
     /// Remove values that must not be displayed during a recording gap.
     func withoutLiveMetrics() -> FITDataPoint {
         FITDataPoint(timestamp: timestamp, coordinate: nil, heartRate: nil, speed: nil,
@@ -51,58 +57,7 @@ struct FITDataPoint {
     }
 
     func resolvedGrade(fallbackDataPoints dataPoints: [FITDataPoint]) -> Double? {
-        if let grade, grade.isFinite {
-            return grade
-        }
-
-        guard let currentDistance = distance, currentDistance > 0 else { return nil }
-        guard let anchorIndex = Self.lastIndex(in: dataPoints, atOrBeforeDistance: currentDistance),
-              anchorIndex > 0 else {
-            return nil
-        }
-
-        let lookback = min(anchorIndex, 10)
-        let previous = dataPoints[anchorIndex - lookback]
-        let anchor = dataPoints[anchorIndex]
-
-        guard !Self.hasGap(from: anchorIndex - lookback, through: anchorIndex, in: dataPoints) else { return nil }
-
-        guard let previousAltitude = previous.altitude,
-              let previousDistance = previous.distance,
-              let currentAltitude = altitude ?? anchor.altitude else {
-            return nil
-        }
-
-        let distanceDelta = currentDistance - previousDistance
-        guard distanceDelta > 1 else { return nil }
-
-        let computedGrade = ((currentAltitude - previousAltitude) / distanceDelta) * 100.0
-        return computedGrade.isFinite ? computedGrade : nil
-    }
-
-    private static func hasGap(from start: Int, through end: Int, in points: [FITDataPoint]) -> Bool {
-        guard start >= 0, end < points.count, start < end else { return false }
-        return (start + 1 ... end).contains { points[$0].timestamp.timeIntervalSince(points[$0 - 1].timestamp) > FITMerger.gapThreshold }
-    }
-
-    private static func lastIndex(in dataPoints: [FITDataPoint], atOrBeforeDistance target: Double) -> Int? {
-        guard !dataPoints.isEmpty else { return nil }
-
-        var lo = 0
-        var hi = dataPoints.count - 1
-        while lo < hi {
-            let mid = (lo + hi + 1) / 2
-            if let distance = dataPoints[mid].distance, distance <= target {
-                lo = mid
-            } else {
-                hi = mid - 1
-            }
-        }
-
-        guard let distance = dataPoints[lo].distance, distance <= target else {
-            return nil
-        }
-        return lo
+        GradeResolver.resolve(for: self, fallbackDataPoints: dataPoints)
     }
 
     func gradeFormatted(fallbackDataPoints dataPoints: [FITDataPoint]) -> String {
@@ -112,5 +67,89 @@ struct FITDataPoint {
 
         let displayGrade = abs(grade) < 0.05 ? 0 : grade
         return String(format: "%+.1f%%", displayGrade)
+    }
+}
+
+/// Resolves a displayable grade from native FIT data or a bounded distance-based window.
+enum GradeResolver {
+    static let minimumWindowDistance = 20.0
+    static let maximumWindowDistance = 100.0
+    static let maximumWindowDuration: TimeInterval = 60
+    static let maximumAbsoluteGrade = 60.0
+
+    static func resolve(for current: FITDataPoint, fallbackDataPoints dataPoints: [FITDataPoint]) -> Double? {
+        // A FIT grade field takes precedence, even when its value is rejected as implausible.
+        if let nativeGrade = current.grade {
+            return validated(nativeGrade)
+        }
+
+        guard let currentDistance = current.distance, currentDistance > 0,
+              let currentAltitude = current.altitude,
+              let anchorIndex = lastIndex(in: dataPoints, atOrBefore: current.timestamp) else {
+            return nil
+        }
+
+        var candidateIndex = anchorIndex
+        while candidateIndex >= 0 {
+            let candidate = dataPoints[candidateIndex]
+
+            // Missing measurements and isolated distance regressions are common around
+            // GPS loss. They cannot form a window, but must not discard earlier data.
+            if candidateIndex < anchorIndex,
+               dataPoints[candidateIndex + 1].timestamp.timeIntervalSince(candidate.timestamp) > FITMerger.gapThreshold {
+                return nil
+            }
+
+            let duration = current.timestamp.timeIntervalSince(candidate.timestamp)
+            guard duration >= 0 else {
+                candidateIndex -= 1
+                continue
+            }
+            guard duration <= maximumWindowDuration else { return nil }
+
+            guard let candidateDistance = candidate.distance else {
+                candidateIndex -= 1
+                continue
+            }
+
+            let distanceDelta = currentDistance - candidateDistance
+            guard distanceDelta >= 0 else {
+                candidateIndex -= 1
+                continue
+            }
+            guard distanceDelta <= maximumWindowDistance else { return nil }
+
+            if distanceDelta >= minimumWindowDistance {
+                if let candidateAltitude = candidate.altitude {
+                    return validated(((currentAltitude - candidateAltitude) / distanceDelta) * 100.0)
+                }
+            }
+
+            candidateIndex -= 1
+        }
+
+        return nil
+    }
+
+    private static func validated(_ grade: Double) -> Double? {
+        guard grade.isFinite, abs(grade) <= maximumAbsoluteGrade else { return nil }
+        return grade
+    }
+
+    private static func lastIndex(in dataPoints: [FITDataPoint], atOrBefore timestamp: Date) -> Int? {
+        guard !dataPoints.isEmpty else { return nil }
+
+        var lo = 0
+        var hi = dataPoints.count - 1
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if dataPoints[mid].timestamp <= timestamp {
+                lo = mid
+            } else {
+                hi = mid - 1
+            }
+        }
+
+        return dataPoints[lo].timestamp <= timestamp ? lo : nil
     }
 }

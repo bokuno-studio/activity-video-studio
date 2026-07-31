@@ -219,11 +219,11 @@ final class TimeSync {
 
         // Before first data point
         if targetTime <= dataPoints[lo].timestamp.timeIntervalSince1970 {
-            return dataPoints[lo]
+            return resolvedGradeDataPoint(dataPoints[lo], dataPoints: dataPoints)
         }
         // After last data point
         if targetTime >= dataPoints[hi].timestamp.timeIntervalSince1970 {
-            return dataPoints[hi]
+            return resolvedGradeDataPoint(dataPoints[hi], dataPoints: dataPoints)
         }
 
         // Binary search
@@ -244,16 +244,13 @@ final class TimeSync {
         let range = afterTime - beforeTime
         guard range > 0 else { return before }
         if range > Self.maximumInterpolationGap {
-            return before
+            return resolvedGradeDataPoint(before, dataPoints: dataPoints)
         }
 
         let fraction = (targetTime - beforeTime) / range
         var result = interpolate(before: before, after: after, fraction: fraction)
 
-        // Compute grade from altitude if not present in FIT data
-        if result.grade == nil, lo > 0 {
-            result = computeGrade(result: result, index: lo, dataPoints: dataPoints)
-        }
+        result = resolvedGradeDataPoint(result, dataPoints: dataPoints)
 
         return result
     }
@@ -284,6 +281,10 @@ final class TimeSync {
 
     // MARK: - Interpolation
 
+    private static func resolvedGradeDataPoint(_ point: FITDataPoint, dataPoints: [FITDataPoint]) -> FITDataPoint {
+        point.withGrade(point.resolvedGrade(fallbackDataPoints: dataPoints))
+    }
+
     private static func interpolate(before: FITDataPoint, after: FITDataPoint, fraction: Double) -> FITDataPoint {
         let timestamp = Date(
             timeIntervalSince1970: before.timestamp.timeIntervalSince1970
@@ -312,39 +313,6 @@ final class TimeSync {
             temperature: fraction < 0.5 ? before.temperature : after.temperature,
             coreTemperature: lerpOptional(before.coreTemperature, after.coreTemperature, fraction),
             skinTemperature: lerpOptional(before.skinTemperature, after.skinTemperature, fraction)
-        )
-    }
-
-    /// Compute grade from altitude difference over ~10 data points for smoothing.
-    private static func computeGrade(result: FITDataPoint, index: Int, dataPoints: [FITDataPoint]) -> FITDataPoint {
-        let lookback = min(index, 10)
-        let prev = dataPoints[index - lookback]
-        let curr = dataPoints[index]
-
-        guard !(index - lookback + 1 ... index).contains(where: { dataPoints[$0].timestamp.timeIntervalSince(dataPoints[$0 - 1].timestamp) > maximumInterpolationGap }) else { return result }
-
-        guard let altPrev = prev.altitude, let altCurr = curr.altitude,
-              let distPrev = prev.distance, let distCurr = curr.distance else {
-            return result
-        }
-
-        let distDelta = distCurr - distPrev
-        guard distDelta > 1 else { return result }
-
-        let grade = ((altCurr - altPrev) / distDelta) * 100.0
-
-        return FITDataPoint(
-            timestamp: result.timestamp,
-            coordinate: result.coordinate,
-            heartRate: result.heartRate,
-            speed: result.speed,
-            altitude: result.altitude,
-            cadence: result.cadence,
-            distance: result.distance,
-            grade: grade,
-            temperature: result.temperature,
-            coreTemperature: result.coreTemperature,
-            skinTemperature: result.skinTemperature
         )
     }
 

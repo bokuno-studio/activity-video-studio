@@ -126,17 +126,28 @@ final class TimeSyncTests: XCTestCase {
         XCTAssertEqual(point(seconds: 0, speed: 1).paceFormatted, "16'40\"")
     }
 
+    func testInterpolatedDataPointUsesSharedDistanceBasedGradeResolver() throws {
+        let sync = TimeSync(dataPoints: (0...5).map {
+            point(seconds: TimeInterval($0 * 5), speed: 1, distance: Double($0 * 5), altitude: 100 + Double($0) * 0.5)
+        })
+
+        let interpolated = try XCTUnwrap(sync.interpolatedDataPoint(at: date(seconds: 22.5)))
+
+        XCTAssertEqual(interpolated.grade ?? 0, 10, accuracy: 0.001)
+    }
+
     private func point(
         seconds: TimeInterval,
         speed: Double?,
-        distance: Double? = nil
+        distance: Double? = nil,
+        altitude: Double? = nil
     ) -> FITDataPoint {
         FITDataPoint(
             timestamp: date(seconds: seconds),
             coordinate: nil,
             heartRate: nil,
             speed: speed,
-            altitude: nil,
+            altitude: altitude,
             cadence: nil,
             distance: distance,
             grade: nil,
