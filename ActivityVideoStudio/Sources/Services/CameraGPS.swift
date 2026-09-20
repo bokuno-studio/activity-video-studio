@@ -7,8 +7,8 @@ struct CameraGPSSample {
     let coordinate: CLLocationCoordinate2D
 }
 
-/// GPS5 subset of GPMF. Unknown keys are skipped; scope, padding and big-endian
-/// values follow https://github.com/gopro/gpmf-parser. No GPS9 inference is made.
+/// GPS5 and GPS9 subset of GPMF. Unknown keys are skipped; scope, padding and
+/// big-endian values follow https://github.com/gopro/gpmf-parser.
 enum GPMFParser {
     private struct Entry {
         let key: String
@@ -41,6 +41,18 @@ enum GPMFParser {
         var result = entries.filter { $0.type == 0 }.flatMap {
             parseScope($0.value, playbackTime: playbackTime, duration: duration, depth: depth + 1)
         }
+        // TYPE and SCAL apply to subsequent records in this scope only.
+        var type: Entry?
+        var scale: Entry?
+        for entry in entries {
+            switch entry.key {
+            case "TYPE": type = entry
+            case "SCAL": scale = entry
+            case "GPS9":
+                result += gps9(entry, type: type, scale: scale, playbackTime: playbackTime, duration: duration)
+            default: break
+            }
+        }
         guard let gps = entries.first(where: { $0.key == "GPS5" && $0.type == 108 && $0.size == 20 }),
               gps.count > 0,
               let utc = entries.first(where: { $0.key == "GPSU" && $0.type == 85 }),
@@ -62,6 +74,92 @@ enum GPMFParser {
             let delta = Double(index) * duration / Double(gps.count)
             result.append(CameraGPSSample(playbackTime: playbackTime + delta,
                                           timestamp: timestamp.addingTimeInterval(delta), coordinate: coordinate))
+        }
+        return result
+    }
+
+    private enum NumericType: UInt8 {
+        case int8 = 98, uint8 = 66, int16 = 115, uint16 = 83
+        case int32 = 108, uint32 = 76, int64 = 106, uint64 = 74
+        case float32 = 102, float64 = 100
+
+        var width: Int {
+            switch self {
+            case .int8, .uint8: return 1
+            case .int16, .uint16: return 2
+            case .int32, .uint32, .float32: return 4
+            case .int64, .uint64, .float64: return 8
+            }
+        }
+
+        func read(_ data: Data, at offset: Int) -> Double {
+            let raw = data.uint(offset, width)
+            switch self {
+            case .int8: return Double(Int8(bitPattern: UInt8(raw)))
+            case .int16: return Double(Int16(bitPattern: UInt16(raw)))
+            case .int32: return Double(Int32(bitPattern: UInt32(raw)))
+            case .int64: return Double(Int64(bitPattern: raw))
+            case .float32: return Double(Float(bitPattern: UInt32(raw)))
+            case .float64: return Double(bitPattern: raw)
+            default: return Double(raw)
+            }
+        }
+    }
+
+    private static func gps9Layout(_ entry: Entry) -> [NumericType]? {
+        guard entry.type == 99 else { return nil } // TYPE is an ASCII string.
+        let bytes = Array(entry.value)
+        var fields: [NumericType] = []
+        var cursor = 0
+        while cursor < bytes.count && bytes[cursor] != 0 {
+            guard let type = NumericType(rawValue: bytes[cursor]) else { return nil }
+            cursor += 1
+            var count = 1
+            if cursor < bytes.count && bytes[cursor] == 91 { // [n]
+                cursor += 1
+                let start = cursor
+                count = 0
+                while cursor < bytes.count && (48...57).contains(bytes[cursor]) {
+                    count = count * 10 + Int(bytes[cursor] - 48)
+                    guard count <= 9 else { return nil }
+                    cursor += 1
+                }
+                guard cursor > start, cursor < bytes.count, bytes[cursor] == 93, count > 0 else { return nil }
+                cursor += 1
+            }
+            guard fields.count + count <= 9 else { return nil }
+            fields += Array(repeating: type, count: count)
+        }
+        guard fields.count == 9, bytes[cursor...].allSatisfy({ $0 == 0 }) else { return nil }
+        return fields
+    }
+
+    private static func gps9(_ gps: Entry, type: Entry?, scale: Entry?, playbackTime: Double,
+                             duration: Double) -> [CameraGPSSample] {
+        guard gps.type == 63, gps.count > 0, let type, let fields = gps9Layout(type),
+              fields.reduce(0, { $0 + $1.width }) == gps.size,
+              let scale, let scaleType = NumericType(rawValue: scale.type), scale.size == scaleType.width,
+              scale.count == 1 || scale.count == 9 else { return [] }
+        let scales = (0..<9).map { scaleType.read(scale.value, at: (scale.count == 1 ? 0 : $0) * scaleType.width) }
+        guard scales.allSatisfy({ $0.isFinite && $0 > 0 }) else { return [] }
+        let epoch = Date(timeIntervalSince1970: 946_684_800) // 2000-01-01 UTC
+        var result: [CameraGPSSample] = []
+        for index in 0..<gps.count {
+            var cursor = index * gps.size
+            let values = fields.enumerated().map { field, type -> Double in
+                defer { cursor += type.width }
+                return type.read(gps.value, at: cursor) / scales[field]
+            }
+            guard values.allSatisfy(\.isFinite), values[8] == 2 || values[8] == 3,
+                  values[5] >= 0, values[5].rounded(.down) == values[5],
+                  values[5] <= 2_921_939, // End of year 9999, bounding malformed timestamps.
+                  values[6] >= 0, values[6] < 86_400 else { continue }
+            let coordinate = CLLocationCoordinate2D(latitude: values[0], longitude: values[1])
+            guard CLLocationCoordinate2DIsValid(coordinate) else { continue }
+            // GPS9 carries UTC for every record. Keep the original record index
+            // for playback timing even when preceding records have no fix.
+            result.append(CameraGPSSample(playbackTime: playbackTime + Double(index) * duration / Double(gps.count),
+                timestamp: epoch.addingTimeInterval(values[5] * 86_400 + values[6]), coordinate: coordinate))
         }
         return result
     }

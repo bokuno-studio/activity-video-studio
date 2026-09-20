@@ -75,7 +75,7 @@ APP=".../ActivityVideoStudio.app/Contents/MacOS/ActivityVideoStudio"
 
 ### カメラのGPSで同期する
 
-同期欄の「カメラのGPSで合わせる」で、GoPro MP4（LRVを含む）の GPS5 / GPSU
+同期欄の「カメラのGPSで合わせる」で、GoPro MP4（LRVを含む）の GPS5 / GPSU または GPS9
 記録から撮影日時のずれを補正します。「−41.3秒 / 軌跡の一致 2.6m」のように表示し、
 「GPS補正を取り消す」で直前の値に戻せます。補正値は通常の同期オフセットとして
 プロジェクトに保存され、手入力でも変更できます。
@@ -84,8 +84,8 @@ APP=".../ActivityVideoStudio.app/Contents/MacOS/ActivityVideoStudio"
 結合済みの記録で比較します。GPSは5秒間隔で比較し、FIT座標を線形補間した距離の
 中央値を表示します。記録範囲外や記録の空白は比較に含めません。中央値が50mを超える、
 または比較可能なGPSの重なりがない場合は、確認後に適用します。
-GPS5の有効なUTC・座標がない動画では日本語で通知し、オフセットを変更しません。
-GPS9や断片化MP4のテレメトリには対応していません。
+GPS5 / GPS9の有効なUTC・座標がない動画では日本語で通知し、オフセットを変更しません。
+断片化MP4のテレメトリには対応していません。
 
 Debugビルドのヘッドレス実行例:
 

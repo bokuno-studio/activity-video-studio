@@ -18,6 +18,74 @@ final class CameraGPSTests: XCTestCase {
         XCTAssertEqual(points[1].timestamp.timeIntervalSince(first.timestamp), 0.5)
     }
 
+    func testGPS9RealMaterialLayoutAndUTCWithoutGPSU() throws {
+        // Issue #129's actual first record, repeated at 10 Hz in a GPS9-only stream.
+        let points = GPMFParser.parse(gps9Payload(), playbackTime: 0.28, duration: 1)
+        XCTAssertEqual(points.count, 10)
+        let first = try XCTUnwrap(points.first)
+        XCTAssertEqual(first.coordinate.latitude, 35.3118938, accuracy: 0.0000001)
+        XCTAssertEqual(first.coordinate.longitude, 138.7669106, accuracy: 0.0000001)
+        XCTAssertEqual(first.timestamp, ISO8601DateFormatter().date(from: "2026-07-25T00:30:06Z"))
+        XCTAssertEqual(points[9].timestamp.timeIntervalSince(first.timestamp), 0.9, accuracy: 0.000001)
+        XCTAssertEqual(points[9].playbackTime, 1.18, accuracy: 0.000001)
+        let creation = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-07-25T00:30:47Z"))
+        let alignment = try XCTUnwrap(CameraGPSAlignment.calculate(videos: [video(creation, duration: 2)],
+            samples: [points], activity: []))
+        XCTAssertEqual(alignment.offsetSeconds, -41.28, accuracy: 0.000001)
+    }
+
+    func testGPS9TYPEControlsWidthsSignednessAndArrayExpansion() throws {
+        // A 34-byte layout, with unsigned days and signed coordinates. DOP > Int16.max.
+        let points = GPMFParser.parse(gps9Payload(type: "l[5]LlSL", wideFix: true, longitude: -1_387_669_106),
+                                      playbackTime: 0, duration: 1)
+        XCTAssertEqual(points.count, 10)
+        XCTAssertEqual(try XCTUnwrap(points.first).coordinate.longitude, -138.7669106, accuracy: 0.0000001)
+        XCTAssertEqual(points.first?.timestamp, ISO8601DateFormatter().date(from: "2026-07-25T00:30:06Z"))
+        XCTAssertEqual(GPMFParser.parse(gps9Payload(type: "l[7]S[2]"), playbackTime: 0, duration: 1).count, 10)
+    }
+
+    func testGPS9FixFiltersIndividualRecordsWithoutCompressingPlaybackTime() throws {
+        let points = GPMFParser.parse(gps9Payload(fixes: [0, 1, 2, 3, 4, 65535, 0, 1, 2, 3]),
+                                      playbackTime: 2, duration: 1)
+        XCTAssertEqual(points.count, 4)
+        for (point, index) in zip(points, [2, 3, 8, 9]) {
+            XCTAssertEqual(point.playbackTime, 2 + Double(index) / 10, accuracy: 0.000001)
+            let utc = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-07-25T00:30:06Z"))
+            XCTAssertEqual(point.timestamp.timeIntervalSince(utc), Double(index) / 10, accuracy: 0.000001)
+        }
+    }
+
+    func testGPS9UTCUsesEachRecordAcrossMidnight() throws {
+        let points = GPMFParser.parse(gps9Payload(days: 9702, seconds: 86_399_700), playbackTime: 0, duration: 2)
+        XCTAssertEqual(points.count, 10)
+        XCTAssertEqual(points[3].timestamp, ISO8601DateFormatter().date(from: "2026-07-26T00:00:00Z"))
+        // UTC increments by 0.1s from the records, not the 0.2s playback spacing.
+        XCTAssertEqual(points[9].timestamp.timeIntervalSince(points[0].timestamp), 0.9, accuracy: 0.000001)
+        XCTAssertEqual(points[9].playbackTime, 1.8, accuracy: 0.000001)
+    }
+
+    func testGPS9MalformedMetadataAndTruncationAreSafe() {
+        for type in ["", "lllllllS", "lllllllSSS", "lllllllSX", "l[0]SS", "l[99]SS", "l[7SS", "l[7]S[2]x", "l[7]S[2]\0x"] {
+            XCTAssertTrue(GPMFParser.parse(gps9Payload(type: type), playbackTime: 0, duration: 1).isEmpty, type)
+        }
+        for bytes in [gps9Payload(type: nil), gps9Payload(type: "lllllllSS", wideFix: true),
+                      gps9Payload(scale: 0), gps9Payload(scale: -1), gps9Payload(days: -1),
+                      gps9Payload(longitude: 1_900_000_000)] {
+            XCTAssertTrue(GPMFParser.parse(bytes, playbackTime: 0, duration: 1).isEmpty)
+        }
+        let bytes = gps9Payload()
+        for count in 0..<bytes.count {
+            XCTAssertTrue(GPMFParser.parse(Data(bytes.prefix(count)), playbackTime: 0, duration: 1).isEmpty)
+        }
+    }
+
+    func testIndexedMP4GPS9Payload() throws {
+        let points = try CameraGPSReader.read(data: movie(telemetry: gps9Payload()))
+        XCTAssertEqual(points.count, 1)
+        XCTAssertEqual(points.first?.playbackTime, 2)
+        XCTAssertEqual(try XCTUnwrap(points.first).coordinate.latitude, 35.3118938, accuracy: 0.0000001)
+    }
+
     func testMissingInvalidAndTruncatedGPSAreSafe() {
         XCTAssertTrue(GPMFParser.parse(Data(), playbackTime: 0, duration: 1).isEmpty)
         XCTAssertTrue(GPMFParser.parse(payload(fix: 0), playbackTime: 0, duration: 1).isEmpty)
@@ -131,14 +199,37 @@ final class CameraGPSTests: XCTestCase {
         let nested = klv("STRM", type: 0, size: 1, count: UInt16(stream.count), value: stream)
         return klv("DEVC", type: 0, size: 1, count: UInt16(nested.count), value: nested)
     }
+    private func gps9Payload(type: String? = "lllllllSS", wideFix: Bool = false,
+                             fixes: [UInt32] = Array(repeating: 2, count: 10),
+                             longitude: Int32 = 1_387_669_106, scale: Int32 = 10_000_000,
+                             days: Int32 = 9702, seconds: Int32 = 1_806_000) -> Data {
+        var stream = Data()
+        if let type {
+            stream += klv("TYPE", type: 99, size: 1, count: UInt16(type.utf8.count), value: Data(type.utf8))
+        }
+        stream += klv("SCAL", type: 108, size: 4, count: 9,
+            value: integers([scale, scale, 1000, 1000, 100, 1, 1000, 100, 1].map { UInt32(bitPattern: $0) }))
+        var records = Data()
+        for (index, fix) in fixes.enumerated() {
+            let millis = seconds + Int32(index * 100)
+            records += integers([353_118_938, longitude, 255_295, 477, 47,
+                                 days + millis / 86_400_000, millis % 86_400_000].map { UInt32(bitPattern: $0) })
+            records += wideFix ? Data([0xEA, 0x60]) : Data([0x02, 0x53])
+            records += wideFix ? integers([fix]) : Data([UInt8(fix >> 8), UInt8(fix & 255)])
+        }
+        stream += klv("GPS9", type: 63, size: wideFix ? 34 : 32, count: UInt16(fixes.count), value: records)
+        let nested = klv("STRM", type: 0, size: 1, count: UInt16(stream.count), value: stream)
+        return klv("DEVC", type: 0, size: 1, count: UInt16(nested.count), value: nested)
+    }
     private func box(_ key: String, _ bytes: Data) -> Data { integers([UInt32(bytes.count + 8)]) + Data(key.utf8) + bytes }
     private func full(_ key: String, _ bytes: Data) -> Data { box(key, integers([0]) + bytes) }
-    private func movie(wide: Bool = false) -> Data {
-        let mdat = box("mdat", payload())
+    private func movie(wide: Bool = false, telemetry: Data? = nil) -> Data {
+        let bytes = telemetry ?? payload()
+        let mdat = box("mdat", bytes)
         let stsd = full("stsd", integers([1]) + box("gpmd", Data(repeating: 0, count: 8)))
         let stts = full("stts", integers([1, 1, 1000]))
         let stsc = full("stsc", integers([1, 1, 1, 1]))
-        let stsz = full("stsz", integers([0, 1, UInt32(payload().count)]))
+        let stsz = full("stsz", integers([0, 1, UInt32(bytes.count)]))
         let stco = full(wide ? "co64" : "stco", integers(wide ? [1, 0, 8] : [1, 8]))
         let stbl = box("stbl", stsd + stts + stsc + stsz + stco)
         let mdhd = full("mdhd", integers([0, 0, 1000, 1000]))
