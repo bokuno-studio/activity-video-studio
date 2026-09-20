@@ -54,6 +54,14 @@
 
 		B10000010000000000000022 /* ElevationProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000022 /* ElevationProfile.swift */; };
 		B10000010000000000000023 /* ElevationProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000010000000000000006 /* ElevationProfileTests.swift */; };
+		D10000010000000000000031 /* LiveTextOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000031 /* LiveTextOverlayView.swift */; };
+		D30000010000000000000031 /* LiveTextOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000031 /* LiveTextOverlayView.swift */; };
+		D10000010000000000000032 /* PreviewOverlayLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000032 /* PreviewOverlayLayout.swift */; };
+		D30000010000000000000032 /* PreviewOverlayLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000032 /* PreviewOverlayLayout.swift */; };
+		D30000010000000000000033 /* PreviewOverlayLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000010000000000000033 /* PreviewOverlayLayoutTests.swift */; };
+		D30000010000000000000034 /* TextOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000013 /* TextOverlay.swift */; };
+		D30000010000000000000035 /* OverlayRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000008 /* OverlayRenderer.swift */; };
+		D30000010000000000000036 /* OverlaySettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001000000000000000D /* OverlaySettings.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -100,6 +108,9 @@
 
 		B20000010000000000000006 /* ElevationProfileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ElevationProfileTests.swift; sourceTree = "<group>"; };
 		B30000010000000000000001 /* ActivityVideoStudioTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ActivityVideoStudioTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D20000010000000000000031 /* LiveTextOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTextOverlayView.swift; sourceTree = "<group>"; };
+		D20000010000000000000032 /* PreviewOverlayLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewOverlayLayout.swift; sourceTree = "<group>"; };
+		D20000010000000000000033 /* PreviewOverlayLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewOverlayLayoutTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -141,6 +152,8 @@
 				A20000010000000000000002 /* ContentView.swift */,
 				A20000010000000000000009 /* VideoPlayerView.swift */,
 				A2000001000000000000000A /* OverlayView.swift */,
+				D20000010000000000000032 /* PreviewOverlayLayout.swift */,
+				D20000010000000000000031 /* LiveTextOverlayView.swift */,
 				A2000001000000000000000B /* PreviewViewModel.swift */,
 				A2000001000000000000000C /* PreviewView.swift */,
 				A2000001000000000000000F /* OverlaySettingsView.swift */,
@@ -212,6 +225,7 @@
                 C20000010000000000000002 /* CameraGPSTests.swift */,
 
 				B20000010000000000000006 /* ElevationProfileTests.swift */,
+				D20000010000000000000033 /* PreviewOverlayLayoutTests.swift */,
 			);
 			path = ActivityVideoStudioTests;
 			sourceTree = "<group>";
@@ -308,6 +322,8 @@
 				A10000010000000000000008 /* OverlayRenderer.swift in Sources */,
 				A10000010000000000000009 /* VideoPlayerView.swift in Sources */,
 				A1000001000000000000000A /* OverlayView.swift in Sources */,
+				D10000010000000000000032 /* PreviewOverlayLayout.swift in Sources */,
+				D10000010000000000000031 /* LiveTextOverlayView.swift in Sources */,
 				A1000001000000000000000B /* PreviewViewModel.swift in Sources */,
 				A1000001000000000000000C /* PreviewView.swift in Sources */,
 				A1000001000000000000000D /* OverlaySettings.swift in Sources */,
@@ -346,6 +362,12 @@
 
 				B10000010000000000000022 /* ElevationProfile.swift in Sources */,
 				B10000010000000000000023 /* ElevationProfileTests.swift in Sources */,
+				D30000010000000000000036 /* OverlaySettings.swift in Sources */,
+				D30000010000000000000035 /* OverlayRenderer.swift in Sources */,
+				D30000010000000000000034 /* TextOverlay.swift in Sources */,
+				D30000010000000000000033 /* PreviewOverlayLayoutTests.swift in Sources */,
+				D30000010000000000000032 /* PreviewOverlayLayout.swift in Sources */,
+				D30000010000000000000031 /* LiveTextOverlayView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

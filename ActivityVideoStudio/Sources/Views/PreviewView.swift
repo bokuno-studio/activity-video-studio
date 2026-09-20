@@ -208,9 +208,7 @@ struct PreviewView: View {
                             textOverlays: viewModel.textOverlays,
                             textPlaybackTime: viewModel.trimmedPlaybackTime()
                         )
-                        .frame(width: videoDisplayRect.width, height: videoDisplayRect.height)
-                        .offset(x: videoDisplayRect.minX, y: videoDisplayRect.minY)
-                        .clipped()
+                        .modifier(PreviewOverlayLayout(videoRect: videoDisplayRect))
                         .allowsHitTesting(false)
                     }
                 }
