@@ -73,6 +73,34 @@ APP=".../ActivityVideoStudio.app/Contents/MacOS/ActivityVideoStudio"
 
 進捗・結果は `/tmp/avs_export.log` に追記される（`[AutoExport] DONE ✓` で完了）。
 
+### カメラのGPSで同期する
+
+同期欄の「カメラのGPSで合わせる」で、GoPro MP4（LRVを含む）の GPS5 / GPSU
+記録から撮影日時のずれを補正します。「−41.3秒 / 軌跡の一致 2.6m」のように表示し、
+「GPS補正を取り消す」で直前の値に戻せます。補正値は通常の同期オフセットとして
+プロジェクトに保存され、手入力でも変更できます。
+
+アプリの動画一覧の順序で結合したチャプターの時間軸に対して同じ補正を適用し、複数のFITも
+結合済みの記録で比較します。GPSは5秒間隔で比較し、FIT座標を線形補間した距離の
+中央値を表示します。記録範囲外や記録の空白は比較に含めません。中央値が50mを超える、
+または比較可能なGPSの重なりがない場合は、確認後に適用します。
+GPS5の有効なUTC・座標がない動画では日本語で通知し、オフセットを変更しません。
+GPS9や断片化MP4のテレメトリには対応していません。
+
+Debugビルドのヘッドレス実行例:
+
+```bash
+ActivityVideoStudio.app/Contents/MacOS/ActivityVideoStudio --headless-export \
+  --fit activity-1.fit --fit activity-2.fit \
+  --video chapter-1.MP4 --video chapter-2.MP4 \
+  --align-gps --export-to output.mp4
+```
+
+同期引数の優先順位は **`--align-gps` > `--align-fit-start` > `--offset 秒` > 0秒**。
+GPSがない場合は下位の引数で決めた値を保持します（加算はしません）。読み取り失敗時は
+出力前に中断します。一致度が悪い・確認できない場合も出力前に中断するため、表示を
+確認し、適用を選ぶ場合に `--accept-gps-mismatch` を追加して再実行してください。
+
 ## アーキテクチャ
 
 `.avstheme` の JSON 仕様は [docs/avstheme-format.md](docs/avstheme-format.md) を参照。

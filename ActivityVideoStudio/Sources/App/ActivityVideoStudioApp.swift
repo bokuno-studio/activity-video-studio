@@ -358,7 +358,7 @@ struct AppEntryPoint {
 ///
 /// Flags mirror `autoLoadDebugFiles`:
 ///   --headless-export --fit <path> --video <path> [--video <path> ...]
-///   --export-to <path> [--align-fit-start | --offset <sec>]
+///   --export-to <path> [--align-gps] [--accept-gps-mismatch] [--align-fit-start | --offset <sec>]
 ///   [--trim-start <sec>] [--trim-end <sec>] [--trim-start-N <sec>] [--trim-end-N <sec>]
 ///   [--width <px>] [--height <px>] [--overlay-preset <preset>]
 ///   [--text <str>] [--text-pos <pos>] [--text-size <pt>]
@@ -408,7 +408,9 @@ enum HeadlessExporter {
 
     private static let booleanFlags: Set<String> = [
         "--headless-export",
-        "--align-fit-start"
+        "--align-fit-start",
+        "--align-gps",
+        "--accept-gps-mismatch"
     ]
 
     private static let valueFlags: Set<String> = [
@@ -599,7 +601,20 @@ enum HeadlessExporter {
         } else if let off = offset {
             syncOffset = off
         }
-        logLine("[Headless] syncOffset: \(Int(syncOffset))s")
+        // GPS takes precedence when available. Absence preserves the fallback above.
+        if args.contains("--align-gps") {
+            let samples = try metas.map { try CameraGPSReader.read(url: $0.url) }
+            if let result = CameraGPSAlignment.calculate(videos: metas, samples: samples, activity: pts) {
+                logLine("[Headless] " + result.summary)
+                if result.needsConfirmation && !args.contains("--accept-gps-mismatch") {
+                    throw Err.invalidArgument("--align-gps", "GPS軌跡の一致が不十分です。確認して適用する場合は --accept-gps-mismatch を指定してください（出力は未作成）")
+                }
+                syncOffset = result.offsetSeconds
+            } else {
+                logLine("[Headless] カメラのGPS記録がありません。同期オフセットは変更しません")
+            }
+        }
+        logLine(String(format: "[Headless] syncOffset: %.3fs", syncOffset))
 
         // TimeSync: stack chapters by cumulative duration, apply the offset to every
         // segment (matches PreviewViewModel.setupTimeSync).

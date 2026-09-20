@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        C10000010000000000000001 /* CameraGPS.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000001; };
+        C10000010000000000000002 /* CameraGPS.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000001; };
+        C10000010000000000000003 /* CameraGPSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000010000000000000002; };
 		A10000010000000000000001 /* ActivityVideoStudioApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000001 /* ActivityVideoStudioApp.swift */; };
 		A10000010000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000002 /* ContentView.swift */; };
 		A10000010000000000000003 /* FITDataPoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000003 /* FITDataPoint.swift */; };
@@ -54,6 +57,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        C20000010000000000000001 /* CameraGPS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGPS.swift; sourceTree = "<group>"; };
+        C20000010000000000000002 /* CameraGPSTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGPSTests.swift; sourceTree = "<group>"; };
 		A20000010000000000000001 /* ActivityVideoStudioApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityVideoStudioApp.swift; sourceTree = "<group>"; };
 		A20000010000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A20000010000000000000003 /* FITDataPoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDataPoint.swift; sourceTree = "<group>"; };
@@ -171,6 +176,7 @@
 				A20000010000000000000005 /* FITParser.swift */,
 				A20000010000000000000006 /* VideoMetadataReader.swift */,
 				A20000010000000000000007 /* TimeSync.swift */,
+                C20000010000000000000001 /* CameraGPS.swift */,
 				A20000010000000000000021 /* FITMerger.swift */,
 				A20000010000000000000008 /* OverlayRenderer.swift */,
 				A20000010000000000000010 /* VideoExporter.swift */,
@@ -203,6 +209,7 @@
 				B20000010000000000000005 /* FITMergerTests.swift */,
 				B20000010000000000000002 /* FITParserTests.swift */,
 				B20000010000000000000003 /* TimeSyncTests.swift */,
+                C20000010000000000000002 /* CameraGPSTests.swift */,
 
 				B20000010000000000000006 /* ElevationProfileTests.swift */,
 			);
@@ -296,6 +303,7 @@
 				A10000010000000000000005 /* FITParser.swift in Sources */,
 				A10000010000000000000006 /* VideoMetadataReader.swift in Sources */,
 				A10000010000000000000007 /* TimeSync.swift in Sources */,
+                C10000010000000000000001 /* CameraGPS.swift in Sources */,
 				A10000010000000000000021 /* FITMerger.swift in Sources */,
 				A10000010000000000000008 /* OverlayRenderer.swift in Sources */,
 				A10000010000000000000009 /* VideoPlayerView.swift in Sources */,
@@ -332,6 +340,8 @@
 				B10000010000000000000005 /* VideoMetadata.swift in Sources */,
 				B10000010000000000000006 /* FITParser.swift in Sources */,
 				B10000010000000000000007 /* TimeSync.swift in Sources */,
+                C10000010000000000000002 /* CameraGPS.swift in Sources */,
+                C10000010000000000000003 /* CameraGPSTests.swift in Sources */,
 				B10000010000000000000021 /* FITMerger.swift in Sources */,
 
 				B10000010000000000000022 /* ElevationProfile.swift in Sources */,

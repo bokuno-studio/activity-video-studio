@@ -48,6 +48,11 @@ final class PreviewViewModel: ObservableObject {
     @Published var fitLoaded = false
     @Published var videoLoaded = false
     @Published var syncOffset: Double = 0
+    @Published private(set) var isAligningGPS = false
+    @Published private(set) var gpsAlignmentMessage: String?
+    @Published var pendingGPSAlignment: CameraGPSAlignment.Result?
+    @Published private(set) var gpsPreviousOffset: Double?
+    private var gpsAlignmentGeneration = 0
     @Published var showFileList = false
     @Published var currentCoordinate: CLLocationCoordinate2D?
     @Published var trackSegments: [[CLLocationCoordinate2D]] = []
@@ -677,6 +682,7 @@ final class PreviewViewModel: ObservableObject {
         textOverlays = []
         chapterMarkers = []
         youtubeDescription = ""
+        invalidateGPSAlignment()
         syncOffset = 0
         timeSync = nil
         overlayRenderer = nil
@@ -1653,7 +1659,56 @@ final class PreviewViewModel: ObservableObject {
         }
     }
 
+    func alignCameraGPS() async {
+        guard !isAligningGPS else { return }
+        let generation = gpsAlignmentGeneration
+        let videos = videoMetadatas
+        let activity = fitDataPoints
+        isAligningGPS = true
+        defer { isAligningGPS = false }
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                let samples = try videos.map { try CameraGPSReader.read(url: $0.url) }
+                return CameraGPSAlignment.calculate(videos: videos, samples: samples, activity: activity)
+            }.value
+            guard generation == gpsAlignmentGeneration else { return }
+            guard let result else {
+                gpsAlignmentMessage = "カメラのGPS記録がありません（GPS5の有効な時刻・座標と撮影日時が必要です）。同期は変更していません"
+                return
+            }
+            if result.needsConfirmation {
+                pendingGPSAlignment = result
+            } else {
+                applyGPSAlignment(result)
+            }
+        } catch {
+            guard generation == gpsAlignmentGeneration else { return }
+            gpsAlignmentMessage = "カメラのGPSを読み取れませんでした: \(error.localizedDescription)。同期は変更していません"
+        }
+    }
+
+    func applyGPSAlignment(_ result: CameraGPSAlignment.Result) {
+        let previous = syncOffset
+        updateSyncOffset(result.offsetSeconds)
+        gpsPreviousOffset = previous
+        gpsAlignmentMessage = result.summary
+    }
+
+    func undoGPSAlignment() {
+        guard let previous = gpsPreviousOffset else { return }
+        updateSyncOffset(previous)
+        gpsAlignmentMessage = "GPS補正前の値に戻しました"
+    }
+
+    private func invalidateGPSAlignment() {
+        gpsAlignmentGeneration += 1
+        pendingGPSAlignment = nil
+        gpsAlignmentMessage = nil
+        gpsPreviousOffset = nil
+    }
+
     func updateSyncOffset(_ offset: Double) {
+        invalidateGPSAlignment()
         syncOffset = offset
         // Rebuild every segment so the offset applies uniformly across all
         // chapters (not just segment 0). Cheap: only a handful of segments.
@@ -1853,6 +1908,7 @@ final class PreviewViewModel: ObservableObject {
     // MARK: - Private
 
     private func setupTimeSync() {
+        invalidateGPSAlignment()
         timeSync = TimeSync(dataPoints: fitDataPoints)
 
         // For GoPro chaptered files: all chapters share the same creationDate.

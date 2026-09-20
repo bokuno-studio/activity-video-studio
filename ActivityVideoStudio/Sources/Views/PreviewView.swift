@@ -523,6 +523,11 @@ struct PreviewView: View {
 
             if viewModel.fitLoaded {
                 syncControlsRow
+                if let message = viewModel.gpsAlignmentMessage {
+                    Text(message)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                }
             }
         }
     }
@@ -530,6 +535,16 @@ struct PreviewView: View {
     private var syncControlsRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
+                Button(viewModel.isAligningGPS ? "GPSを確認中…" : "カメラのGPSで合わせる") {
+                    Task { await viewModel.alignCameraGPS() }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(viewModel.isAligningGPS || !viewModel.videoLoaded || !viewModel.fitLoaded)
+                if viewModel.gpsPreviousOffset != nil {
+                    Button("GPS補正を取り消す") { viewModel.undoGPSAlignment() }
+                        .controlSize(.small)
+                }
                 Button {
                     viewModel.alignFitStartToCurrentFrame()
                 } label: {
@@ -598,6 +613,17 @@ struct PreviewView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minHeight: 32)
+        .alert("GPS軌跡の一致を確認してください", isPresented: Binding(
+            get: { viewModel.pendingGPSAlignment != nil },
+            set: { if !$0 { viewModel.pendingGPSAlignment = nil } }
+        )) {
+            Button("補正を適用") {
+                if let result = viewModel.pendingGPSAlignment { viewModel.applyGPSAlignment(result) }
+            }
+            Button("キャンセル", role: .cancel) { viewModel.pendingGPSAlignment = nil }
+        } message: {
+            Text((viewModel.pendingGPSAlignment?.summary ?? "") + "\n距離の中央値が50mを超えるか、比較できるGPS記録がありません。補正を適用しますか？")
+        }
     }
 
     private var playbackRateBinding: Binding<Float> {
