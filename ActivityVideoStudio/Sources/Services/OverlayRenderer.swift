@@ -1014,6 +1014,14 @@ final class OverlayRenderer {
     private func drawTextOverlay(ctx: CGContext, overlay: TextOverlay, opacity: Double) {
         let fontSize = max(1, overlay.fontSize * scale)
         let font = textOverlayFont(for: overlay, size: fontSize)
+        Self.drawTextOverlay(ctx: ctx, overlay: overlay, opacity: opacity,
+                             videoSize: videoSize, scale: scale, font: font)
+    }
+
+    /// Shared Core Text drawing in a video-local, bottom-left coordinate system.
+    static func drawTextOverlay(ctx: CGContext, overlay: TextOverlay, opacity: Double,
+                                videoSize: CGSize, scale: CGFloat, font: CTFont) {
+        let fontSize = max(1, overlay.fontSize * scale)
         let textColor = nsColor(overlay.color, applyingOpacity: opacity, fallback: .white)
         let strokeColor = nsColor(overlay.strokeColor, applyingOpacity: opacity, fallback: .black)
         let shadowColor = cgColor(overlay.shadowColor, applyingOpacity: opacity, fallback: .black)
@@ -1109,12 +1117,12 @@ final class OverlayRenderer {
         return font
     }
 
-    private func nsColor(_ color: CGColor, applyingOpacity opacity: Double, fallback: NSColor) -> NSColor {
+    private static func nsColor(_ color: CGColor, applyingOpacity opacity: Double, fallback: NSColor) -> NSColor {
         let base = NSColor(cgColor: color) ?? fallback
         return base.withAlphaComponent(base.alphaComponent * CGFloat(opacity))
     }
 
-    private func cgColor(_ color: CGColor, applyingOpacity opacity: Double, fallback: NSColor) -> CGColor {
+    private static func cgColor(_ color: CGColor, applyingOpacity opacity: Double, fallback: NSColor) -> CGColor {
         nsColor(color, applyingOpacity: opacity, fallback: fallback).cgColor
     }
 

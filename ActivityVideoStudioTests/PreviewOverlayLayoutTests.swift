@@ -5,11 +5,12 @@ import XCTest
 final class PreviewOverlayLayoutTests: XCTestCase {
     @MainActor
     func testMultilineTitleSurvivesLetterboxingAndResizing() throws {
-        // The first case cuts through the final line with clip-after-offset.
+        // Exercise both vertical and horizontal letterboxing, including asymmetric placement.
         let cases: [(CGSize, CGRect)] = [
             (CGSize(width: 960, height: 870), CGRect(x: 0, y: 165, width: 960, height: 540)),
             (CGSize(width: 640, height: 700), CGRect(x: 0, y: 170, width: 640, height: 360)),
             (CGSize(width: 1200, height: 540), CGRect(x: 120, y: 0, width: 960, height: 540)),
+            (CGSize(width: 960, height: 870), CGRect(x: 0, y: 91, width: 960, height: 540)),
             (CGSize(width: 480, height: 270), CGRect(x: 0, y: 0, width: 480, height: 270))
         ]
         for text in ["Spartan Race Super\nSusono, Japan\n2026", "Spartan Race Super\nSusono, Japan\n2026\nFinish"] {
@@ -18,14 +19,18 @@ final class PreviewOverlayLayoutTests: XCTestCase {
                 let layer = LiveTextOverlayLayer(
                     overlays: [overlay], playbackTime: 1, size: rect.size, scale: rect.width / 1920
                 )
-                let local = try render(layer, size: rect.size)
-                let placed = try render(
-                    Color.clear.overlay(alignment: .topLeading) {
-                        layer.modifier(PreviewOverlayLayout(videoRect: rect))
-                    }, size: container
-                )
-                let cropped = try XCTUnwrap(placed.cropping(to: rect))
-                XCTAssertTrue(try pixels(cropped) == pixels(local), "Title was clipped at \(rect)")
+                for backingScale: CGFloat in [1, 2] {
+                    let local = try render(layer, size: rect.size, backingScale: backingScale)
+                    let glyphRows = try occupiedAxes(local, alphaThreshold: 200).rows
+                    XCTAssertEqual(occupiedRuns(glyphRows), text.components(separatedBy: "\n").count)
+                    let placed = try render(
+                        Color.clear.overlay(alignment: .topLeading) {
+                            layer.modifier(PreviewOverlayLayout(videoRect: rect))
+                        }, size: container, backingScale: backingScale
+                    )
+                    let cropped = try XCTUnwrap(placed.cropping(to: rect.applying(CGAffineTransform(scaleX: backingScale, y: backingScale))))
+                    XCTAssertTrue(try pixels(cropped) == pixels(local), "Title was clipped at \(rect)")
+                }
             }
         }
     }
@@ -66,19 +71,48 @@ final class PreviewOverlayLayoutTests: XCTestCase {
                     for threshold: UInt8 in [1, 200] {
                         let previewBounds = try occupiedAxes(preview, alphaThreshold: threshold)
                         let exportBounds = try occupiedAxes(exported, alphaThreshold: threshold)
-                        XCTAssertEqual(previewBounds.rows, exportBounds.rows)
-                        XCTAssertEqual(previewBounds.columns, exportBounds.columns)
+                        // SwiftUI image compositing and the export bitmap can round
+                        // antialiased edges to adjacent pixels. Allow one pixel in
+                        // BOTH directions for every occupied row/column, not just
+                        // the outer bounds; missing lines and large shifts still fail.
+                        XCTAssertTrue(axesMatch(previewBounds.rows, exportBounds.rows),
+                                      "Rows differ: width=\(width), anchor=\(anchor), alpha=\(threshold)")
+                        XCTAssertTrue(axesMatch(previewBounds.columns, exportBounds.columns),
+                                      "Columns differ: width=\(width), anchor=\(anchor), alpha=\(threshold)")
                     }
                 }
             }
         }
     }
 
+    func testAxisComparisonRejectsMissingLinesAndPositionDrift() {
+        let rows = Set(Array(10...30) + Array(50...70) + Array(90...110))
+        XCTAssertTrue(axesMatch(rows, Set(rows.map { $0 + 1 })))
+        XCTAssertFalse(axesMatch(rows, Set(rows.map { $0 + 2 })))
+        XCTAssertFalse(axesMatch(rows, Set(rows.filter { $0 < 90 })))
+        XCTAssertFalse(axesMatch(rows, Set(rows.filter { $0 < 105 })))
+        XCTAssertFalse(axesMatch([], []))
+    }
+
+    private func axesMatch(_ lhs: Set<Int>, _ rhs: Set<Int>) -> Bool {
+        guard !lhs.isEmpty, !rhs.isEmpty else { return false }
+        func covered(_ source: Set<Int>, by target: Set<Int>) -> Bool {
+            source.allSatisfy { target.contains($0) || target.contains($0 - 1) || target.contains($0 + 1) }
+        }
+        return covered(lhs, by: rhs) && covered(rhs, by: lhs)
+    }
+
+    private func occupiedRuns(_ axis: Set<Int>) -> Int {
+        axis.filter { !axis.contains($0 - 1) }.count
+    }
+
     @MainActor
-    private func render<V: View>(_ view: V, size: CGSize) throws -> CGImage {
-        let renderer = ImageRenderer(content: view.frame(width: size.width, height: size.height))
+    private func render<V: View>(_ view: V, size: CGSize, backingScale: CGFloat = 1) throws -> CGImage {
+        let renderer = ImageRenderer(content: view
+            .environment(\.displayScale, backingScale)
+            .frame(width: size.width, height: size.height))
         renderer.proposedSize = ProposedViewSize(size)
-        renderer.scale = 1
+        renderer.scale = backingScale
         return try XCTUnwrap(renderer.cgImage)
     }
 
