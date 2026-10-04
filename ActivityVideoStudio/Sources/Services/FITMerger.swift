@@ -17,6 +17,9 @@ enum FITRecordingState: Equatable {
 /// Normalizes independently-recorded FIT activities into one chronological activity.
 struct FITMerger {
     static let gapThreshold: TimeInterval = 5
+    static let underwaterDropRate = 5.0 // m/s
+    static let underwaterRecoveryTolerance = 3.0 // m
+    static let underwaterMaximumDuration: TimeInterval = 600
 
     struct Source {
         let dataPoints: [FITDataPoint]
@@ -50,8 +53,61 @@ struct FITMerger {
             }
             offset = lastDistance ?? offset
         }
+        result = removingUnderwaterAltitudes(from: result)
         return Result(dataPoints: result, gaps: gaps(in: result), hrZoneConfig: ordered.first?.element.hrZoneConfig,
                       chronologicalSourceIndices: ordered.map(\.offset))
+    }
+
+    /// Barometric altimeters read far too low under water (e.g. swim obstacles); bridge those samples
+    /// by interpolating between the surrounding dry samples. Missing measurements stay missing.
+    static func removingUnderwaterAltitudes(from dataPoints: [FITDataPoint]) -> [FITDataPoint] {
+        var result = dataPoints
+        var previous: FITDataPoint?
+        var underwater: (surfaceAltitude: Double, start: Date)?
+        var pendingIndices: [Int] = []
+        var previousNormal: FITDataPoint?
+
+        for (index, point) in dataPoints.enumerated() {
+            guard let altitude = point.altitude else { continue }
+            if let episode = underwater,
+               altitude >= episode.surfaceAltitude - underwaterRecoveryTolerance ||
+                point.timestamp.timeIntervalSince(episode.start) > underwaterMaximumDuration {
+                underwater = nil
+            }
+            if underwater == nil, let previous, let previousAltitude = previous.altitude {
+                let dt = point.timestamp.timeIntervalSince(previous.timestamp)
+                if dt > 0, dt <= gapThreshold, (previousAltitude - altitude) / dt > underwaterDropRate {
+                    underwater = (previousAltitude, point.timestamp)
+                }
+            }
+            previous = point
+
+            if underwater != nil {
+                pendingIndices.append(index)
+                continue
+            }
+
+            for pendingIndex in pendingIndices {
+                let replacement: Double
+                if let previousNormal, let startAltitude = previousNormal.altitude {
+                    let duration = point.timestamp.timeIntervalSince(previousNormal.timestamp)
+                    let elapsed = dataPoints[pendingIndex].timestamp.timeIntervalSince(previousNormal.timestamp)
+                    replacement = duration > 0 ? startAltitude + (altitude - startAltitude) * elapsed / duration : startAltitude
+                } else {
+                    replacement = altitude
+                }
+                result[pendingIndex] = dataPoints[pendingIndex].withAltitude(replacement)
+            }
+            pendingIndices.removeAll(keepingCapacity: true)
+            previousNormal = point
+        }
+
+        if let altitude = previousNormal?.altitude {
+            for index in pendingIndices {
+                result[index] = dataPoints[index].withAltitude(altitude)
+            }
+        }
+        return result
     }
 
     static func gaps(in dataPoints: [FITDataPoint]) -> [FITRecordingGap] {

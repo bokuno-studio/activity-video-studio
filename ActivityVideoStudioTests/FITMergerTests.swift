@@ -86,6 +86,100 @@ final class FITMergerTests: XCTestCase {
         XCTAssertEqual(FITMerger.trackSegments(from: points).map(\.count), [2, 2])
     }
 
+    func testMergeRemovesUnderwaterGainAndPreservesClimb() {
+        let climb = (0...10).map { point(Double($0), Double($0) * 10, altitude: Double($0)) }
+        let points = climb + [point(11, 110, altitude: -80), point(12, 120, altitude: -90),
+                              point(13, 130, altitude: -70), point(14, 140, altitude: 10),
+                              point(15, 150, altitude: 11), point(16, 160, altitude: 12)]
+        let result = FITMerger.merge([.init(dataPoints: points, hrZoneConfig: nil)])
+
+        XCTAssertEqual(FITMerger.cumulativeElevationGains(in: result.dataPoints).last, 12)
+        XCTAssertEqual(result.dataPoints[11...14].compactMap(\.altitude), [10, 10, 10, 10])
+        XCTAssertEqual(result.dataPoints[13].resolvedGrade(fallbackDataPoints: result.dataPoints), 0)
+        XCTAssertEqual(result.dataPoints.map(\.distance), points.map(\.distance))
+    }
+
+    func testNormalDescentIsUnchanged() {
+        let points = (0...10).map { point(Double($0), Double($0), altitude: 30 - Double($0) * 3) }
+        XCTAssertEqual(FITMerger.removingUnderwaterAltitudes(from: points).map(\.altitude), points.map(\.altitude))
+    }
+
+    func testUnderwaterTimeoutIsStrictlyAfter600Seconds() {
+        let points = [point(0, 0, altitude: 10), point(1, 1, altitude: -80),
+                      point(601, 2, altitude: -90), point(602, 3, altitude: -80),
+                      point(603, 4, altitude: -79)]
+        let corrected = FITMerger.removingUnderwaterAltitudes(from: points)
+        XCTAssertEqual(corrected[1].altitude!, 10 - 90.0 / 602, accuracy: 0.000001)
+        XCTAssertEqual(corrected[2].altitude!, 10 - 90.0 * 601 / 602, accuracy: 0.000001)
+        XCTAssertEqual(corrected[3].altitude, -80)
+        XCTAssertEqual(corrected[4].altitude, -79)
+    }
+
+    func testInterpolationUsesTimeAndSkipsMissingAltitudes() {
+        let points = [point(0, 0, altitude: 10), point(1, 10), point(2, 20, altitude: -80),
+                      point(3, 30), point(5, 50, altitude: -70), point(8, 80, altitude: 12)]
+        let corrected = FITMerger.removingUnderwaterAltitudes(from: points)
+        XCTAssertEqual(corrected.map(\.altitude), [10, nil, 10.5, nil, 11.25, 12])
+        XCTAssertEqual(corrected.map(\.timestamp), points.map(\.timestamp))
+    }
+
+    func testUnrecoveredUnderwaterTailUsesLastNormalAltitude() {
+        let points = [point(0, 0), point(1, 1, altitude: 10), point(2, 2, altitude: -80),
+                      point(3, 3), point(4, 4, altitude: -90)]
+        XCTAssertEqual(FITMerger.removingUnderwaterAltitudes(from: points).map(\.altitude), [nil, 10, 10, nil, 10])
+        XCTAssertTrue(FITMerger.removingUnderwaterAltitudes(from: []).isEmpty)
+        XCTAssertNil(FITMerger.removingUnderwaterAltitudes(from: [point(0, 0)])[0].altitude)
+    }
+
+    func testDetectionRespectsRateAndTimeBoundaries() {
+        for points in [
+            [point(0, 0, altitude: 10), point(1, 1, altitude: 5)],
+            [point(0, 0, altitude: 10), point(0, 1, altitude: -80)],
+            [point(0, 0, altitude: 10), point(6, 1, altitude: -80)]
+        ] {
+            XCTAssertEqual(FITMerger.removingUnderwaterAltitudes(from: points).map(\.altitude), points.map(\.altitude))
+        }
+        let points = [point(0, 0, altitude: 10), point(5, 1, altitude: -80)]
+        XCTAssertEqual(FITMerger.removingUnderwaterAltitudes(from: points).compactMap(\.altitude), [10, 10])
+    }
+
+    func testRecoveryIncludesToleranceBoundaryAndAllowsAnotherEpisode() {
+        let points = [point(0, 0, altitude: 10), point(1, 1, altitude: -80),
+                      point(2, 2, altitude: 6.9), point(3, 3, altitude: 7),
+                      point(4, 4, altitude: -80), point(5, 5, altitude: 7)]
+        XCTAssertEqual(FITMerger.removingUnderwaterAltitudes(from: points).compactMap(\.altitude), [10, 9, 8, 7, 7, 7])
+    }
+
+    func testTimeoutCanStartNewEpisodeUsingPreviousUnderwaterSample() {
+        let points = [point(0, 0, altitude: 10), point(1, 1, altitude: -80),
+                      point(601, 2, altitude: -80), point(602, 3, altitude: -100),
+                      point(603, 4, altitude: -80)]
+        let corrected = FITMerger.removingUnderwaterAltitudes(from: points)
+        XCTAssertEqual(corrected[3].altitude!, 10 - 90.0 * 602 / 603, accuracy: 0.000001)
+        XCTAssertEqual(corrected[4].altitude, -80)
+    }
+
+    func testAltitudeReplacementPreservesOtherFields() {
+        let original = FITDataPoint(timestamp: Date(timeIntervalSince1970: 1),
+                                    coordinate: CLLocationCoordinate2D(latitude: 35, longitude: 138),
+                                    heartRate: 140, speed: 2, altitude: -80, cadence: 80, distance: 10,
+                                    grade: 4, temperature: 20, coreTemperature: 38, skinTemperature: 32)
+        let corrected = FITMerger.removingUnderwaterAltitudes(from: [point(0, 0, altitude: 10), original])[1]
+        XCTAssertEqual(corrected.altitude, 10)
+        XCTAssertEqual(corrected.timestamp, original.timestamp)
+        XCTAssertEqual(corrected.coordinate?.latitude, original.coordinate?.latitude)
+        XCTAssertEqual(corrected.coordinate?.longitude, original.coordinate?.longitude)
+        XCTAssertEqual(corrected.heartRate, original.heartRate)
+        XCTAssertEqual(corrected.speed, original.speed)
+        XCTAssertEqual(corrected.cadence, original.cadence)
+        XCTAssertEqual(corrected.distance, original.distance)
+        XCTAssertEqual(corrected.grade, original.grade)
+        XCTAssertEqual(corrected.temperature, original.temperature)
+        XCTAssertEqual(corrected.coreTemperature, original.coreTemperature)
+        XCTAssertEqual(corrected.skinTemperature, original.skinTemperature)
+        XCTAssertNil(original.withAltitude(nil).altitude)
+    }
+
     func testElevationGainAndGradeExcludeAscendingGapBoundary() {
         let points = (0...10).map { index in point(TimeInterval(index), Double(index) * 10, altitude: Double(index)) } +
             [point(30, 110, altitude: 200)]

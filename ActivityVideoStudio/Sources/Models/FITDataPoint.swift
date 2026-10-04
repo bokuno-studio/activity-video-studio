@@ -23,6 +23,12 @@ struct FITDataPoint {
                      temperature: temperature, coreTemperature: coreTemperature, skinTemperature: skinTemperature)
     }
 
+    func withAltitude(_ altitude: Double?) -> FITDataPoint {
+        FITDataPoint(timestamp: timestamp, coordinate: coordinate, heartRate: heartRate, speed: speed,
+                     altitude: altitude, cadence: cadence, distance: distance, grade: grade,
+                     temperature: temperature, coreTemperature: coreTemperature, skinTemperature: skinTemperature)
+    }
+
     func withGrade(_ grade: Double?) -> FITDataPoint {
         FITDataPoint(timestamp: timestamp, coordinate: coordinate, heartRate: heartRate, speed: speed,
                      altitude: altitude, cadence: cadence, distance: distance, grade: grade,
