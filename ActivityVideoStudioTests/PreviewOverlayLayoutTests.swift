@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import XCTest
+import CoreLocation
 
 final class PreviewOverlayLayoutTests: XCTestCase {
     @MainActor
@@ -139,5 +140,95 @@ final class PreviewOverlayLayoutTests: XCTestCase {
             }
         }
         return (rows, columns)
+    }
+}
+
+final class OverlayDesignLayoutTests: XCTestCase {
+    func testFeaturedDesignsUseTheirLayouts() {
+        XCTAssertEqual(OverlayPreset.featured, [.broadcast, .minimal, .cards, .defaultPreset])
+        XCTAssertEqual(OverlayPreset.broadcast.renderStyle.layout, .broadcast)
+        XCTAssertEqual(OverlayPreset.minimal.renderStyle.layout, .minimal)
+        XCTAssertEqual(OverlayPreset.cards.renderStyle.layout, .cards)
+        XCTAssertEqual(OverlayPreset.defaultPreset.renderStyle.layout, .classic)
+        XCTAssertEqual(OverlayPreset.compact.renderStyle.layout, .classic)
+    }
+
+    func testThemeFileKeepsLayoutAndOldFilesStayClassic() throws {
+        let theme = OverlayTheme(id: "user.cards", displayName: "カード", style: OverlayPreset.cards.renderStyle)
+        let data = try JSONEncoder().encode(theme)
+        let decoded = try JSONDecoder().decode(OverlayTheme.self, from: data)
+        XCTAssertEqual(decoded.style.layout, .cards)
+
+        let legacy = Data(#"{"schemaVersion":1,"id":"user.old","name":"old","style":{"labelFontSize":30}}"#.utf8)
+        let legacyTheme = try JSONDecoder().decode(OverlayTheme.self, from: legacy)
+        XCTAssertEqual(legacyTheme.style.layout, .classic)
+    }
+
+    /// Every card design, with every item turned on, must stay inside the
+    /// frame at 720p / 1080p / 4K (nothing touches the outer edge band).
+    func testCardDesignsStayInsideFrameWithAllItemsShown() throws {
+        let points = Self.makeActivity()
+        let current = points[points.count / 2]
+        for preset in [OverlayPreset.broadcast, .minimal, .cards] {
+            for size in [CGSize(width: 1280, height: 720), CGSize(width: 1920, height: 1080), CGSize(width: 3840, height: 2160)] {
+                let settings = OverlaySettings()
+                settings.overlayPreset = preset
+                let renderer = OverlayRenderer(videoSize: size, settings: settings)
+                renderer.allDataPoints = points
+                renderer.trackSegments = [points.compactMap(\.coordinate)]
+                let image = try XCTUnwrap(renderer.render(
+                    dataPoint: current,
+                    elapsedTime: 6_875,
+                    activityTime: current.timestamp
+                ), "\(preset) \(size)")
+
+                let alpha = try alphaChannel(image)
+                let band = Int((12 * size.width / 1920).rounded(.up))
+                var drawn = 0
+                var onEdge = 0
+                for y in 0..<image.height {
+                    for x in 0..<image.width where alpha[y * image.width + x] > 0 {
+                        drawn += 1
+                        if x < band || y < band || x >= image.width - band || y >= image.height - band {
+                            onEdge += 1
+                        }
+                    }
+                }
+                XCTAssertGreaterThan(drawn, image.width * image.height / 100, "\(preset) \(size) draws almost nothing")
+                XCTAssertEqual(onEdge, 0, "\(preset) \(size) reaches the frame edge")
+            }
+        }
+    }
+
+    private func alphaChannel(_ image: CGImage) throws -> [UInt8] {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: image.width, height: image.height,
+            bitsPerComponent: 8, bytesPerRow: image.width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let data = try XCTUnwrap(context.data).assumingMemoryBound(to: UInt8.self)
+        return (0..<(image.width * image.height)).map { data[$0 * 4 + 3] }
+    }
+
+    private static func makeActivity() -> [FITDataPoint] {
+        let start = Date(timeIntervalSince1970: 1_763_000_000)
+        return (0..<1_200).map { i in
+            let t = Double(i)
+            return FITDataPoint(
+                timestamp: start.addingTimeInterval(t * 10),
+                coordinate: CLLocationCoordinate2D(latitude: 36.4 + 0.0004 * t, longitude: 140.5 + 0.0002 * sin(t / 40)),
+                heartRate: 158,
+                speed: 2.6,
+                altitude: 20 + 15 * sin(t / 60),
+                cadence: 85,
+                distance: t * 26,
+                grade: 1.2,
+                temperature: 12,
+                coreTemperature: 38.4,
+                skinTemperature: nil
+            )
+        }
     }
 }

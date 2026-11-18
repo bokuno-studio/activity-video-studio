@@ -13,6 +13,11 @@ struct LivePreviewOverlayView: View {
     let textOverlays: [TextOverlay]
     let textPlaybackTime: TimeInterval
     @StateObject private var geometryCache = LivePreviewOverlayGeometryCache()
+    @StateObject private var designRenderer = LiveDesignRendererCache()
+
+    private var usesClassicLayout: Bool {
+        settings.selectedRenderStyle.layout == .classic
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -22,15 +27,29 @@ struct LivePreviewOverlayView: View {
 
             ZStack(alignment: .topLeading) {
                 if let frame {
-                    LiveActivityDataLayer(
+                    if usesClassicLayout {
+                        LiveActivityDataLayer(
+                            frame: frame,
+                            settings: settings,
+                            allDataPoints: allDataPoints,
+                            trackSegments: trackSegments,
+                            size: size,
+                            scale: scale,
+                            geometryCache: geometryCache
+                        )
+                    } else if let image = designRenderer.image(
                         frame: frame,
                         settings: settings,
                         allDataPoints: allDataPoints,
                         trackSegments: trackSegments,
-                        size: size,
-                        scale: scale,
-                        geometryCache: geometryCache
-                    )
+                        size: size
+                    ) {
+                        // Card designs are drawn by the export renderer itself,
+                        // so the preview matches the exported video exactly.
+                        Image(decorative: image, scale: LiveDesignRendererCache.pixelScale)
+                            .resizable()
+                            .frame(width: size.width, height: size.height)
+                    }
                 }
 
                 LiveTextOverlayLayer(
@@ -40,7 +59,8 @@ struct LivePreviewOverlayView: View {
                     scale: scale
                 )
             }
-            .opacity(settings.effectiveOverlayOpacity)
+            // Card designs use the opacity setting for their panel backgrounds.
+            .opacity(usesClassicLayout ? settings.effectiveOverlayOpacity : 1)
             .frame(width: size.width, height: size.height, alignment: .topLeading)
             .clipped()
         }
@@ -488,6 +508,57 @@ private struct LiveElevationProfileView: View {
         }
         .background(color(style.panelBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: style.profileCornerRadius * scale))
+    }
+}
+
+/// Keeps one export renderer sized for the preview, rebuilt only when the
+/// preview size or the activity data changes.
+private final class LiveDesignRendererCache: ObservableObject {
+    static let pixelScale: CGFloat = 2
+
+    private var renderer: OverlayRenderer?
+    private var dataKey: (count: Int, first: Date?, last: Date?)?
+    private var trackKey: (count: Int, points: Int)?
+
+    func image(
+        frame: LivePreviewOverlayFrame,
+        settings: OverlaySettings,
+        allDataPoints: [FITDataPoint],
+        trackSegments: [[CLLocationCoordinate2D]],
+        size: CGSize
+    ) -> CGImage? {
+        let pixelSize = CGSize(
+            width: (size.width * Self.pixelScale).rounded(),
+            height: (size.height * Self.pixelScale).rounded()
+        )
+        guard pixelSize.width >= 2, pixelSize.height >= 2 else { return nil }
+
+        if renderer?.videoSize != pixelSize {
+            renderer = OverlayRenderer(videoSize: pixelSize, settings: settings)
+            dataKey = nil
+            trackKey = nil
+        }
+        guard let renderer else { return nil }
+        renderer.settings = settings
+
+        let newDataKey = (allDataPoints.count, allDataPoints.first?.timestamp, allDataPoints.last?.timestamp)
+        if dataKey == nil || dataKey! != newDataKey {
+            renderer.allDataPoints = allDataPoints
+            dataKey = newDataKey
+        }
+        let newTrackKey = (trackSegments.count, trackSegments.reduce(0) { $0 + $1.count })
+        if trackKey == nil || trackKey! != newTrackKey {
+            renderer.trackSegments = trackSegments
+            trackKey = newTrackKey
+        }
+
+        return renderer.render(
+            dataPoint: frame.dataPoint,
+            elapsedTime: frame.elapsedTime,
+            globalPlaybackTime: frame.globalPlaybackTime,
+            recordingState: frame.recordingState,
+            activityTime: frame.activityTime
+        )
     }
 }
 

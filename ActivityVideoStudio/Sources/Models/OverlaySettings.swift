@@ -22,6 +22,9 @@ private enum OverlayThemeDecodingError: LocalizedError {
 /// Built-in visual styles for the burned-in activity overlay.
 enum OverlayPreset: String, CaseIterable, Codable, Identifiable {
     case defaultPreset = "default"
+    case broadcast
+    case minimal
+    case cards
     case compact
     case highContrast
     case lowerThird
@@ -32,13 +35,19 @@ enum OverlayPreset: String, CaseIterable, Codable, Identifiable {
 
     var title: String {
         switch self {
-        case .defaultPreset: return "デフォルト"
+        case .defaultPreset: return "クラシック"
+        case .broadcast: return "中継風"
+        case .minimal: return "ミニマル"
+        case .cards: return "カード"
         case .compact: return "コンパクト"
         case .highContrast: return "高コントラスト"
         case .lowerThird: return "ローワーサード"
         case .mapLeft: return "マップ左"
         }
     }
+
+    /// The four designs shown as thumbnails in the look tab.
+    static let featured: [OverlayPreset] = [.broadcast, .minimal, .cards, .defaultPreset]
 
     init?(themeID: String) {
         guard themeID.hasPrefix("builtin.") else { return nil }

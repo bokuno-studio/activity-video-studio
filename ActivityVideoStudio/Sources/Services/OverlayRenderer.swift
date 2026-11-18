@@ -34,6 +34,7 @@ final class OverlayRenderer {
     private var trackDrawingCache: (key: RendererTrackDrawingKey, drawing: RendererTrackDrawing)?
     private var elevationSourceCache: (key: DataPointSignature, source: RendererElevationSource?)?
     private var elevationDrawingCache: (key: RendererElevationDrawingKey, drawing: RendererElevationDrawing)?
+    private var routeSampleCache: (key: DataPointSignature, samples: [DesignRouteSample])?
 
     func buildElevationGainCache() {
         elevationGainCache = FITMerger.cumulativeElevationGains(in: allDataPoints)
@@ -98,6 +99,22 @@ final class OverlayRenderer {
         }
 
         let style = renderStyle
+        if style.layout != .classic {
+            ctx.setShadow(offset: .zero, blur: 0, color: nil)
+            drawDesignLayout(
+                style.layout,
+                ctx: ctx,
+                dataPoint: dataPoint,
+                elapsedTime: elapsedTime,
+                recordingState: effectiveRecordingState,
+                activityTime: activityTime
+            )
+            ctx.setShadow(offset: .zero, blur: 0, color: nil)
+            _ = drawTextOverlays(ctx: ctx, globalPlaybackTime: globalPlaybackTime)
+            // Card designs use the opacity setting for panel backgrounds only,
+            // so numbers stay fully legible.
+            return ctx.makeImage()
+        }
         let labelFontSize = style.labelFontSize
         let valueFontSize = style.valueFontSize
         let distanceFontSize = style.distanceFontSize * scale
@@ -589,11 +606,11 @@ final class OverlayRenderer {
         return source
     }
 
-    private func trackDrawing() -> RendererTrackDrawing? {
+    private func trackDrawing(in targetRect: CGRect? = nil, cornerRadius targetCornerRadius: CGFloat? = nil) -> RendererTrackDrawing? {
         guard let source = trackSource() else { return nil }
 
-        let mapRect = self.mapRect()
-        let cornerRadius = renderStyle.mapCornerRadius * scale
+        let mapRect = targetRect ?? self.mapRect()
+        let cornerRadius = targetCornerRadius ?? renderStyle.mapCornerRadius * scale
         let key = RendererTrackDrawingKey(
             sourceKey: source.key,
             mapRect: mapRect,
@@ -1186,6 +1203,16 @@ private func quantized(_ value: Double, scale: Double) -> Int64 {
     return Int64(scaled)
 }
 
+/// Overall arrangement of the burned-in overlay.
+/// `classic` is the original left/right column layout; the others are the
+/// card-based designs (broadcast bar, minimal corners, data cards).
+enum OverlayLayoutKind: String, Codable, CaseIterable {
+    case classic
+    case broadcast
+    case minimal
+    case cards
+}
+
 enum OverlayMapPlacement: String, Codable {
     case topLeft
     case topRight
@@ -1359,6 +1386,7 @@ struct OverlayPresetRenderStyle: Codable {
     var profileGap: CGFloat
     var profileBottomPadding: CGFloat
     var profileCornerRadius: CGFloat
+    var layout: OverlayLayoutKind = .classic
 
     func leftX(in videoSize: CGSize, scale: CGFloat) -> CGFloat {
         leftXPosition.x(in: videoSize.width, scale: scale)
@@ -1504,6 +1532,7 @@ extension OverlayPresetRenderStyle {
         case profileGap
         case profileBottomPadding
         case profileCornerRadius
+        case layout
     }
 
     init(from decoder: Decoder) throws {
@@ -1595,6 +1624,7 @@ extension OverlayPresetRenderStyle {
             default: profileCornerRadius,
             range: OverlayThemeStyleClamp.cornerRadius
         )
+        layout = try container.decodeIfPresent(OverlayLayoutKind.self, forKey: .layout) ?? .classic
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1632,12 +1662,28 @@ extension OverlayPresetRenderStyle {
         try container.encode(profileGap, forKey: .profileGap)
         try container.encode(profileBottomPadding, forKey: .profileBottomPadding)
         try container.encode(profileCornerRadius, forKey: .profileCornerRadius)
+        try container.encode(layout, forKey: .layout)
     }
 }
 
 extension OverlayPreset {
     var renderStyle: OverlayPresetRenderStyle {
         switch self {
+        case .broadcast, .minimal, .cards:
+            var style = OverlayPreset.defaultPreset.renderStyle
+            style.accentColor = overlayColor(1.0, 0.416, 0.239, 1)
+            style.accentRed = overlayColor(1.0, 0.416, 0.239, 1)
+            style.elevationColor = overlayColor(0.486, 0.769, 1.0, 1)
+            style.elevationLineColor = overlayColor(0.486, 0.769, 1.0, 1)
+            style.elevationFillColor = overlayColor(0.486, 0.769, 1.0, 0.28)
+            style.mapDotColor = overlayColor(1.0, 0.416, 0.239, 1)
+            switch self {
+            case .broadcast: style.layout = .broadcast
+            case .minimal: style.layout = .minimal
+            default: style.layout = .cards
+            }
+            return style
+
         case .defaultPreset:
             return OverlayPresetRenderStyle(
                 accentColor: overlayColor(1.0, 0.45, 0.1, 1),
@@ -1848,6 +1894,760 @@ private extension TextOverlay.FontWeight {
         case .semibold: return 8
         case .bold: return 9
         case .heavy: return 10
+        }
+    }
+}
+
+// MARK: - Card designs (broadcast / minimal / cards)
+
+/// A downsampled point of the recorded route, used to draw the travelled part.
+struct DesignRouteSample {
+    let timestamp: Date
+    let coordinate: CLLocationCoordinate2D
+}
+
+private enum DesignPalette {
+    static let panel = (r: CGFloat(12) / 255, g: CGFloat(14) / 255, b: CGFloat(18) / 255)
+    static let white = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
+    static let label = CGColor(red: 1, green: 1, blue: 1, alpha: 0.7)
+    static let hairline = CGColor(red: 1, green: 1, blue: 1, alpha: 0.12)
+    static let track = CGColor(red: 1, green: 1, blue: 1, alpha: 0.18)
+    static let elevation = CGColor(red: 0.486, green: 0.769, blue: 1.0, alpha: 1)
+    static let elevationFill = CGColor(red: 0.486, green: 0.769, blue: 1.0, alpha: 0.28)
+    static let uphill = CGColor(red: 1.0, green: 0.62, blue: 0.35, alpha: 1)
+    static let zoneOff = CGColor(red: 1, green: 1, blue: 1, alpha: 0.22)
+    static let badgeText = CGColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1)
+
+    static func zone(_ zone: Int) -> CGColor {
+        switch zone {
+        case 1: return CGColor(red: 0.435, green: 0.718, blue: 1.0, alpha: 1)
+        case 2: return CGColor(red: 0.373, green: 0.816, blue: 0.541, alpha: 1)
+        case 3: return CGColor(red: 0.949, green: 0.761, blue: 0.188, alpha: 1)
+        case 4: return CGColor(red: 1.0, green: 0.541, blue: 0.239, alpha: 1)
+        default: return CGColor(red: 1.0, green: 0.302, blue: 0.302, alpha: 1)
+        }
+    }
+}
+
+private enum DesignFontName {
+    static let label = "AvenirNext-DemiBold"
+    static let number = "AvenirNextCondensed-DemiBold"
+    static let numberBold = "AvenirNextCondensed-Bold"
+}
+
+/// A run of styled text; several runs make one line (e.g. value + unit).
+private struct DesignRun {
+    var text: String
+    var font: CTFont
+    var color: CGColor
+    var kern: CGFloat = 0
+}
+
+/// A vertical block inside a panel: its height and how to draw it from a top edge.
+private struct DesignBlock {
+    let height: CGFloat
+    let draw: (_ top: CGFloat) -> Void
+}
+
+/// Values shared by every card design for one frame.
+private struct DesignValues {
+    var time: String
+    var pace: String
+    var heartRate: String
+    var zone: Int?
+    var cadence: String
+    var coreTemp: String?
+    var coreTempColor: CGColor?
+    var distanceCurrent: String
+    var distanceTotal: String
+    var progress: CGFloat?
+    var altitude: String
+    var grade: String
+    var gradeValue: Double?
+    var gain: String
+}
+
+extension OverlayRenderer {
+
+    fileprivate var designUnit: CGFloat { scale * 1.5 }  // 1 mock px (1280 wide) in video pixels
+
+    fileprivate var designPanelColor: CGColor {
+        CGColor(
+            red: DesignPalette.panel.r,
+            green: DesignPalette.panel.g,
+            blue: DesignPalette.panel.b,
+            alpha: CGFloat(settings.effectiveOverlayOpacity)
+        )
+    }
+
+    fileprivate var designAccent: CGColor { renderStyle.accentColor }
+
+    private var showsBodyMetrics: Bool {
+        settings.showTime || settings.showPace || settings.showHeartRate || settings.showCadence || settings.showCoreTemp
+    }
+
+    private var showsCourseStats: Bool {
+        settings.showAltitude || settings.showGrade || settings.showElevationGain
+    }
+
+    func drawDesignLayout(
+        _ layout: OverlayLayoutKind,
+        ctx: CGContext,
+        dataPoint: FITDataPoint,
+        elapsedTime: TimeInterval?,
+        recordingState: FITRecordingState,
+        activityTime: Date?
+    ) {
+        let values = designValues(dataPoint: dataPoint, elapsedTime: elapsedTime, recordingState: recordingState)
+        let time = activityTime ?? dataPoint.timestamp
+        switch layout {
+        case .classic:
+            return
+        case .broadcast:
+            drawBroadcastDesign(ctx: ctx, values: values, dataPoint: dataPoint, time: time)
+        case .minimal:
+            drawMinimalDesign(ctx: ctx, values: values, dataPoint: dataPoint, time: time)
+        case .cards:
+            drawCardsDesign(ctx: ctx, values: values, dataPoint: dataPoint, time: time)
+        }
+    }
+
+    private func designValues(dataPoint: FITDataPoint, elapsedTime: TimeInterval?, recordingState: FITRecordingState) -> DesignValues {
+        let zone = dataPoint.heartRate.map(heartRateZone)
+        let total = recordingState == .noRecording ? nil : totalDistance
+        let progress: CGFloat?
+        if let current = dataPoint.distance, let total, total > 0 {
+            progress = CGFloat(min(max(current / total, 0), 1))
+        } else {
+            progress = nil
+        }
+        let gradeValue = dataPoint.resolvedGrade(fallbackDataPoints: allDataPoints)
+        let gradeText: String
+        if let gradeValue {
+            let display = abs(gradeValue) < 0.05 ? 0 : gradeValue
+            gradeText = String(format: "%+.1f%%", display)
+        } else {
+            gradeText = "--%"
+        }
+        return DesignValues(
+            time: elapsedTime.map(formatElapsedTime) ?? "--:--:--",
+            pace: dataPoint.paceFormatted ?? "--'--\"",
+            heartRate: dataPoint.heartRate.map { "\($0)" } ?? "--",
+            zone: zone,
+            cadence: dataPoint.runningCadence.map { "\($0)" } ?? "--",
+            coreTemp: dataPoint.coreTemperature.map { String(format: "%.1f°", $0) },
+            coreTempColor: dataPoint.coreTemperature.map(coreTempColor),
+            distanceCurrent: dataPoint.distance.map { String(format: "%.1f", $0 / 1000.0) } ?? "--",
+            distanceTotal: total.map { String(format: "/ %.1f km", $0 / 1000.0) } ?? "/ -- km",
+            progress: progress,
+            altitude: dataPoint.altitude.map { String(format: "%.0f m", $0) } ?? "-- m",
+            grade: gradeText,
+            gradeValue: gradeValue,
+            gain: dataPoint.distance.map { String(format: "+%.0f m", cumulativeElevationGain(upTo: $0)) } ?? "-- m"
+        )
+    }
+
+    private func gradeColor(_ grade: Double?) -> CGColor {
+        guard let grade else { return DesignPalette.white }
+        if grade >= 0.5 { return DesignPalette.uphill }
+        if grade <= -0.5 { return DesignPalette.elevation }
+        return DesignPalette.white
+    }
+
+    // MARK: Text primitives
+
+    private func designFont(_ name: String, _ size: CGFloat) -> CTFont {
+        let px = size * designUnit
+        return cachedFont(name: name, size: px) { CTFontCreateWithName(name as CFString, px, nil) }
+    }
+
+    private func labelRun(_ text: String, size: CGFloat = 11, color: CGColor = DesignPalette.label) -> DesignRun {
+        DesignRun(text: text, font: designFont(DesignFontName.label, size), color: color, kern: size * 0.12 * designUnit)
+    }
+
+    private func numberRun(_ text: String, size: CGFloat, bold: Bool = false, color: CGColor = DesignPalette.white) -> DesignRun {
+        DesignRun(text: text, font: designFont(bold ? DesignFontName.numberBold : DesignFontName.number, size), color: color)
+    }
+
+    private func unitRun(_ text: String, size: CGFloat, alpha: CGFloat = 0.7) -> DesignRun {
+        DesignRun(text: text, font: designFont(DesignFontName.number, size), color: CGColor(red: 1, green: 1, blue: 1, alpha: alpha))
+    }
+
+    private func designLine(_ runs: [DesignRun]) -> CTLine {
+        let string = NSMutableAttributedString()
+        for run in runs {
+            var attrs: [NSAttributedString.Key: Any] = [
+                .font: run.font,
+                .foregroundColor: NSColor(cgColor: run.color) ?? NSColor.white
+            ]
+            if run.kern != 0 { attrs[.kern] = run.kern }
+            string.append(NSAttributedString(string: run.text, attributes: attrs))
+        }
+        return CTLineCreateWithAttributedString(string)
+    }
+
+    private func lineWidth(_ runs: [DesignRun]) -> CGFloat {
+        CGFloat(CTLineGetTypographicBounds(designLine(runs), nil, nil, nil))
+    }
+
+    /// Visual height of a line: the tallest cap height among its runs.
+    private func capHeight(_ runs: [DesignRun]) -> CGFloat {
+        runs.map { CTFontGetCapHeight($0.font) }.max() ?? 0
+    }
+
+    /// Draws runs with their cap tops at `top` (bottom-up coordinates).
+    /// Returns the drawn width.
+    @discardableResult
+    private func drawRuns(_ runs: [DesignRun], ctx: CGContext, x: CGFloat, top: CGFloat, alignRight: Bool = false) -> CGFloat {
+        let line = designLine(runs)
+        let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+        ctx.saveGState()
+        ctx.textPosition = CGPoint(x: alignRight ? x - width : x, y: top - capHeight(runs))
+        CTLineDraw(line, ctx)
+        ctx.restoreGState()
+        return width
+    }
+
+    // MARK: Shape primitives
+
+    private func fillRounded(_ rect: CGRect, radius: CGFloat, color: CGColor, ctx: CGContext,
+                             corners: (tl: Bool, tr: Bool, br: Bool, bl: Bool) = (true, true, true, true),
+                             stroke: CGColor? = nil) {
+        let path = roundedPath(rect, radius: radius, corners: corners)
+        ctx.saveGState()
+        ctx.addPath(path)
+        ctx.setFillColor(color)
+        ctx.fillPath()
+        if let stroke {
+            ctx.addPath(path)
+            ctx.setStrokeColor(stroke)
+            ctx.setLineWidth(max(1, designUnit))
+            ctx.strokePath()
+        }
+        ctx.restoreGState()
+    }
+
+    private func roundedPath(_ rect: CGRect, radius: CGFloat, corners: (tl: Bool, tr: Bool, br: Bool, bl: Bool)) -> CGPath {
+        let r = min(radius, rect.width / 2, rect.height / 2)
+        let path = CGMutablePath()
+        // Bottom-up coordinates: maxY is the visual top.
+        path.move(to: CGPoint(x: rect.minX + (corners.tl ? r : 0), y: rect.maxY))
+        if corners.tr {
+            path.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.maxY), tangent2End: CGPoint(x: rect.maxX, y: rect.minY), radius: r)
+        } else {
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        }
+        if corners.br {
+            path.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.minY), tangent2End: CGPoint(x: rect.minX, y: rect.minY), radius: r)
+        } else {
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        }
+        if corners.bl {
+            path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY), tangent2End: CGPoint(x: rect.minX, y: rect.maxY), radius: r)
+        } else {
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+        }
+        if corners.tl {
+            path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.maxY), tangent2End: CGPoint(x: rect.maxX, y: rect.maxY), radius: r)
+        } else {
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    private func drawProgressBar(_ rect: CGRect, progress: CGFloat?, ctx: CGContext, background: CGColor = DesignPalette.track) {
+        fillRounded(rect, radius: rect.height / 2, color: background, ctx: ctx)
+        guard let progress, progress > 0 else { return }
+        var filled = rect
+        filled.size.width = max(rect.height, rect.width * progress)
+        fillRounded(filled, radius: rect.height / 2, color: designAccent, ctx: ctx)
+    }
+
+    private func drawZoneBars(x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat, gap: CGFloat,
+                              zone: Int?, highlightCurrent: Bool, ctx: CGContext) {
+        let barWidth = (width - gap * 4) / 5
+        for index in 1...5 {
+            let rect = CGRect(x: x + CGFloat(index - 1) * (barWidth + gap), y: y, width: barWidth, height: height)
+            let active = zone.map { index <= $0 } ?? false
+            fillRounded(rect, radius: min(2 * designUnit, height / 2), color: active ? DesignPalette.zone(index) : DesignPalette.zoneOff, ctx: ctx)
+            if highlightCurrent, index == zone {
+                ctx.saveGState()
+                ctx.setStrokeColor(DesignPalette.white)
+                ctx.setLineWidth(2 * designUnit)
+                ctx.addPath(roundedPath(rect.insetBy(dx: -designUnit, dy: -designUnit), radius: 2 * designUnit, corners: (true, true, true, true)))
+                ctx.strokePath()
+                ctx.restoreGState()
+            }
+        }
+    }
+
+    // MARK: Course widgets
+
+    private func drawProfile(in rect: CGRect, time: Date, filled: Bool, lineColor: CGColor, ctx: CGContext) {
+        guard let source = elevationProfileSource(),
+              let drawing = elevationDrawing(source: source, profileRect: rect) else { return }
+        ctx.saveGState()
+        if filled {
+            ctx.addPath(drawing.fillPath)
+            ctx.setFillColor(DesignPalette.elevationFill)
+            ctx.fillPath()
+        }
+        ctx.setLineJoin(.round)
+        ctx.addPath(drawing.linePath)
+        ctx.setStrokeColor(lineColor)
+        ctx.setLineWidth(1.6 * designUnit)
+        ctx.strokePath()
+        if let ratio = source.profile.timeRatio(at: time) {
+            let x = rect.minX + ratio * rect.width
+            ctx.setShadow(offset: .zero, blur: 0, color: nil)
+            ctx.setStrokeColor(designAccent)
+            ctx.setLineWidth(2 * designUnit)
+            ctx.move(to: CGPoint(x: x, y: rect.minY))
+            ctx.addLine(to: CGPoint(x: x, y: rect.maxY))
+            ctx.strokePath()
+        }
+        ctx.restoreGState()
+    }
+
+    private func routeSamples() -> [DesignRouteSample] {
+        let key = DataPointSignature(dataPoints: allDataPoints)
+        if let cached = routeSampleCache, cached.key == key { return cached.samples }
+        let located = allDataPoints.compactMap { point -> DesignRouteSample? in
+            guard let coordinate = point.coordinate, CLLocationCoordinate2DIsValid(coordinate) else { return nil }
+            return DesignRouteSample(timestamp: point.timestamp, coordinate: coordinate)
+        }
+        let stride = max(1, located.count / 2_000)
+        var samples: [DesignRouteSample] = []
+        samples.reserveCapacity(located.count / stride + 1)
+        for index in Swift.stride(from: 0, to: located.count, by: stride) { samples.append(located[index]) }
+        if let last = located.last, samples.last?.timestamp != last.timestamp { samples.append(last) }
+        routeSampleCache = (key, samples)
+        return samples
+    }
+
+    /// Draws the route fitted into `rect`: the whole route, optionally the travelled
+    /// part in the accent colour, and a dot at the current position.
+    private func drawRoute(in rect: CGRect, dataPoint: FITDataPoint, time: Date,
+                           routeColor: CGColor, routeWidth: CGFloat, showTravelled: Bool,
+                           dotFill: CGColor, dotStroke: CGColor, ctx: CGContext) {
+        guard let drawing = trackDrawing(in: rect, cornerRadius: 0) else { return }
+        ctx.saveGState()
+        ctx.setLineJoin(.round)
+        ctx.setLineCap(.round)
+        ctx.addPath(drawing.polylinePath)
+        ctx.setStrokeColor(routeColor)
+        ctx.setLineWidth(routeWidth * designUnit)
+        ctx.strokePath()
+
+        if showTravelled {
+            let samples = routeSamples()
+            let path = CGMutablePath()
+            var started = false
+            for sample in samples {
+                guard sample.timestamp <= time else { break }
+                let point = drawing.project(sample.coordinate)
+                if started { path.addLine(to: point) } else { path.move(to: point); started = true }
+            }
+            if started {
+                if let current = dataPoint.coordinate, CLLocationCoordinate2DIsValid(current) {
+                    path.addLine(to: drawing.project(current))
+                }
+                ctx.setShadow(offset: .zero, blur: 0, color: nil)
+                ctx.addPath(path)
+                ctx.setStrokeColor(designAccent)
+                ctx.setLineWidth(routeWidth * 1.6 * designUnit)
+                ctx.strokePath()
+            }
+        }
+
+        if let current = dataPoint.coordinate, CLLocationCoordinate2DIsValid(current) {
+            let p = drawing.project(current)
+            let d = 12 * designUnit
+            let dot = CGRect(x: p.x - d / 2, y: p.y - d / 2, width: d, height: d)
+            ctx.setFillColor(dotFill)
+            ctx.fillEllipse(in: dot)
+            ctx.setStrokeColor(dotStroke)
+            ctx.setLineWidth(2.4 * designUnit)
+            ctx.strokeEllipse(in: dot)
+        }
+        ctx.restoreGState()
+    }
+
+    private func hasRoute() -> Bool { trackDrawing(in: CGRect(x: 0, y: 0, width: 100, height: 100), cornerRadius: 0) != nil }
+
+    /// Label above value, laid out as a block.
+    private func labelValueBlock(label: String, value: [DesignRun], ctx: CGContext, x: CGFloat,
+                                 labelSize: CGFloat = 11, gap: CGFloat = 7, extra: ((_ valueTop: CGFloat, _ valueWidth: CGFloat) -> Void)? = nil) -> DesignBlock {
+        let u = designUnit
+        let labelRuns = [labelRun(label, size: labelSize)]
+        let labelHeight = capHeight(labelRuns)
+        let valueHeight = capHeight(value)
+        return DesignBlock(height: labelHeight + gap * u + valueHeight) { top in
+            self.drawRuns(labelRuns, ctx: ctx, x: x, top: top)
+            let valueTop = top - labelHeight - gap * u
+            let width = self.drawRuns(value, ctx: ctx, x: x, top: valueTop)
+            extra?(valueTop, width)
+        }
+    }
+
+    private func stack(_ blocks: [DesignBlock], gap: CGFloat) -> CGFloat {
+        guard !blocks.isEmpty else { return 0 }
+        return blocks.reduce(0) { $0 + $1.height } + gap * CGFloat(blocks.count - 1)
+    }
+
+    private func drawStack(_ blocks: [DesignBlock], top: CGFloat, gap: CGFloat) {
+        var cursor = top
+        for block in blocks {
+            block.draw(cursor)
+            cursor -= block.height + gap
+        }
+    }
+
+    private struct DesignStat {
+        let label: String
+        let value: String
+        let color: CGColor
+    }
+
+    private func courseStats(_ values: DesignValues) -> [DesignStat] {
+        var stats: [DesignStat] = []
+        if settings.showAltitude { stats.append(DesignStat(label: "ELEV", value: values.altitude, color: DesignPalette.white)) }
+        if settings.showGrade { stats.append(DesignStat(label: "GRADE", value: values.grade, color: gradeColor(values.gradeValue))) }
+        if settings.showElevationGain { stats.append(DesignStat(label: "GAIN", value: values.gain, color: DesignPalette.white)) }
+        return stats
+    }
+
+    /// A row of small stats (ELEV / GRADE / GAIN). Columns share the width evenly.
+    private func statsRowBlock(_ stats: [DesignStat], x: CGFloat, width: CGFloat, valueSize: CGFloat, ctx: CGContext) -> DesignBlock? {
+        guard !stats.isEmpty else { return nil }
+        let u = designUnit
+        let labelHeight = capHeight([labelRun("A")])
+        let valueHeight = capHeight([numberRun("0", size: valueSize)])
+        let columnWidth = width / CGFloat(max(stats.count, 3))
+        return DesignBlock(height: labelHeight + 7 * u + valueHeight) { top in
+            for (index, stat) in stats.enumerated() {
+                let cx = x + CGFloat(index) * columnWidth
+                self.drawRuns([self.labelRun(stat.label)], ctx: ctx, x: cx, top: top)
+                self.drawRuns([self.numberRun(stat.value, size: valueSize, color: stat.color)], ctx: ctx, x: cx, top: top - labelHeight - 7 * u)
+            }
+        }
+    }
+
+    private func distanceBlock(_ values: DesignValues, x: CGFloat, width: CGFloat, mainSize: CGFloat, totalSize: CGFloat,
+                               barHeight: CGFloat, showPercent: Bool, alignRight: Bool = false, ctx: CGContext) -> DesignBlock {
+        let u = designUnit
+        let runs = [numberRun(values.distanceCurrent, size: mainSize, bold: true), unitRun(" " + values.distanceTotal, size: totalSize, alpha: 0.8)]
+        let textHeight = capHeight(runs)
+        return DesignBlock(height: textHeight + 12 * u + barHeight * u) { top in
+            self.drawRuns(runs, ctx: ctx, x: alignRight ? x + width : x, top: top, alignRight: alignRight)
+            if showPercent, let progress = values.progress {
+                self.drawRuns([self.labelRun("\(Int((progress * 100).rounded()))%", size: 12)], ctx: ctx, x: x + width, top: top - textHeight + self.capHeight([self.labelRun("0", size: 12)]), alignRight: true)
+            }
+            let barRect = CGRect(x: x, y: top - textHeight - 12 * u - barHeight * u, width: width, height: barHeight * u)
+            self.drawProgressBar(barRect, progress: values.progress, ctx: ctx)
+        }
+    }
+
+    // MARK: Design A: broadcast bar
+
+    private func drawBroadcastDesign(ctx: CGContext, values: DesignValues, dataPoint: FITDataPoint, time: Date) {
+        let u = designUnit
+        let margin = 24 * u
+        let left = margin
+        let right = videoSize.width - margin
+        let bottom = margin
+
+        // Course card (right): info column + square map.
+        let showMap = settings.showMiniMap && hasRoute()
+        let infoWidth: CGFloat = 300 * u
+        let mapSide: CGFloat = 236 * u
+        var courseBlocks: [DesignBlock] = []
+        let infoX = right - (showMap ? mapSide : 0) - infoWidth + 20 * u
+        let infoInner = infoWidth - 40 * u
+        if settings.showDistance {
+            courseBlocks.append(distanceBlock(values, x: infoX, width: infoInner, mainSize: 52, totalSize: 22, barHeight: 6, showPercent: false, ctx: ctx))
+        }
+        if settings.showElevationProfile, elevationProfileSource() != nil {
+            courseBlocks.append(DesignBlock(height: 64 * u) { top in
+                self.drawProfile(in: CGRect(x: infoX, y: top - 64 * u, width: infoInner, height: 64 * u), time: time, filled: true, lineColor: DesignPalette.elevation, ctx: ctx)
+            })
+        }
+        if let stats = statsRowBlock(courseStats(values), x: infoX, width: infoInner, valueSize: 24, ctx: ctx) {
+            courseBlocks.append(stats)
+        }
+        let hasInfo = !courseBlocks.isEmpty
+        let hasCourse = hasInfo || showMap
+        let contentHeight = stack(courseBlocks, gap: 14 * u) + 32 * u
+        let cardHeight = showMap ? max(mapSide, contentHeight) : contentHeight
+        let cardWidth = (hasInfo ? infoWidth : 0) + (showMap ? mapSide : 0)
+        let cardRect = CGRect(x: right - cardWidth, y: bottom, width: cardWidth, height: cardHeight)
+
+        // Body bar (left), joined to the course card.
+        var columns: [(label: String, runs: (CGFloat) -> [DesignRun], badge: Int?)] = []
+        if settings.showTime { columns.append(("TIME", { [self.numberRun(values.time, size: $0)] }, nil)) }
+        if settings.showPace { columns.append(("PACE", { [self.numberRun(values.pace, size: $0), self.unitRun(" /km", size: $0 * 0.45)] }, nil)) }
+        if settings.showHeartRate { columns.append(("HEART RATE", { [self.numberRun(values.heartRate, size: $0)] }, values.zone)) }
+        if settings.showCadence { columns.append(("CADENCE", { [self.numberRun(values.cadence, size: $0), self.unitRun(" spm", size: $0 * 0.45)] }, nil)) }
+        if settings.showCoreTemp, let core = values.coreTemp {
+            columns.append(("CORE", { [self.numberRun(core, size: $0, color: values.coreTempColor ?? DesignPalette.white)] }, nil))
+        }
+
+        let barHeight = 96 * u
+        let barRight = hasCourse ? cardRect.minX : right
+        if !columns.isEmpty, barRight - left > 200 * u {
+            let barRect = CGRect(x: left, y: bottom, width: barRight - left, height: barHeight)
+            fillRounded(barRect, radius: 14 * u, color: designPanelColor, ctx: ctx, corners: (true, !hasCourse, !hasCourse, true))
+
+            let badgeFont = designFont(DesignFontName.label, 13)
+            func badgeWidth(_ zone: Int?) -> CGFloat {
+                guard let zone else { return 0 }
+                return lineWidth([DesignRun(text: "Z\(zone)", font: badgeFont, color: DesignPalette.badgeText)]) + 26 * u
+            }
+            func naturalWidths(_ size: CGFloat) -> [CGFloat] {
+                columns.map { column in
+                    max(lineWidth([labelRun(column.label, size: 12)]), lineWidth(column.runs(size)) + badgeWidth(column.badge)) + 44 * u
+                }
+            }
+            // Keep every value on one line: shrink the
+            // value size until every column fits the bar.
+            var valueSize: CGFloat = 44
+            var widths = naturalWidths(valueSize)
+            while widths.reduce(0, +) > barRect.width, valueSize > 26 {
+                valueSize -= 2
+                widths = naturalWidths(valueSize)
+            }
+            let extra = max(0, barRect.width - widths.reduce(0, +)) / CGFloat(columns.count)
+            widths = widths.map { $0 + extra }
+
+            let labelHeight = capHeight([labelRun("A", size: 12)])
+            let valueHeight = capHeight([numberRun("0", size: valueSize)])
+            let blockHeight = labelHeight + 10 * u + valueHeight
+            let top = barRect.midY + blockHeight / 2
+            var cx = barRect.minX
+            for (index, column) in columns.enumerated() {
+                if index > 0 {
+                    ctx.setFillColor(DesignPalette.hairline)
+                    ctx.fill(CGRect(x: cx, y: barRect.minY + 18 * u, width: max(1, u), height: barRect.height - 36 * u))
+                }
+                let x = cx + 22 * u
+                drawRuns([labelRun(column.label, size: 12)], ctx: ctx, x: x, top: top)
+                let valueTop = top - labelHeight - 10 * u
+                let width = drawRuns(column.runs(valueSize), ctx: ctx, x: x, top: valueTop)
+                if let zone = column.badge {
+                    let badgeRuns = [DesignRun(text: "Z\(zone)", font: badgeFont, color: DesignPalette.badgeText)]
+                    let textWidth = lineWidth(badgeRuns)
+                    let textHeight = capHeight(badgeRuns)
+                    let badge = CGRect(x: x + width + 10 * u, y: valueTop - valueHeight / 2 - textHeight / 2 - 5 * u,
+                                       width: textWidth + 16 * u, height: textHeight + 10 * u)
+                    fillRounded(badge, radius: 6 * u, color: DesignPalette.zone(zone), ctx: ctx)
+                    drawRuns(badgeRuns, ctx: ctx, x: badge.minX + 8 * u, top: badge.maxY - 5 * u)
+                }
+                cx += widths[index]
+            }
+        }
+
+        guard hasCourse else { return }
+        let cardTall = !columns.isEmpty && cardHeight > barHeight
+        fillRounded(cardRect, radius: 14 * u, color: designPanelColor, ctx: ctx, corners: (true, true, true, columns.isEmpty || !cardTall))
+        if hasInfo {
+            drawStack(courseBlocks, top: cardRect.maxY - 18 * u, gap: 14 * u)
+        }
+        if showMap {
+            let mapRect = CGRect(x: cardRect.maxX - mapSide, y: cardRect.minY, width: mapSide, height: cardRect.height)
+            if hasInfo {
+                ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 0.04))
+                ctx.fill(mapRect.insetBy(dx: 0, dy: 0))
+                ctx.setFillColor(DesignPalette.hairline)
+                ctx.fill(CGRect(x: mapRect.minX, y: mapRect.minY, width: max(1, u), height: mapRect.height))
+            }
+            let routeRect = mapRect.insetBy(dx: 13 * u, dy: 13 * u)
+            drawRoute(in: routeRect, dataPoint: dataPoint, time: time, routeColor: CGColor(red: 1, green: 1, blue: 1, alpha: 0.45),
+                      routeWidth: 3, showTravelled: true, dotFill: DesignPalette.white, dotStroke: designAccent, ctx: ctx)
+        }
+    }
+
+    // MARK: Design B: minimal corners
+
+    private func drawMinimalDesign(ctx: CGContext, values: DesignValues, dataPoint: FITDataPoint, time: Date) {
+        let u = designUnit
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: -1 * u), blur: 6 * u, color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.6))
+        defer { ctx.restoreGState() }
+
+        let top = videoSize.height
+        let leftX = 40 * u
+        let rightX = videoSize.width - 40 * u
+
+        // Top left: elapsed time.
+        if settings.showTime {
+            let block = labelValueBlock(label: "TIME", value: [numberRun(values.time, size: 52)], ctx: ctx, x: leftX, labelSize: 12, gap: 9)
+            block.draw(top - 34 * u)
+        }
+
+        // Top right: route outline.
+        if settings.showMiniMap, hasRoute() {
+            let side = 170 * u
+            let rect = CGRect(x: videoSize.width - 36 * u - side, y: top - 28 * u - side, width: side, height: side)
+            drawRoute(in: rect, dataPoint: dataPoint, time: time, routeColor: CGColor(red: 1, green: 1, blue: 1, alpha: 0.8),
+                      routeWidth: 2.6, showTravelled: false, dotFill: designAccent, dotStroke: DesignPalette.white, ctx: ctx)
+        }
+
+        // Bottom left: pace hero + heart rate row.
+        var leftBlocks: [DesignBlock] = []
+        if settings.showPace {
+            leftBlocks.append(labelValueBlock(label: "PACE", value: [numberRun(values.pace, size: 104, bold: true), unitRun(" /km", size: 30, alpha: 0.8)],
+                                              ctx: ctx, x: leftX, labelSize: 12, gap: 12))
+        }
+        var rowRuns: [[DesignRun]] = []
+        if settings.showCadence { rowRuns.append([numberRun(values.cadence, size: 40), unitRun(" spm", size: 18, alpha: 0.8)]) }
+        if settings.showCoreTemp, let core = values.coreTemp {
+            rowRuns.append([numberRun(core, size: 40, color: values.coreTempColor ?? DesignPalette.white), unitRun("C", size: 18, alpha: 0.8)])
+        }
+        if settings.showHeartRate || !rowRuns.isEmpty {
+            let rowHeight = capHeight([numberRun("0", size: 40)])
+            leftBlocks.append(DesignBlock(height: rowHeight) { rowTop in
+                var x = leftX
+                if self.settings.showHeartRate {
+                    x += self.drawRuns([self.numberRun(values.heartRate, size: 40), self.unitRun(" bpm", size: 18, alpha: 0.8)], ctx: ctx, x: x, top: rowTop) + 16 * u
+                    let barsWidth = 26 * 5 * u + 4 * 4 * u
+                    self.drawZoneBars(x: x, y: rowTop - rowHeight / 2 - 4 * u, width: barsWidth, height: 8 * u, gap: 4 * u,
+                                      zone: values.zone, highlightCurrent: true, ctx: ctx)
+                    x += barsWidth + 10 * u
+                    if let zone = values.zone {
+                        let zoneRuns = [self.labelRun("Z\(zone)", size: 13, color: DesignPalette.white)]
+                        x += self.drawRuns(zoneRuns, ctx: ctx, x: x, top: rowTop - rowHeight / 2 + self.capHeight(zoneRuns) / 2)
+                    }
+                    x += 28 * u
+                }
+                for runs in rowRuns {
+                    x += self.drawRuns(runs, ctx: ctx, x: x, top: rowTop) + 28 * u
+                }
+            })
+        }
+        let leftHeight = stack(leftBlocks, gap: 20 * u)
+        drawStack(leftBlocks, top: 36 * u + leftHeight, gap: 20 * u)
+
+        // Bottom right: profile, small stats, distance and progress (right-aligned).
+        let width = 320 * u
+        var rightBlocks: [DesignBlock] = []
+        if settings.showElevationProfile, elevationProfileSource() != nil {
+            rightBlocks.append(DesignBlock(height: 56 * u) { blockTop in
+                self.drawProfile(in: CGRect(x: rightX - width, y: blockTop - 56 * u, width: width, height: 56 * u), time: time,
+                                 filled: false, lineColor: CGColor(red: 1, green: 1, blue: 1, alpha: 0.85), ctx: ctx)
+            })
+        }
+        var statParts: [String] = []
+        if settings.showAltitude { statParts.append(values.altitude) }
+        if settings.showGrade {
+            let arrow: String
+            if let grade = values.gradeValue, grade >= 0.5 { arrow = "↗ " } else if let grade = values.gradeValue, grade <= -0.5 { arrow = "↘ " } else { arrow = "→ " }
+            statParts.append(arrow + values.grade.replacingOccurrences(of: "+", with: "").replacingOccurrences(of: "-", with: ""))
+        }
+        if settings.showElevationGain { statParts.append(values.gain) }
+        if !statParts.isEmpty {
+            let runs = [DesignRun(text: statParts.joined(separator: "   "), font: designFont(DesignFontName.label, 15), color: DesignPalette.white)]
+            rightBlocks.append(DesignBlock(height: capHeight(runs)) { blockTop in
+                self.drawRuns(runs, ctx: ctx, x: rightX, top: blockTop, alignRight: true)
+            })
+        }
+        if settings.showDistance {
+            rightBlocks.append(distanceBlock(values, x: rightX - width, width: width, mainSize: 64, totalSize: 26, barHeight: 4,
+                                             showPercent: false, alignRight: true, ctx: ctx))
+        }
+        let rightHeight = stack(rightBlocks, gap: 14 * u)
+        drawStack(rightBlocks, top: 36 * u + rightHeight, gap: 14 * u)
+    }
+
+    // MARK: Design C: data cards
+
+    private func drawCardsDesign(ctx: CGContext, values: DesignValues, dataPoint: FITDataPoint, time: Date) {
+        let u = designUnit
+        let margin = 28 * u
+        let padX = 20 * u
+        let padY = 18 * u
+
+        // Left: body card.
+        let leftWidth = 360 * u
+        let leftX = margin + padX
+        let inner = leftWidth - padX * 2
+        var bodyBlocks: [DesignBlock] = []
+        if settings.showTime {
+            bodyBlocks.append(labelValueBlock(label: "TIME", value: [numberRun(values.time, size: 36)], ctx: ctx, x: leftX))
+        }
+        if settings.showPace {
+            bodyBlocks.append(labelValueBlock(label: "PACE", value: [numberRun(values.pace, size: 78, bold: true), unitRun(" /km", size: 24)], ctx: ctx, x: leftX, gap: 9))
+        }
+        var cells: [(label: String, runs: [DesignRun], zone: Bool)] = []
+        if settings.showHeartRate { cells.append(("HR", [numberRun(values.heartRate, size: 30)], true)) }
+        if settings.showCadence { cells.append(("CADENCE", [numberRun(values.cadence, size: 30)], false)) }
+        if settings.showCoreTemp, let core = values.coreTemp {
+            cells.append(("CORE", [numberRun(core, size: 30, color: values.coreTempColor ?? DesignPalette.white)], false))
+        }
+        if !cells.isEmpty {
+            let labelHeight = capHeight([labelRun("A")])
+            let valueHeight = capHeight([numberRun("0", size: 30)])
+            let hasZone = cells.contains { $0.zone }
+            let divider = bodyBlocks.isEmpty ? 0 : 14 * u
+            let height = divider + labelHeight + 7 * u + valueHeight + (hasZone ? 12 * u : 0)
+            let cellWidth = (inner - 20 * u) / 3
+            bodyBlocks.append(DesignBlock(height: height) { top in
+                if divider > 0 {
+                    ctx.setFillColor(DesignPalette.hairline)
+                    ctx.fill(CGRect(x: leftX, y: top, width: inner, height: max(1, u)))
+                }
+                let cellTop = top - divider
+                for (index, cell) in cells.enumerated() {
+                    let x = leftX + CGFloat(index) * (cellWidth + 10 * u)
+                    self.drawRuns([self.labelRun(cell.label)], ctx: ctx, x: x, top: cellTop)
+                    let valueTop = cellTop - labelHeight - 7 * u
+                    self.drawRuns(cell.runs, ctx: ctx, x: x, top: valueTop)
+                    if cell.zone {
+                        self.drawZoneBars(x: x, y: valueTop - valueHeight - 12 * u, width: min(cellWidth, 90 * u), height: 4 * u, gap: 2 * u,
+                                          zone: values.zone, highlightCurrent: false, ctx: ctx)
+                    }
+                }
+            })
+        }
+        if !bodyBlocks.isEmpty {
+            let contentHeight = stack(bodyBlocks, gap: 18 * u)
+            let card = CGRect(x: margin, y: margin, width: leftWidth, height: contentHeight + padY * 2)
+            fillRounded(card, radius: 18 * u, color: designPanelColor, ctx: ctx, stroke: DesignPalette.hairline)
+            drawStack(bodyBlocks, top: card.maxY - padY, gap: 18 * u)
+        }
+
+        // Right: course card (distance, map, profile, stats).
+        let rightWidth = 300 * u
+        let pad = 14 * u
+        let cardX = videoSize.width - margin - rightWidth
+        let innerX = cardX + pad
+        let innerWidth = rightWidth - pad * 2
+        var courseBlocks: [DesignBlock] = []
+        if settings.showDistance {
+            courseBlocks.append(distanceBlock(values, x: innerX + 4 * u, width: innerWidth - 8 * u, mainSize: 40, totalSize: 18, barHeight: 5,
+                                              showPercent: true, ctx: ctx))
+        }
+        if settings.showMiniMap, hasRoute() {
+            courseBlocks.append(DesignBlock(height: 170 * u) { top in
+                let rect = CGRect(x: innerX, y: top - 170 * u, width: innerWidth, height: 170 * u).insetBy(dx: 4 * u, dy: 4 * u)
+                self.drawRoute(in: rect, dataPoint: dataPoint, time: time, routeColor: CGColor(red: 1, green: 1, blue: 1, alpha: 0.4),
+                               routeWidth: 2.6, showTravelled: true, dotFill: DesignPalette.white, dotStroke: self.designAccent, ctx: ctx)
+            })
+        }
+        if settings.showElevationProfile, elevationProfileSource() != nil {
+            courseBlocks.append(DesignBlock(height: 48 * u) { top in
+                self.drawProfile(in: CGRect(x: innerX, y: top - 48 * u, width: innerWidth, height: 48 * u), time: time,
+                                 filled: true, lineColor: DesignPalette.elevation, ctx: ctx)
+            })
+        }
+        if let stats = statsRowBlock(courseStats(values), x: innerX + 4 * u, width: innerWidth - 8 * u, valueSize: 24, ctx: ctx) {
+            courseBlocks.append(stats)
+        }
+        if !courseBlocks.isEmpty {
+            let contentHeight = stack(courseBlocks, gap: 14 * u)
+            let card = CGRect(x: cardX, y: margin, width: rightWidth, height: contentHeight + pad * 2 + 4 * u)
+            fillRounded(card, radius: 18 * u, color: designPanelColor, ctx: ctx, stroke: DesignPalette.hairline)
+            drawStack(courseBlocks, top: card.maxY - pad - 4 * u, gap: 14 * u)
         }
     }
 }
