@@ -119,8 +119,6 @@ final class OverlayRenderer {
         let valueFontSize = style.valueFontSize
         let distanceFontSize = style.distanceFontSize * scale
         let leftAdvance = style.leftMetricAdvance * scale
-        let rightDistanceAdvance = style.rightDistanceAdvance * scale
-        let rightAdvance = style.rightMetricAdvance * scale
 
         // === LEFT SIDE (top→bottom): HR → PACE → CADENCE → CORE ===
         let leftX = style.leftX(in: videoSize, scale: scale)
@@ -195,31 +193,16 @@ final class OverlayRenderer {
         // GPS track drawn directly by OverlayRenderer (see drawGPSTrack) in the top-right corner.
         // Formula keeps the text clear of the map across 720p / 1080p / 4K.
         let rightX = style.rightX(in: videoSize, scale: scale)
-        var rightY = style.rightStartY(in: videoSize, scale: scale)
+        let rightLayout = style.rightMetricLayout(in: videoSize, scale: scale, settings: settings)
         var rightMetricRects: [CGRect] = []
 
-        if settings.showDistance {
-            rightMetricRects.append(textRect(x: rightX, y: rightY, fontSize: distanceFontSize))
-            rightY += rightDistanceAdvance
+        if let y = rightLayout.y(.distance) {
+            rightMetricRects.append(textRect(x: rightX, y: y, fontSize: distanceFontSize))
         }
-
-        if settings.showTime {
-            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: valueFontSize * scale))
-            rightY += rightAdvance
-        }
-
-        if settings.showElevationGain {
-            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: valueFontSize * scale))
-            rightY += rightAdvance
-        }
-
-        if settings.showGrade {
-            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: valueFontSize * scale))
-            rightY += rightAdvance
-        }
-
-        if settings.showAltitude {
-            rightMetricRects.append(labelValueRect(x: rightX, y: rightY, valueSize: valueFontSize * scale))
+        for item in [RightMetricLayout.Item.time, .elevationGain, .grade, .altitude] {
+            if let y = rightLayout.y(item) {
+                rightMetricRects.append(labelValueRect(x: rightX, y: y, valueSize: valueFontSize * scale))
+            }
         }
 
         let rightBackgroundRect = unionRect(for: rightMetricRects)
@@ -227,44 +210,34 @@ final class OverlayRenderer {
             drawMetricsBackground(ctx: ctx, rect: rightBackgroundRect)
         }
 
-        rightY = style.rightStartY(in: videoSize, scale: scale)
-
-        if settings.showDistance {
+        if let y = rightLayout.y(.distance) {
             let current = dataPoint.distance.map { String(format: "%.1f", $0 / 1000.0) } ?? "--"
             let total = effectiveRecordingState == .noRecording
                 ? "-- KM"
                 : String(format: "%.1f KM", totalDistance / 1000.0)
             // Show as "X.X / Y.Y KM" on a single line to avoid visual confusion
             let distText = "\(current) / \(total)"
-            drawText(ctx: ctx, text: distText, x: rightX, y: rightY, fontSize: distanceFontSize, color: white, bold: true)
-            rightY += rightDistanceAdvance
+            drawText(ctx: ctx, text: distText, x: rightX, y: y, fontSize: distanceFontSize, color: white, bold: true)
         }
 
-        // TIME - right, below distance
-        if settings.showTime {
+        if let y = rightLayout.y(.time) {
             let value = elapsedTime.map(formatElapsedTime) ?? "--:--:--"
-            drawLabelValue(ctx: ctx, label: "TIME", value: value, x: rightX, y: rightY, labelColor: accentColor, valueSize: valueFontSize, labelSize: labelFontSize)
-            rightY += rightAdvance
+            drawLabelValue(ctx: ctx, label: "TIME", value: value, x: rightX, y: y, labelColor: accentColor, valueSize: valueFontSize, labelSize: labelFontSize)
         }
 
-        // ELEV GAIN - right, below time
-        if settings.showElevationGain {
+        if let y = rightLayout.y(.elevationGain) {
             let value = dataPoint.distance.map { String(format: "+%.0f m", cumulativeElevationGain(upTo: $0)) } ?? "-- m"
-            drawLabelValue(ctx: ctx, label: "ELEV GAIN", value: value, x: rightX, y: rightY, labelColor: accentColor, valueSize: valueFontSize, valueColor: style.elevationColor, labelSize: labelFontSize)
-            rightY += rightAdvance
+            drawLabelValue(ctx: ctx, label: "ELEV GAIN", value: value, x: rightX, y: y, labelColor: accentColor, valueSize: valueFontSize, valueColor: style.elevationColor, labelSize: labelFontSize)
         }
 
-        // GRADE - right, below elevation gain
-        if settings.showGrade {
+        if let y = rightLayout.y(.grade) {
             let value = dataPoint.gradeFormatted(fallbackDataPoints: allDataPoints)
-            drawLabelValue(ctx: ctx, label: "GRADE", value: value, x: rightX, y: rightY, labelColor: accentColor, valueSize: valueFontSize, labelSize: labelFontSize)
-            rightY += rightAdvance
+            drawLabelValue(ctx: ctx, label: "GRADE", value: value, x: rightX, y: y, labelColor: accentColor, valueSize: valueFontSize, labelSize: labelFontSize)
         }
 
-        // ALTITUDE (current elevation) - right, below grade
-        if settings.showAltitude {
+        if let y = rightLayout.y(.altitude) {
             let value = dataPoint.altitude.map { String(format: "%.0f M", $0) } ?? "-- M"
-            drawLabelValue(ctx: ctx, label: "ALTITUDE", value: value, x: rightX, y: rightY, labelColor: accentColor, valueSize: valueFontSize, labelSize: labelFontSize)
+            drawLabelValue(ctx: ctx, label: "ALTITUDE", value: value, x: rightX, y: y, labelColor: accentColor, valueSize: valueFontSize, labelSize: labelFontSize)
         }
 
         // Elevation profile - directly under the top-right mini-map
@@ -1403,6 +1376,68 @@ struct OverlayPresetRenderStyle: Codable {
     func rightStartY(in videoSize: CGSize, scale: CGFloat) -> CGFloat {
         rightStartYPosition.y(in: videoSize.height, scale: scale)
     }
+
+    /// Baseline positions of the right column (distance → time → gain → grade → altitude).
+    /// When every item is shown the column can run past the bottom edge, so the
+    /// spacing is tightened (up to 15%) and the column is then lifted to keep a
+    /// bottom margin. Shared by the export renderer and the live preview.
+    func rightMetricLayout(in videoSize: CGSize, scale: CGFloat, settings: OverlaySettings) -> RightMetricLayout {
+        typealias Item = RightMetricLayout.Item
+        var items: [Item] = []
+        if settings.showDistance { items.append(.distance) }
+        if settings.showTime { items.append(.time) }
+        if settings.showElevationGain { items.append(.elevationGain) }
+        if settings.showGrade { items.append(.grade) }
+        if settings.showAltitude { items.append(.altitude) }
+        guard !items.isEmpty else { return RightMetricLayout(positions: [:]) }
+
+        let start = rightStartY(in: videoSize, scale: scale)
+        var offsets: [CGFloat] = []
+        var offset: CGFloat = 0
+        for item in items {
+            offsets.append(offset)
+            offset += (item == .distance ? rightDistanceAdvance : rightMetricAdvance) * scale
+        }
+        // Depth below each baseline, matching the background panel
+        // (labelValueRect / textRect plus the union inset).
+        func depth(_ item: Item) -> CGFloat {
+            (item == .distance ? 18 : 88) * scale + 12 * scale
+        }
+        func lowestEdge(_ factor: CGFloat) -> CGFloat {
+            zip(items, offsets).map { start + $1 * factor - depth($0) }.min() ?? start
+        }
+        let bottomLimit = RightMetricLayout.bottomMargin * scale
+        var factor: CGFloat = 1
+        var lift: CGFloat = 0
+        let overflow = bottomLimit - lowestEdge(1)
+        if overflow > 0 {
+            // Tighten the spacing first (only helps when the stack grows downward).
+            let span = -(offsets.min() ?? 0)
+            if span > 0 {
+                factor = max(1 - RightMetricLayout.maxCompression, (span - overflow) / span)
+            }
+            lift = max(0, bottomLimit - lowestEdge(factor))
+        }
+
+        var positions: [Item: CGFloat] = [:]
+        for (item, itemOffset) in zip(items, offsets) {
+            positions[item] = start + itemOffset * factor + lift
+        }
+        return RightMetricLayout(positions: positions)
+    }
+}
+
+struct RightMetricLayout {
+    enum Item: Hashable {
+        case distance, time, elevationGain, grade, altitude
+    }
+
+    static let bottomMargin: CGFloat = 16
+    static let maxCompression: CGFloat = 0.15
+
+    let positions: [Item: CGFloat]
+
+    func y(_ item: Item) -> CGFloat? { positions[item] }
 }
 
 private struct OverlayThemeColor: Codable {

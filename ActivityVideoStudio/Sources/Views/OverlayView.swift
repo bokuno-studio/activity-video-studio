@@ -174,7 +174,7 @@ private struct LiveActivityDataLayer: View {
 
     private var rightMetrics: some View {
         let rightX = style.rightX(in: size, scale: scale)
-        let y = style.rightStartY(in: size, scale: scale)
+        let y = rightY(.distance)
 
         return ZStack(alignment: .topLeading) {
             if settings.showDistance {
@@ -185,7 +185,7 @@ private struct LiveActivityDataLayer: View {
             }
 
             if settings.showTime {
-                labelValue(label: "TIME", value: frame.elapsedTime.map(formatElapsedTime) ?? "--:--:--", x: rightX, y: rightTimeY())
+                labelValue(label: "TIME", value: frame.elapsedTime.map(formatElapsedTime) ?? "--:--:--", x: rightX, y: rightY(.time))
             }
 
             if settings.showElevationGain {
@@ -193,7 +193,7 @@ private struct LiveActivityDataLayer: View {
                     label: "ELEV GAIN",
                     value: frame.currentElevationGain.map { String(format: "+%.0f m", $0) } ?? "-- m",
                     x: rightX,
-                    y: rightElevationGainY(),
+                    y: rightY(.elevationGain),
                     valueColor: color(style.elevationColor)
                 )
             }
@@ -203,13 +203,13 @@ private struct LiveActivityDataLayer: View {
                     label: "GRADE",
                     value: frame.dataPoint.gradeFormatted(fallbackDataPoints: allDataPoints),
                     x: rightX,
-                    y: rightGradeY()
+                    y: rightY(.grade)
                 )
             }
 
             if settings.showAltitude {
                 let value = frame.dataPoint.altitude.map { String(format: "%.0f M", $0) } ?? "-- M"
-                labelValue(label: "ALTITUDE", value: value, x: rightX, y: rightAltitudeY())
+                labelValue(label: "ALTITUDE", value: value, x: rightX, y: rightY(.altitude))
             }
         }
     }
@@ -238,29 +238,26 @@ private struct LiveActivityDataLayer: View {
         return rects
     }
 
+    private var rightLayout: RightMetricLayout {
+        style.rightMetricLayout(in: size, scale: scale, settings: settings)
+    }
+
+    private func rightY(_ item: RightMetricLayout.Item) -> CGFloat {
+        rightLayout.y(item) ?? style.rightStartY(in: size, scale: scale)
+    }
+
     private var rightMetricRects: [CGRect] {
         let x = style.rightX(in: size, scale: scale)
-        var y = style.rightStartY(in: size, scale: scale)
+        let layout = rightLayout
         var rects: [CGRect] = []
 
-        if settings.showDistance {
+        if let y = layout.y(.distance) {
             rects.append(textRect(x: x, y: y, fontSize: style.distanceFontSize * scale))
-            y += style.rightDistanceAdvance * scale
         }
-        if settings.showTime {
-            rects.append(labelValueRect(x: x, y: y, valueSize: style.valueFontSize * scale))
-            y += style.rightMetricAdvance * scale
-        }
-        if settings.showElevationGain {
-            rects.append(labelValueRect(x: x, y: y, valueSize: style.valueFontSize * scale))
-            y += style.rightMetricAdvance * scale
-        }
-        if settings.showGrade {
-            rects.append(labelValueRect(x: x, y: y, valueSize: style.valueFontSize * scale))
-            y += style.rightMetricAdvance * scale
-        }
-        if settings.showAltitude {
-            rects.append(labelValueRect(x: x, y: y, valueSize: style.valueFontSize * scale))
+        for item in [RightMetricLayout.Item.time, .elevationGain, .grade, .altitude] {
+            if let y = layout.y(item) {
+                rects.append(labelValueRect(x: x, y: y, valueSize: style.valueFontSize * scale))
+            }
         }
 
         return rects
@@ -282,34 +279,9 @@ private struct LiveActivityDataLayer: View {
         }
     }
 
-    private func rightTimeY() -> CGFloat {
-        style.rightStartY(in: size, scale: scale)
-            + (settings.showDistance ? style.rightDistanceAdvance * scale : 0)
-    }
 
-    private func rightElevationGainY() -> CGFloat {
-        var y = style.rightStartY(in: size, scale: scale)
-        if settings.showDistance { y += style.rightDistanceAdvance * scale }
-        if settings.showTime { y += style.rightMetricAdvance * scale }
-        return y
-    }
 
-    private func rightGradeY() -> CGFloat {
-        var y = style.rightStartY(in: size, scale: scale)
-        if settings.showDistance { y += style.rightDistanceAdvance * scale }
-        if settings.showTime { y += style.rightMetricAdvance * scale }
-        if settings.showElevationGain { y += style.rightMetricAdvance * scale }
-        return y
-    }
 
-    private func rightAltitudeY() -> CGFloat {
-        var y = style.rightStartY(in: size, scale: scale)
-        if settings.showDistance { y += style.rightDistanceAdvance * scale }
-        if settings.showTime { y += style.rightMetricAdvance * scale }
-        if settings.showElevationGain { y += style.rightMetricAdvance * scale }
-        if settings.showGrade { y += style.rightMetricAdvance * scale }
-        return y
-    }
 
     private func hudText(_ text: String, size fontSize: CGFloat, color foregroundColor: Color, weight: Font.Weight = .bold) -> some View {
         Text(text)

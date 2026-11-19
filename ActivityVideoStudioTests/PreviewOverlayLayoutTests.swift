@@ -200,6 +200,48 @@ final class OverlayDesignLayoutTests: XCTestCase {
         }
     }
 
+    /// Classic designs: with every item shown, the right column must not run
+    /// past the bottom edge (the altitude value used to be cut off).
+    func testClassicRightColumnStaysAboveBottomEdge() throws {
+        let points = Self.makeActivity()
+        let current = points[points.count / 2]
+        let classic: [OverlayPreset] = [.defaultPreset, .compact, .highContrast, .lowerThird, .mapLeft]
+        for preset in classic {
+            for size in [CGSize(width: 1280, height: 720), CGSize(width: 1920, height: 1080), CGSize(width: 3840, height: 2160)] {
+                let settings = OverlaySettings()
+                settings.overlayPreset = preset
+                settings.overlayOpacity = 1
+                let renderer = OverlayRenderer(videoSize: size, settings: settings)
+                renderer.allDataPoints = points
+                renderer.trackSegments = [points.compactMap(\.coordinate)]
+                let image = try XCTUnwrap(renderer.render(dataPoint: current, elapsedTime: 6_875, activityTime: current.timestamp))
+                let alpha = try alphaChannel(image)
+                // Rows are stored top-down: the last rows are the bottom edge.
+                let band = Int((8 * size.width / 1920).rounded(.up))
+                var touching = 0
+                for y in (image.height - band)..<image.height {
+                    for x in 0..<image.width where alpha[y * image.width + x] > 0 { touching += 1 }
+                }
+                XCTAssertEqual(touching, 0, "\(preset) \(size) reaches the bottom edge")
+            }
+        }
+    }
+
+    /// When the column already fits, positions stay exactly where they were.
+    func testRightColumnUnchangedWhenItFits() {
+        let settings = OverlaySettings()
+        settings.showAltitude = false
+        settings.showGrade = false
+        let style = OverlayPreset.defaultPreset.renderStyle
+        let size = CGSize(width: 1920, height: 1080)
+        let layout = style.rightMetricLayout(in: size, scale: 1, settings: settings)
+        let start = style.rightStartY(in: size, scale: 1)
+        XCTAssertEqual(layout.y(.distance), start)
+        XCTAssertEqual(layout.y(.time), start + style.rightDistanceAdvance)
+        XCTAssertEqual(layout.y(.elevationGain), start + style.rightDistanceAdvance + style.rightMetricAdvance)
+        XCTAssertNil(layout.y(.altitude))
+    }
+
     private func alphaChannel(_ image: CGImage) throws -> [UInt8] {
         let context = try XCTUnwrap(CGContext(
             data: nil, width: image.width, height: image.height,
